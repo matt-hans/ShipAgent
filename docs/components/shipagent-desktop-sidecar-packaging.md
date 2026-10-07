@@ -2,13 +2,27 @@
 
 The Desktop Sidecar Packaging component turns ShipAgent into a Tauri desktop app with a bundled Python backend. `src-tauri/src/main.rs` defines the Tauri v2 wrapper, initializes shell/updater plugins, and exposes the `start_sidecar` command. That command resolves the bundled `backend-dist/shipagent-core` resource, spawns it with `serve --port 0`, keeps the child process handle in managed state, reads stdout until `SHIPAGENT_PORT=...`, and returns the dynamic port to the Angular shell.
 
-Packaging configuration is in `src-tauri/tauri.conf.json`, which points to the Angular shell build, declares app window/security settings, bundles `../dist/shipagent-core` as `backend-dist`, and targets macOS app/dmg bundles. `scripts/bundle_backend.sh` builds the frontend, runs PyInstaller using `shipagent-core.spec`, verifies the one-folder backend output, starts it on an OS-assigned port, and smoke-tests `/health`. `scripts/start-backend.sh` is the development backend launcher that loads `.env`, verifies `.venv` dependencies, and starts uvicorn with one worker.
+Packaging configuration is in `src-tauri/tauri.conf.json`, which points to the Angular shell build, declares app window/security settings, bundles `../dist/shipagent-core` as `backend-dist`, and targets macOS app/dmg bundles. `scripts/bundle_backend.sh` builds the frontend, runs PyInstaller using `shipagent-core.spec`, verifies the one-folder backend output, starts it on an OS-assigned port, and smoke-tests `/health`, the real data-source MCP child and a synthetic two-row Excel import. The smoke sidecar uses a temporary home/database, disabled dotenv/keyring and a clean environment without operator credentials. `scripts/start-backend.sh` is the development backend launcher that loads `.env`, verifies `.venv` dependencies, and starts uvicorn with one worker.
 
 Evidence: `tests/test_bundle_entry.py`, `tests/test_claude_sdk_optional.py`, `tests/packaging/test_sdk_free_runtime.py`, `tests/utils/test_runtime.py`, and the build/packaging files under `src-tauri/` and `scripts/`.
 
 The sidecar uses the shared conversation runtime and does not collect or probe
 the Claude Agent SDK. Source entry-point tests do not establish that a new
-frozen desktop build has passed; final clean-install/package validation is #41.
+frozen desktop build has passed. Current Linux sidecar evidence and mandatory
+remaining native/visual gates are recorded in
+[SDK-free release verification](../runtime/sdk-free-release-evidence.md).
+
+The pinned UPS fork's seven OpenAPI YAMLs are bundled as read-only package
+resources. No project-relative cache or placeholder transit contract is required.
+Local CSV/Excel startup does not download database extensions; explicitly
+connecting PostgreSQL/MySQL still uses DuckDB's extension autoload and requires
+its optional extension to be installed or downloadable.
+
+Uploads live in `get_data_dir()/uploads`, outside the application installation.
+Both MCP launch paths receive the same resolved data root. Only its uploads
+subdirectory joins the existing allowed file roots; this adds no authorization
+for the rest of an out-of-tree data directory. Existing sensitive-name and
+symlink-escape checks remain. Direct EDI uses the same path validator.
 
 ## Read Variables
 

@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 from src.services.ups_specs import ensure_ups_specs_dir  # noqa: E402
+from src.utils.paths import get_data_dir  # noqa: E402
 
 # Project root is parent of src/
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -80,7 +81,10 @@ def get_data_mcp_config() -> MCPServerConfig:
         return MCPServerConfig(
             command=sys.executable,
             args=["mcp-data"],
-            env={"PATH": os.environ.get("PATH", "")},
+            env={
+                "SHIPAGENT_DATA_DIR": str(get_data_dir().resolve()),
+                "PATH": os.environ.get("PATH", ""),
+            },
         )
 
     return MCPServerConfig(
@@ -88,6 +92,7 @@ def get_data_mcp_config() -> MCPServerConfig:
         args=["-m", "src.mcp.data_source.server"],
         env={
             "PYTHONPATH": str(PROJECT_ROOT),
+            "SHIPAGENT_DATA_DIR": str(get_data_dir().resolve()),
             "PATH": os.environ.get("PATH", ""),
         },
     )

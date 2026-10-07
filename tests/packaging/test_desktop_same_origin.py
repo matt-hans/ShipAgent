@@ -273,7 +273,7 @@ def test_bundle_smoke_requires_data_source_status_and_excel_import():
 
     assert "/api/v1/data-sources/status" in bundler
     assert '"$STATUS_CODE" = "200"' in bundler
-    assert "/api/v1/data-sources/import" in bundler
+    assert "/api/v1/data-sources/upload" in bundler
     assert '"row_count": *2[^0-9]' in bundler
     # Hermetic: synthetic workbook in the throwaway data dir.
     assert "$SMOKE_DATA_DIR/smoke.xlsx" in bundler
@@ -304,3 +304,29 @@ def test_frontend_fonts_are_local_at_build_and_runtime():
         assert "'DM Sans', ui-sans-serif, system-ui, sans-serif" in css
         assert "'Instrument Serif', 'Times New Roman', serif" in css
         assert "'JetBrains Mono', 'SF Mono', 'Fira Code', monospace" in css
+
+
+def test_pyinstaller_data_inputs_contain_the_complete_carrier_contract():
+    """Evaluate the actual spec's data inputs without running a freeze/build."""
+    import ast
+
+    from ups_mcp.openapi_registry import DEFAULT_SPEC_FILES
+
+    tree = ast.parse((REPOSITORY_ROOT / "shipagent-core.spec").read_text())
+    analysis = next(
+        node for node in tree.body
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "Analysis"
+    )
+    preamble = ast.Module(body=tree.body[:tree.body.index(analysis)], type_ignores=[])
+    namespace = {"SPECPATH": str(REPOSITORY_ROOT)}
+    exec(compile(preamble, "shipagent-core.spec", "exec"), namespace)
+    data_expression = next(k.value for k in analysis.value.keywords if k.arg == "datas")
+    data_inputs = eval(compile(ast.Expression(data_expression), "shipagent-core.spec", "eval"), namespace)
+    bundled = {
+        Path(source).name for source, destination in data_inputs
+        if Path(destination).as_posix() == "ups_mcp/specs"
+    }
+    assert bundled == set(DEFAULT_SPEC_FILES)

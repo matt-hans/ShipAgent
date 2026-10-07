@@ -768,15 +768,16 @@ MCPServerConfig(
 
 **File:** `src/services/ups_specs.py`
 
-Manages OpenAPI spec files that the UPS MCP server needs:
+Resolves all seven OpenAPI files directly from the pinned `ups_mcp/specs`
+package resources: Rating, Shipping, TimeInTransit, LandedCost, Paperless, Locator
+and Pickup. `ensure_ups_specs_dir()` checks completeness and returns that
+read-only directory. It never writes into the application installation or
+creates placeholder operations. The PyInstaller spec collects these same files.
 
-| Spec File | Source | Purpose |
-|-----------|--------|---------|
-| `Rating.yaml` | `docs/rating.yaml` | Rating API schema |
-| `Shipping.yaml` | `docs/shipping.yaml` | Shipping API schema |
-| `TimeInTransit.yaml` | Generated placeholder | Time-in-transit (stub) |
-
-When new UPS MCP tools require additional spec files, add them to `ensure_ups_specs_dir()`.
+The repository `docs/*.yaml` remain reference material. Package routing and
+parameter contracts preserve their existing interpreted operations; the real
+TimeInTransit resource is required. A future UPS fork update must update the
+pinned dependency and pass resource/registry/packaging tests together.
 
 ---
 
