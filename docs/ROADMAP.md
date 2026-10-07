@@ -1,6 +1,6 @@
 # ShipAgent development roadmap
 
-Updated 2026-10-03. This is the entry point for current development priorities,
+Updated 2026-10-07. This is the entry point for current development priorities,
 implemented milestones, and the specifications that govern remaining work.
 ShipAgent owns conversation orchestration and deterministic shipping workflows;
 model providers and client surfaces connect through adapters.
@@ -15,7 +15,26 @@ maps issues #31–#41 to the sequential foundation, four parallel workflow lanes
 SDK cutover and final verification. Native GitHub blocking links define which
 tickets can start.
 
-## Current baseline
+## Current runtime cutover
+
+The integrated baseline is `4f42d827` (PR #61 / issue #38). Issues #36, #37,
+#38 and #39 are merged; the parent-verified post-merge smoke passed 317 tests.
+Issue #40 switches the default/legacy Claude selectors to the shared Anthropic
+adapter and removes SDK client/hooks/dependency/probe/collection coupling.
+See [runtime setup and migration](runtime/sdk-free-runtime.md) and the
+[exhaustive coverage migration](runtime/sdk-removal-coverage.md).
+
+The cutover remains a review candidate until its PR is merged. Issue #41 still
+owns clean lockfile installation, complete SDK-free release validation and
+frozen desktop startup. No cloud connector completion, live shipment or offline
+model inference is implied. Issue #51 remains independently deferred.
+
+## Historical baseline evidence
+
+The following baseline/earlier milestone notes record the state when written;
+SDK compatibility references here are historical, superseded by the cutover
+above and its migration guide.
+
 
 Issue #32 establishes the validated baseline in
 [PR #54](https://github.com/matt-hans/ShipAgent/pull/54) (draft; merge pending

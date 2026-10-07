@@ -1,6 +1,6 @@
 ## Responsibility
 
-The Workflow Tool Registry component owns the model-visible and provider-exported tool backbone. `src/orchestrator/agent/tools/__init__.py` imports concrete tool handlers from `contacts.py`, `data.py`, `documents.py`, `interactive.py`, `pickup.py`, `pipeline.py`, `tracking.py`, and `ups.py`, then returns `ToolDefinition` dictionaries used by both the Claude SDK adapter and the provider-neutral runtime. `src/services/conversation_runtime/tool_catalog.py` wraps those definitions into `WorkflowToolDefinition` objects with mode, side-effect, confirmation, result projection, artifact event, timeout, retry, and parallel-read metadata.
+The Workflow Tool Registry component owns the model-visible and provider-exported tool backbone. `src/orchestrator/agent/tools/__init__.py` imports concrete tool handlers from `contacts.py`, `data.py`, `documents.py`, `interactive.py`, `pickup.py`, `pipeline.py`, `tracking.py`, and `ups.py`, then returns `ToolDefinition` dictionaries used by the provider-neutral conversation runtime. `src/services/conversation_runtime/tool_catalog.py` wraps those definitions into `WorkflowToolDefinition` objects with mode, side-effect, confirmation, result projection, artifact event, timeout, retry, and parallel-read metadata.
 
 The canonical hosted/provider contract lives in `src/registry/`: Pydantic `ToolContract` and `RegistrySchema` models, public/private tool catalogs, and JSON export helpers. `src/provider_adapters/` projects registry contracts to MCP, OpenAI app tools, Microsoft OpenAPI operations, and Gemini function declarations. `scripts/generate_provider_artifacts.py` writes checked-in provider artifacts under `generated/provider_artifacts/`. `src/hosted_mcp/server.py` binds registry tools with supplied handlers into a FastMCP hosted server.
 
@@ -17,7 +17,6 @@ Evidence: `tests/services/conversation_runtime/test_tool_catalog.py`, `tests/orc
 ## Write Variables
 
 - Runtime `WorkflowToolDefinition` instances and `ProviderToolDeclaration` objects consumed by neutral providers.
-- Claude SDK `SdkMcpTool` objects and in-process orchestrator MCP server registrations.
 - Provider artifacts: `registry.json`, `generic_mcp_tools.json`, `claude_remote_mcp_public_tools.json`, `openai_apps_public_tools.json`, `openai_apps_tools.json`, `microsoft_openapi_operations.json`, and `gemini_functions.json`.
 - Hosted FastMCP `BoundRegistryTool` instances with structured content and JSON text results.
 - Provider-specific descriptor fields such as MCP annotations, OpenAI `_meta.ui.resourceUri`, Gemini parameter objects, and Microsoft OpenAPI operations.
@@ -38,7 +37,6 @@ Evidence: `tests/services/conversation_runtime/test_tool_catalog.py`, `tests/orc
 flowchart TD
     Handlers[orchestrator.agent.tools handlers] -->|read definitions| Catalog[WorkflowToolCatalog]
     Catalog -->|write provider declarations| Runtime[Conversation runtimes]
-    Catalog -->|write SDK tools| Claude[Claude SDK adapter]
     Registry[Canonical registry] -->|read tool contracts| ExportFilter[exportable_tools]
     ExportFilter -->|write MCP descriptors| MCP[MCP projection]
     ExportFilter -->|write app/function specs| Providers[OpenAI Microsoft Gemini]

@@ -27,7 +27,7 @@ workflow and tool backbone. They do not own shipping business logic.
   account identity, provider connection persistence, execution target abstraction,
   startup security gates, and public tool result projection.
 - `src/services/conversation_runtime/` - Provider-neutral conversation runtime:
-  normalized message/tool contracts, OpenAI/Gemini adapters, fake-provider tests,
+  normalized message/tool contracts, Anthropic/OpenAI/Gemini adapters, fake-provider tests,
   local tool dispatch, policy gates, and provider-safe result projection.
 - `src/hosted/ups_boundary/` - Hosted UPS MCP boundary contract, fixtures,
   readiness reporting, and validator helpers.
@@ -64,13 +64,12 @@ workflow and tool backbone. They do not own shipping business logic.
   routes or components.
 - Preserve auditability. New decisions, confirmations, tool calls, or execution
   paths should have tests and redaction-aware logging where appropriate.
-- Conversation providers are selected with `AGENT_MODEL`: Claude-style model names
-  use the Claude Agent SDK compatibility path; `openai:*` and `gemini:*` use the
-  provider-neutral runtime. Keep all providers on shared workflow tools and
-  provider-safe result projections. `SHIPAGENT_AGENT_RUNTIME=anthropic_messages`
-  explicitly opts Claude models (`ANTHROPIC_API_KEY`) into the shared-runtime
-  Anthropic Messages adapter; the legacy default stays on the SDK path until the
-  cutover (#40).
+- Conversation providers are selected with `AGENT_MODEL` (legacy environment
+  alias `ANTHROPIC_MODEL`) or persisted Settings. Claude-style and `anthropic:*`,
+  `openai:*`, and `gemini:*` models all use the ShipAgent-owned shared runtime.
+  `SHIPAGENT_AGENT_RUNTIME=auto` selects by model; `claude`/`claude_sdk`/`anthropic` are
+  deprecated Anthropic adapter aliases only. Unknown/mismatched configuration
+  fails closed. See `docs/runtime/sdk-free-runtime.md` for migration and tests.
 - Raw UPS MCP calls are not provider-neutral behavior. Expose UPS capabilities
   through workflow wrappers such as `rate_shipment`, `validate_address`,
   `get_time_in_transit`, tracking, pickup, landed-cost, and preview/execute tools.

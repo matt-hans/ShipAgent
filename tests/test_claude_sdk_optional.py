@@ -9,10 +9,11 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_required_install_includes_claude_agent_sdk():
+def test_required_install_excludes_claude_agent_sdk():
     pyproject = (PROJECT_ROOT / "pyproject.toml").read_text()
 
-    assert "claude-agent-sdk" in pyproject
+    assert "claude-agent-sdk" not in pyproject
+    assert "claude-agent-sdk" not in (PROJECT_ROOT / "uv.lock").read_text()
 
 
 def test_required_install_includes_openai_and_gemini_sdks():
@@ -31,7 +32,7 @@ def test_required_install_does_not_include_anthropic_sdk():
 def test_backend_start_script_probes_model_runtime_sdks():
     script = (PROJECT_ROOT / "scripts" / "start-backend.sh").read_text()
 
-    assert "claude_agent_sdk" in script
+    assert "claude_agent_sdk" not in script
     assert "openai" in script
     assert "google.genai" in script
 
@@ -39,7 +40,7 @@ def test_backend_start_script_probes_model_runtime_sdks():
 def test_pyinstaller_spec_includes_model_runtime_hidden_imports():
     spec = (PROJECT_ROOT / "shipagent-core.spec").read_text()
 
-    assert "'claude_agent_sdk'" in spec
+    assert "'claude_agent_sdk'" not in spec
     assert "'openai'" in spec
     assert "'google.genai'" in spec
 
@@ -59,23 +60,30 @@ def test_conversation_runtime_package_does_not_import_claude_sdk_or_hooks():
     assert "src.orchestrator.agent.hooks" not in source
 
 
-def test_active_non_compat_source_does_not_import_claude_agent_sdk_after_runtime_split():
-    source_roots = [PROJECT_ROOT / "src"]
-    optional_adapter_paths = {
-        PROJECT_ROOT / "src" / "orchestrator" / "agent" / "client.py",
-        PROJECT_ROOT / "src" / "orchestrator" / "agent" / "hooks.py",
-    }
-    combined = []
-    for root in source_roots:
-        for path in root.rglob("*.py"):
-            if "__pycache__" in path.parts:
-                continue
-            if path in optional_adapter_paths:
-                continue
-            combined.append(path.read_text())
-    source = "\n".join(combined)
+def test_all_production_source_is_sdk_free_without_exemptions():
+    forbidden = (
+        "claude_agent_sdk",
+        "ClaudeAgentOptions",
+        "HookMatcher",
+        "OrchestrationAgent",
+        "hookSpecificOutput",
+    )
+    for path in (PROJECT_ROOT / "src").rglob("*.py"):
+        source = path.read_text()
+        assert not any(marker in source for marker in forbidden), str(path)
+    for removed in ("client.py", "hooks.py"):
+        assert not (PROJECT_ROOT / "src" / "orchestrator" / "agent" / removed).exists()
 
-    assert "claude_agent_sdk" not in source
+
+def test_cli_diagnostic_is_provider_neutral():
+    from typer.testing import CliRunner
+
+    from src.cli.main import app
+
+    result = CliRunner().invoke(app, ["version"])
+    assert result.exit_code == 0
+    assert "ShipAgent-owned" in result.stdout
+    assert "Claude SDK" not in result.stdout
 
 
 def test_conversation_runtime_imports_do_not_load_claude_sdk_or_hooks():
@@ -123,8 +131,6 @@ def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
 builtins.__import__ = guarded_import
 
 import src.api.main  # noqa: F401
-import src.orchestrator.agent.client  # noqa: F401
-import src.orchestrator.agent.hooks  # noqa: F401
 import src.services.conversation_agent  # noqa: F401
 """
     result = subprocess.run(

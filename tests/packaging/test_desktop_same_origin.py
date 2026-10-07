@@ -277,3 +277,30 @@ def test_bundle_smoke_requires_data_source_status_and_excel_import():
     assert '"row_count": *2[^0-9]' in bundler
     # Hermetic: synthetic workbook in the throwaway data dir.
     assert "$SMOKE_DATA_DIR/smoke.xlsx" in bundler
+
+
+def test_frontend_defaults_to_local_task_execution():
+    """Installed dependencies must suffice without fetching a cloud task runner."""
+    config = json.loads((REPOSITORY_ROOT / "shipagent-frontend/nx.json").read_text())
+    assert "nxCloudId" not in config
+    assert "nxCloudAccessToken" not in config
+    assert not any(
+        item.get("runner") in {"nx-cloud", "@nrwl/nx-cloud"}
+        for item in config.get("tasksRunnerOptions", {}).values()
+    )
+
+
+def test_frontend_fonts_are_local_at_build_and_runtime():
+    """A normal production build and local UI never fetch hosted fonts."""
+    frontend = REPOSITORY_ROOT / "shipagent-frontend"
+    for root in (frontend / "apps", frontend / "libs"):
+        for path in root.rglob("*.css"):
+            css = path.read_text()
+            assert not re.search(r"@import\s+(?:url\(\s*)?[\"']?(?:https?:)?//", css, re.I), path
+            for declaration in re.findall(r"@font-face\s*\{[^}]*\}", css, re.I):
+                assert not re.search(r"url\(\s*[\"']?(?:https?:)?//", declaration, re.I), path
+    for relative in ("apps/shell/src/styles.css", "libs/shared/ui/src/styles/tokens.css"):
+        css = (frontend / relative).read_text()
+        assert "'DM Sans', ui-sans-serif, system-ui, sans-serif" in css
+        assert "'Instrument Serif', 'Times New Roman', serif" in css
+        assert "'JetBrains Mono', 'SF Mono', 'Fira Code', monospace" in css

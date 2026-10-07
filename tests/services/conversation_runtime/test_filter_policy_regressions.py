@@ -1,34 +1,34 @@
-"""Tests for filter enforcement hooks (deny raw SQL, validate filter_spec)."""
-
-import base64
-import hashlib
-import hmac
-import json
-import time
+"""Migrated filter-policy regressions: nested SQL, structure and reuse."""
 
 import pytest
 
-from src.orchestrator.agent.hooks import (
-    deny_raw_sql_in_filter_tools,
-    validate_filter_spec_on_pipeline,
-    validate_intent_on_resolve,
-)
+from src.services.conversation_runtime.models import ProviderToolCall
+from src.services.conversation_runtime.policy import RuntimePolicyEngine
+from src.services.policy_decision import PolicyDecision, PolicyDenialCode
 
 
-def _is_denied(result: dict) -> bool:
-    """Check if a hook result is a denial."""
-    hook_output = result.get("hookSpecificOutput", {})
-    return hook_output.get("permissionDecision") == "deny"
+async def _check(data: dict, *, tool_use_id: str) -> PolicyDecision:
+    return await RuntimePolicyEngine(interactive_shipping=False).check_pre_tool(
+        ProviderToolCall(
+            call_id=tool_use_id,
+            tool_name=data["tool_name"],
+            parsed_input=data["tool_input"],
+        )
+    )
 
 
-def _denial_reason(result: dict) -> str:
-    """Extract the denial reason from a hook result."""
-    return result.get("hookSpecificOutput", {}).get("permissionDecisionReason", "")
+def _is_denied(result: PolicyDecision) -> bool:
+    return not result.allowed
+
+
+def _denial_reason(result: PolicyDecision) -> str:
+    return result.reason
 
 
 # -------------------------------------------------------------------------
 # deny_raw_sql_in_filter_tools
 # -------------------------------------------------------------------------
+
 
 class TestDenyRawSqlInFilterTools:
     """Deny raw SQL keys in filter-related tool payloads."""
@@ -36,50 +36,52 @@ class TestDenyRawSqlInFilterTools:
     @pytest.mark.anyio
     async def test_denies_where_clause_in_pipeline(self):
         """Denies where_clause key in ship_command_pipeline payload."""
-        result = await deny_raw_sql_in_filter_tools(
-            {"tool_name": "ship_command_pipeline", "tool_input": {"where_clause": "state='CA'"}},
+        result = await _check(
+            {
+                "tool_name": "ship_command_pipeline",
+                "tool_input": {"where_clause": "state='CA'"},
+            },
             tool_use_id="test-1",
-            context=None,
         )
         assert _is_denied(result)
-        assert "where_clause" in _denial_reason(result).lower() or "raw SQL" in _denial_reason(result)
+        assert "where_clause" in _denial_reason(
+            result
+        ).lower() or "raw SQL" in _denial_reason(result)
 
     @pytest.mark.anyio
     async def test_denies_sql_key_in_fetch_rows(self):
         """Denies sql key in fetch_rows payload."""
-        result = await deny_raw_sql_in_filter_tools(
+        result = await _check(
             {"tool_name": "fetch_rows", "tool_input": {"sql": "SELECT * FROM t"}},
             tool_use_id="test-2",
-            context=None,
         )
         assert _is_denied(result)
 
     @pytest.mark.anyio
     async def test_denies_top_level_query_key(self):
         """Denies top-level query key."""
-        result = await deny_raw_sql_in_filter_tools(
-            {"tool_name": "resolve_filter_intent", "tool_input": {"query": "DROP TABLE"}},
+        result = await _check(
+            {
+                "tool_name": "resolve_filter_intent",
+                "tool_input": {"query": "DROP TABLE"},
+            },
             tool_use_id="test-3",
-            context=None,
         )
         assert _is_denied(result)
 
     @pytest.mark.anyio
     async def test_denies_deeply_nested_where_clause(self):
         """Denies where_clause buried inside nested dicts."""
-        result = await deny_raw_sql_in_filter_tools(
+        result = await _check(
             {
                 "tool_name": "ship_command_pipeline",
                 "tool_input": {
                     "filter_spec": {
-                        "root": {
-                            "conditions": [{"where_clause": "state='CA'"}]
-                        }
+                        "root": {"conditions": [{"where_clause": "state='CA'"}]}
                     }
                 },
             },
             tool_use_id="test-3a",
-            context=None,
         )
         assert _is_denied(result)
         assert "where_clause" in _denial_reason(result).lower()
@@ -87,15 +89,12 @@ class TestDenyRawSqlInFilterTools:
     @pytest.mark.anyio
     async def test_denies_sql_in_list_of_dicts(self):
         """Denies banned key inside a list of dicts."""
-        result = await deny_raw_sql_in_filter_tools(
+        result = await _check(
             {
                 "tool_name": "fetch_rows",
-                "tool_input": {
-                    "filters": [{"raw_sql": "1=1; DROP TABLE orders"}]
-                },
+                "tool_input": {"filters": [{"raw_sql": "1=1; DROP TABLE orders"}]},
             },
             tool_use_id="test-3b",
-            context=None,
         )
         assert _is_denied(result)
         assert "raw_sql" in _denial_reason(result).lower()
@@ -103,20 +102,21 @@ class TestDenyRawSqlInFilterTools:
     @pytest.mark.anyio
     async def test_allows_filter_spec(self):
         """Allows filter_spec key without denial."""
-        result = await deny_raw_sql_in_filter_tools(
-            {"tool_name": "ship_command_pipeline", "tool_input": {"filter_spec": {"root": {}}}},
+        result = await _check(
+            {
+                "tool_name": "ship_command_pipeline",
+                "tool_input": {"filter_spec": {"root": {}}},
+            },
             tool_use_id="test-4",
-            context=None,
         )
         assert not _is_denied(result)
 
     @pytest.mark.anyio
     async def test_ignores_unrelated_tools(self):
         """Does NOT trigger for unrelated tools like create_job."""
-        result = await deny_raw_sql_in_filter_tools(
+        result = await _check(
             {"tool_name": "create_job", "tool_input": {"where_clause": "anything"}},
             tool_use_id="test-5",
-            context=None,
         )
         assert not _is_denied(result)
 
@@ -124,6 +124,7 @@ class TestDenyRawSqlInFilterTools:
 # -------------------------------------------------------------------------
 # validate_intent_on_resolve
 # -------------------------------------------------------------------------
+
 
 class TestValidateIntentOnResolve:
     """Validate FilterIntent structure before resolution."""
@@ -139,10 +140,12 @@ class TestValidateIntentOnResolve:
                 ],
             }
         }
-        result = await validate_intent_on_resolve(
-            {"tool_name": "resolve_filter_intent", "tool_input": {"intent": bad_intent}},
+        result = await _check(
+            {
+                "tool_name": "resolve_filter_intent",
+                "tool_input": {"intent": bad_intent},
+            },
             tool_use_id="test-6",
-            context=None,
         )
         assert _is_denied(result)
 
@@ -161,10 +164,12 @@ class TestValidateIntentOnResolve:
                 ],
             }
         }
-        result = await validate_intent_on_resolve(
-            {"tool_name": "resolve_filter_intent", "tool_input": {"intent": good_intent}},
+        result = await _check(
+            {
+                "tool_name": "resolve_filter_intent",
+                "tool_input": {"intent": good_intent},
+            },
             tool_use_id="test-7",
-            context=None,
         )
         assert not _is_denied(result)
 
@@ -172,29 +177,6 @@ class TestValidateIntentOnResolve:
 # -------------------------------------------------------------------------
 # validate_filter_spec_on_pipeline
 # -------------------------------------------------------------------------
-
-_TEST_SECRET = "a" * 32
-
-
-def _make_valid_token(
-    schema_signature: str = "sig123",
-    dict_version: str = "1.0.0",
-    spec_hash: str = "abc",
-    ttl: int = 600,
-    resolution_status: str = "RESOLVED",
-) -> str:
-    """Create a valid HMAC-signed token for testing."""
-    payload = {
-        "schema_signature": schema_signature,
-        "canonical_dict_version": dict_version,
-        "resolved_spec_hash": spec_hash,
-        "resolution_status": resolution_status,
-        "expires_at": time.time() + ttl,
-    }
-    payload_json = json.dumps(payload, sort_keys=True)
-    sig = hmac.new(_TEST_SECRET.encode(), payload_json.encode(), hashlib.sha256).hexdigest()
-    payload["signature"] = sig
-    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
 
 
 def _filter_spec_with_confirmation() -> dict:
@@ -214,7 +196,11 @@ def _filter_spec_resolved() -> dict:
         "root": {
             "logic": "AND",
             "conditions": [
-                {"column": "state", "operator": "eq", "operands": [{"type": "string", "value": "CA"}]},
+                {
+                    "column": "state",
+                    "operator": "eq",
+                    "operands": [{"type": "string", "value": "CA"}],
+                },
             ],
         },
         "schema_signature": "sig123",
@@ -225,21 +211,20 @@ def _filter_spec_resolved() -> dict:
 class TestValidateFilterSpecOnPipeline:
     """Validate simplified filter_spec structural check on pipeline and fetch_rows.
 
-    Token HMAC/replay/expiry enforcement removed for prototype simplicity.
-    Only validates that filter_spec has a root dict.
+    Structural policy decisions do not mint confirmation authority; trusted
+    confirmation remains the workflow service's responsibility.
     """
 
     @pytest.mark.anyio
     async def test_allows_filter_spec_with_root(self):
         """Allows filter_spec with root field regardless of token."""
         spec = _filter_spec_with_confirmation()
-        result = await validate_filter_spec_on_pipeline(
+        result = await _check(
             {
                 "tool_name": "ship_command_pipeline",
                 "tool_input": {"filter_spec": spec},
             },
             tool_use_id="test-8",
-            context=None,
         )
         assert not _is_denied(result)
 
@@ -247,80 +232,74 @@ class TestValidateFilterSpecOnPipeline:
     async def test_allows_resolved_spec_without_token(self):
         """Allows RESOLVED spec even without resolution_token (simplified)."""
         spec = _filter_spec_resolved()
-        result = await validate_filter_spec_on_pipeline(
+        result = await _check(
             {
                 "tool_name": "ship_command_pipeline",
                 "tool_input": {"filter_spec": spec},
             },
             tool_use_id="test-9",
-            context=None,
         )
         assert not _is_denied(result)
 
     @pytest.mark.anyio
     async def test_denies_filter_spec_without_root(self):
         """Denies filter_spec missing root field."""
-        result = await validate_filter_spec_on_pipeline(
+        result = await _check(
             {
                 "tool_name": "ship_command_pipeline",
                 "tool_input": {"filter_spec": {"status": "RESOLVED"}},
             },
             tool_use_id="test-10",
-            context=None,
         )
         assert _is_denied(result)
-        assert "root" in _denial_reason(result).lower()
+        assert result.code is PolicyDenialCode.INVALID_FILTER_STRUCTURE
 
     @pytest.mark.anyio
     async def test_allows_repeated_calls_same_spec(self):
         """Allows the same filter_spec to be used multiple times (no replay prevention)."""
         spec = _filter_spec_resolved()
         for i in range(3):
-            result = await validate_filter_spec_on_pipeline(
+            result = await _check(
                 {
                     "tool_name": "ship_command_pipeline",
                     "tool_input": {"filter_spec": spec},
                 },
                 tool_use_id=f"test-11-{i}",
-                context=None,
             )
             assert not _is_denied(result)
 
     @pytest.mark.anyio
     async def test_ignores_unrelated_tools(self):
         """Does not fire for unrelated tools."""
-        result = await validate_filter_spec_on_pipeline(
+        result = await _check(
             {
                 "tool_name": "create_job",
                 "tool_input": {"filter_spec": {"status": "NEEDS_CONFIRMATION"}},
             },
             tool_use_id="test-16",
-            context=None,
         )
         assert not _is_denied(result)
 
     @pytest.mark.anyio
     async def test_allows_all_rows(self):
         """Allows pipeline with all_rows=true and no filter_spec."""
-        result = await validate_filter_spec_on_pipeline(
+        result = await _check(
             {
                 "tool_name": "ship_command_pipeline",
                 "tool_input": {"all_rows": True},
             },
             tool_use_id="test-17",
-            context=None,
         )
         assert not _is_denied(result)
 
     @pytest.mark.anyio
     async def test_allows_no_filter_spec(self):
         """Allows when no filter_spec present (pipeline uses cache)."""
-        result = await validate_filter_spec_on_pipeline(
+        result = await _check(
             {
                 "tool_name": "ship_command_pipeline",
                 "tool_input": {"command": "ship all"},
             },
             tool_use_id="test-18",
-            context=None,
         )
         assert not _is_denied(result)

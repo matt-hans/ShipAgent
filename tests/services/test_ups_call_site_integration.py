@@ -50,31 +50,6 @@ class TestGetUpsMcpConfig:
             os.environ.pop("UPS_CLIENT_SECRET", None)
 
 
-class TestCreateMcpServersConfig:
-    """Tests for create_mcp_servers_config with ups_credentials."""
-
-    def test_ups_key_omitted_when_no_creds(self):
-        """UPS key omitted from config when no credentials."""
-        from src.orchestrator.agent.config import create_mcp_servers_config
-
-        for var in ("UPS_CLIENT_ID", "UPS_CLIENT_SECRET"):
-            os.environ.pop(var, None)
-        configs = create_mcp_servers_config(ups_credentials=None)
-        assert "ups" not in configs
-        assert "data" in configs
-
-    def test_ups_key_present_with_creds(self):
-        """UPS key present when typed credentials provided."""
-        from src.orchestrator.agent.config import create_mcp_servers_config
-        from src.services.connection_types import UPSCredentials
-
-        creds = UPSCredentials(
-            client_id="id", client_secret="sec",
-            environment="test", base_url="https://wwwcie.ups.com",
-        )
-        configs = create_mcp_servers_config(ups_credentials=creds)
-        assert "ups" in configs
-
 
 class TestGatewayProviderBuild:
     """Tests for _build_ups_gateway using runtime_credentials."""

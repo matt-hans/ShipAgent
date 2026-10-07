@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import builtins
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 
@@ -160,19 +159,12 @@ def test_claude_runtime_model_mismatch_fails_before_adapter_import(
     assert "does not match selected model provider" in agent.reason
 
 
-def test_claude_runtime_fails_closed_when_optional_sdk_unavailable(
-    monkeypatch: pytest.MonkeyPatch,
-):
+def test_claude_runtime_requires_anthropic_key(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SHIPAGENT_AGENT_RUNTIME", "claude")
-
-    with patch(
-        "src.orchestrator.agent.client.is_claude_sdk_available",
-        return_value=False,
-    ):
-        agent = create_conversation_agent(model="claude-haiku-4-5-20251001")
-
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    agent = create_conversation_agent(model="claude-haiku-4-5-20251001")
     assert isinstance(agent, UnavailableConversationAgent)
-    assert "Claude SDK runtime is not installed" in agent.reason
+    assert "ANTHROPIC_API_KEY" in agent.reason
 
 
 # ---- explicit Anthropic Messages runtime selection --------------------------
@@ -245,13 +237,70 @@ def test_anthropic_messages_runtime_alias_error_is_actionable(
 
 
 @pytest.mark.parametrize("runtime", ["auto", "claude", "claude_sdk", "anthropic"])
-def test_legacy_claude_selectors_never_select_the_messages_adapter(
+def test_legacy_claude_selectors_use_shared_messages_adapter(
     monkeypatch: pytest.MonkeyPatch, runtime: str
 ):
-    """Legacy default stays on the SDK path until the cutover."""
+    """Compatibility selectors must never re-enable the removed SDK."""
     monkeypatch.setenv("SHIPAGENT_AGENT_RUNTIME", runtime)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
 
     agent = create_conversation_agent(model="claude-haiku-4-5-20251001")
 
-    assert agent.__class__.__name__ != "ConversationRuntimeSession"
+    assert agent.__class__.__name__ == "ConversationRuntimeSession"
+    assert agent._provider.capabilities.provider == "anthropic"
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        None,
+        "claude-haiku-4-5-20251001",
+        "anthropic:claude-haiku-4-5-20251001",
+        "anthropic:default",
+    ],
+)
+def test_default_claude_selection_uses_shared_runtime(monkeypatch, model):
+    monkeypatch.delenv("SHIPAGENT_AGENT_RUNTIME", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    monkeypatch.delenv("AGENT_MODEL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+    agent = create_conversation_agent(model=model)
+    assert agent.__class__.__name__ == "ConversationRuntimeSession"
+    assert agent._provider.capabilities.provider == "anthropic"
+    assert agent._provider.capabilities.model == "claude-haiku-4-5-20251001"
+
+
+@pytest.mark.parametrize(
+    "runtime",
+    ["auto", "claude", "claude_sdk", "anthropic", "openai", "gemini", "unknown"],
+)
+def test_unknown_model_fails_closed(monkeypatch, runtime):
+    for name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"):
+        monkeypatch.setenv(name, "test-key")
+    agent = create_conversation_agent(model="mystery-1", runtime=runtime)
+    assert isinstance(agent, UnavailableConversationAgent)
+
+
+@pytest.mark.parametrize("preferred", [None, "claude-sonnet-4-6"])
+def test_legacy_model_environment_alias(monkeypatch, preferred):
+    monkeypatch.setenv("SHIPAGENT_AGENT_RUNTIME", "auto")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "claude-opus-4-6")
+    monkeypatch.delenv("AGENT_MODEL", raising=False)
+    if preferred:
+        monkeypatch.setenv("AGENT_MODEL", preferred)
+    agent = create_conversation_agent()
+    assert agent._provider.capabilities.model == (preferred or "claude-opus-4-6")
+
+
+@pytest.mark.parametrize("runtime", ["claude", "claude_sdk", "anthropic"])
+def test_legacy_runtime_alias_warns_without_changing_provider(
+    monkeypatch, caplog, runtime
+):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    agent = create_conversation_agent(
+        runtime=runtime, model="claude-haiku-4-5-20251001"
+    )
+    assert agent._provider.capabilities.provider == "anthropic"
+    assert "deprecated" in caplog.text
+    assert "anthropic_messages" in caplog.text

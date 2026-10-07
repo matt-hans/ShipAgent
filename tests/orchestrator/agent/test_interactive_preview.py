@@ -1697,23 +1697,22 @@ class TestWriteBackGuard:
 
 
 # ---------------------------------------------------------------------------
-# Hook enforcement
+# Policy enforcement
 # ---------------------------------------------------------------------------
 
 
-class TestHookDeniesCreateShipmentInteractive:
+class TestPolicyDeniesCreateShipmentInteractive:
     """Verify create_shipment is denied in interactive mode."""
 
     @pytest.mark.asyncio
-    async def test_hook_denies_create_shipment_in_interactive_mode(self):
-        """Hook returns deny with correct message for interactive mode."""
-        from src.orchestrator.agent.hooks import create_shipping_hook
+    async def test_policy_denies_create_shipment_in_interactive_mode(self):
+        """Policy denies with correct message for interactive mode."""
+        from src.services.conversation_runtime.models import ProviderToolCall
+        from src.services.conversation_runtime.policy import RuntimePolicyEngine
 
-        hook = create_shipping_hook(interactive_shipping=True)
-        result = await hook(
-            {"tool_name": "mcp__ups__create_shipment", "tool_input": {"request_body": {}}},
-            "test-id",
-            None,
+        result = await RuntimePolicyEngine(interactive_shipping=True).check_pre_tool(
+            ProviderToolCall(call_id="test-id", tool_name="mcp__ups__create_shipment",
+                             parsed_input={"request_body": {}})
         )
-        assert "deny" in str(result)
-        assert "preview_interactive_shipment" in str(result)
+        assert result.allowed is False
+        assert "preview_interactive_shipment" in result.reason
