@@ -12,19 +12,19 @@ from src.control_plane.redis_keys import RedisKey, RedisTtl
 def metadata(**changes):
     from src.control_plane.audit.authorization_ledger import AuthorizationMetadata
 
-    values = dict(
-        account_id=str(uuid4()),
-        provider_connection_id=str(uuid4()),
-        approval_request_id="sa_approval_request_" + "a" * 32,
-        preview_hash="b" * 64,
-        purchase_scope_hash="c" * 64,
-        authorized_amount_minor=1200,
-        currency="USD",
-        approving_subject_hash="d" * 64,
-        execution_target_fingerprint_hash="e" * 64,
-        idempotency_key_hash="f" * 64,
-        correlation_id="sa_correlation_" + "a" * 32,
-    )
+    values = {
+        "account_id": str(uuid4()),
+        "provider_connection_id": str(uuid4()),
+        "approval_request_id": "sa_approval_request_" + "a" * 32,
+        "preview_hash": "b" * 64,
+        "purchase_scope_hash": "c" * 64,
+        "authorized_amount_minor": 1200,
+        "currency": "USD",
+        "approving_subject_hash": "d" * 64,
+        "execution_target_fingerprint_hash": "e" * 64,
+        "idempotency_key_hash": "f" * 64,
+        "correlation_id": "sa_correlation_" + "a" * 32,
+    }
     values.update(changes)
     return AuthorizationMetadata(**values)
 
@@ -53,15 +53,31 @@ def test_metadata_is_closed_immutable_and_not_a_capability():
         metadata(raw_rows=[{"name": "CUSTOMER_CANARY"}])
 
 
-@pytest.mark.parametrize("field", [
-    "account_id", "provider_connection_id", "approval_request_id", "preview_hash",
-    "purchase_scope_hash", "approving_subject_hash", "execution_target_fingerprint_hash",
-    "idempotency_key_hash", "correlation_id", "currency",
-])
-@pytest.mark.parametrize("canary", [
-    "person@example.invalid", "https://example.invalid/private", "Bearer secret-canary",
-    "1Z9999999999999999", '{"rows":["ROW_CANARY"],"label":"LABEL_CANARY"}',
-])
+@pytest.mark.parametrize(
+    "field",
+    [
+        "account_id",
+        "provider_connection_id",
+        "approval_request_id",
+        "preview_hash",
+        "purchase_scope_hash",
+        "approving_subject_hash",
+        "execution_target_fingerprint_hash",
+        "idempotency_key_hash",
+        "correlation_id",
+        "currency",
+    ],
+)
+@pytest.mark.parametrize(
+    "canary",
+    [
+        "person@example.invalid",
+        "https://example.invalid/private",
+        "Bearer secret-canary",
+        "1Z9999999999999999",
+        '{"rows":["ROW_CANARY"],"label":"LABEL_CANARY"}',
+    ],
+)
 def test_metadata_rejects_sensitive_free_text_without_echo(field, canary):
     with pytest.raises(ValueError) as error:
         metadata(**{field: canary})
@@ -74,10 +90,16 @@ def test_amount_is_a_bounded_strict_minor_unit_integer(value):
         metadata(authorized_amount_minor=value)
 
 
-@pytest.mark.parametrize("values", [
-    {"currency": None}, {"authorized_amount_minor": None}, {"currency": "usd"},
-    {"currency": "ßSD"}, {"currency": "ABC"},
-])
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"currency": None},
+        {"authorized_amount_minor": None},
+        {"currency": "usd"},
+        {"currency": "ßSD"},
+        {"currency": "ABC"},
+    ],
+)
 def test_amount_currency_pair_and_canonical_currency_are_required(values):
     with pytest.raises(ValueError):
         metadata(**values)
@@ -109,7 +131,9 @@ def test_retention_is_bounded_and_not_enabled_by_local_settings():
     assert settings.audit_retention_days == 90
     assert settings.retention_background_tasks_enabled is False
     for days in (30, 365):
-        assert ControlPlaneSettings(audit_retention_days=days).audit_retention_days == days
+        assert (
+            ControlPlaneSettings(audit_retention_days=days).audit_retention_days == days
+        )
     for days in (29, 366, True):
         with pytest.raises(ValidationError):
             ControlPlaneSettings(audit_retention_days=days)

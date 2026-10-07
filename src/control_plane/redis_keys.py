@@ -45,7 +45,9 @@ class RedisKey:
         return f"sa:poll:{connection_id}:{reference}"
 
     @staticmethod
-    def rate_limit(connection_id: str, rate_limit_class: str, minute_bucket: str) -> str:
+    def rate_limit(
+        connection_id: str, rate_limit_class: str, minute_bucket: str
+    ) -> str:
         return f"sa:rate:{connection_id}:{rate_limit_class}:{minute_bucket}"
 
     @staticmethod
@@ -72,8 +74,17 @@ class RedisKey:
     @staticmethod
     def ephemeral_patterns() -> tuple[str, ...]:
         return (
-            "sa:relay:device:*", "sa:relay:challenge:*", "sa:relay:session:*",
-            "sa:relay:heartbeat:*", "sa:relay:active-target:*", "sa:relay:nonce:*",
-            "sa:invocation:*", "sa:jobref:*", "sa:approval:request:*",
-            "sa:approval:grant:*", "sa:poll:*", "sa:rate:*", "sa:loop:*",
+            "sa:relay:device:*",
+            "sa:relay:challenge:*",
+            "sa:relay:session:*",
+            "sa:relay:heartbeat:*",
+            "sa:relay:active-target:*",
+            "sa:relay:nonce:*",
+            "sa:invocation:*",
+            "sa:jobref:*",
+            "sa:approval:request:*",
+            "sa:approval:grant:*",
+            "sa:poll:*",
+            "sa:rate:*",
+            "sa:loop:*",
         )
