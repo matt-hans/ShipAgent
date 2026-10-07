@@ -117,6 +117,7 @@ async def run_scenario(
     session_id: str = "acceptance",
     provider: Any | None = None,
     ups_gateway: Any | None = None,
+    data_gateway: Any | None = None,
 ) -> Observation:
     """Run one scripted turn through the shared conversation service.
 
@@ -132,6 +133,9 @@ async def run_scenario(
 
     ``ups_gateway`` is the deterministic gateway handed to real UPS workflow
     handlers (default: an inert ``MagicMock``); acquisitions are still counted.
+
+    ``data_gateway`` is the deterministic data-source gateway handed to real
+    data/pipeline handlers (default: an inert ``MagicMock``).
 
     ``provider`` substitutes a concrete adapter (e.g. an Anthropic client over a
     mocked transport) for the scripted fake; ``script`` is then ignored and
@@ -194,7 +198,7 @@ async def run_scenario(
 
     async def count_data_gateway() -> Any:
         observation.data_gateway_acquisitions += 1
-        return MagicMock()
+        return data_gateway if data_gateway is not None else MagicMock()
 
     async def count_ups_gateway() -> Any:
         observation.ups_gateway_acquisitions += 1
@@ -221,6 +225,10 @@ async def run_scenario(
         patch.object(WorkflowToolCatalog, "for_mode", classmethod(spying_for_mode)),
         patch("src.orchestrator.agent.tools.data.get_data_gateway", count_data_gateway),
         patch("src.orchestrator.agent.tools.core.get_data_gateway", count_data_gateway),
+        patch(
+            "src.orchestrator.agent.tools.pipeline.get_data_gateway",
+            count_data_gateway,
+        ),
         patch("src.services.gateway_provider.get_ups_gateway", count_ups_gateway),
     ):
         handler_gateway.return_value.get_source_info_typed = AsyncMock(

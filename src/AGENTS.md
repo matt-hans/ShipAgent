@@ -23,6 +23,10 @@ registry exports, and CLI.
   session loops. Policy gates return the vendor-free `PolicyDecision` /
   `PolicyDenialCode` from `src/services/policy_decision.py`; only
   `src/orchestrator/agent/hooks.py` projects them into Claude hook envelopes.
+  `batch_execute` is denied for every model call
+  (`EXECUTION_REQUIRES_USER_CONFIRMATION`): its `approved` argument is
+  model-supplied, so shipments are only purchased from the confirm route
+  after the user presses Confirm on a priced preview.
 - `src/orchestrator/agent/` owns the Claude Agent SDK compatibility adapter,
   dynamic system prompt, mode-aware tool registration, hooks, and deterministic
   tool handlers used by Claude and by neutral workflow wrappers.

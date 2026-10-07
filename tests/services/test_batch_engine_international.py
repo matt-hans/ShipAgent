@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.services.batch_acceptance_support import offline_batch_gateways  # noqa: F401
+
 
 class TestDollarsToCents:
     """Verify Decimal-based money conversion avoids float drift."""

@@ -49,12 +49,17 @@ class TestFileErrors:
             })
 
     @pytest.mark.asyncio
-    async def test_path_traversal_blocked(self, connected_data_mcp):
-        """Path traversal attempts should be blocked."""
-        with pytest.raises(RuntimeError):
-            await connected_data_mcp.call_tool("import_csv", {
-                "file_path": "../../../etc/passwd",
-            })
+    async def test_path_traversal_blocked(self, connected_data_mcp, tmp_path):
+        """A harmless sibling canary cannot escape the configured source root."""
+        outside = tmp_path.parent / f"{tmp_path.name}-outside.csv"
+        outside.write_text("value\nHARMLESS-OUTSIDE-CANARY\n")
+        try:
+            with pytest.raises(RuntimeError, match="Access denied"):
+                await connected_data_mcp.call_tool("import_csv", {
+                    "file_path": str(tmp_path / ".." / outside.name),
+                })
+        finally:
+            outside.unlink()
 
 
 @pytest.mark.integration

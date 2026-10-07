@@ -8,11 +8,15 @@ Callers provide a progress_callback to adapt events to their
 transport (SSE for HTTP, Rich for CLI, logging for watchdog).
 """
 
+import asyncio
 import json
 import logging
 import os
 from collections.abc import Callable, Coroutine
+from datetime import UTC, datetime
 from typing import Any
+
+from sqlalchemy import update
 
 from src.db.models import Job, JobRow, RowStatus
 from src.errors.terminal_diagnostics import project_terminal_diagnostic
@@ -28,6 +32,97 @@ logger = logging.getLogger(__name__)
 
 # Type for progress callback: async def(event_type: str, **kwargs) -> None
 ProgressCallback = Callable[..., Coroutine[Any, Any, None]]
+
+
+class BatchConfirmationError(ValueError):
+    """A safe domain rejection that an entry-point adapter can translate."""
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+def confirm_batch(
+    job_id: str,
+    db: Any,
+    *,
+    write_back_enabled: bool | None = None,
+    selected_service_code: str | None = None,
+) -> tuple[Job, str | None]:
+    """Validate the entire confirmation, then claim the pending job atomically."""
+    from src.services.batch_preview import get_priced_preview, preview_checksum
+    from src.services.ups_service_codes import resolve_service_code
+
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if job is None:
+        raise BatchConfirmationError("not_found", f"Job not found: {job_id}")
+    if job.status != "pending":
+        raise BatchConfirmationError(
+            "invalid",
+            f"Job cannot be confirmed. Current status: {job.status}. Only pending jobs can be confirmed.",
+        )
+    if selected_service_code is not None:
+        if not job.is_interactive:
+            raise BatchConfirmationError(
+                "invalid",
+                "selected_service_code is only valid for interactive shipment jobs.",
+            )
+        selected_service_code = resolve_service_code(
+            str(selected_service_code).strip(), default=""
+        )
+        if not selected_service_code:
+            raise BatchConfirmationError("invalid", "Invalid selected_service_code.")
+    if not job.preview_hash:
+        raise BatchConfirmationError(
+            "invalid",
+            "Job must be previewed before confirmation. Re-preview to review valid costs.",
+        )
+    rows = (
+        db.query(JobRow)
+        .filter(JobRow.job_id == job_id)
+        .order_by(JobRow.row_number)
+        .all()
+    )
+    if preview_checksum(rows) != job.preview_hash:
+        raise BatchConfirmationError(
+            "stale",
+            "Job data has changed since preview. Please re-preview before confirming.",
+        )
+    priced = get_priced_preview(db, job, rows)
+    if priced is None or not priced["confirmation_ready"]:
+        raise BatchConfirmationError(
+            "invalid",
+            "Job must be previewed with valid costs before confirmation. Please re-preview.",
+        )
+
+    claimed = db.execute(
+        update(Job)
+        .where(
+            Job.id == job_id,
+            Job.status == "pending",
+            Job.preview_hash == job.preview_hash,
+        )
+        .values(
+            status="running",
+            started_at=datetime.now(UTC).isoformat(),
+            write_back_enabled=bool(
+                (
+                    job.write_back_enabled
+                    if write_back_enabled is None
+                    else write_back_enabled
+                )
+                and not job.is_interactive
+            ),
+        )
+    )
+    db.commit()
+    if claimed.rowcount != 1:
+        raise BatchConfirmationError(
+            "invalid",
+            "Job cannot be confirmed (concurrent modification). Another request may have already confirmed this job.",
+        )
+    db.refresh(job)
+    return job, selected_service_code
 
 
 async def get_shipper_for_job(job: Job) -> dict:
@@ -184,23 +279,23 @@ async def execute_batch(
         job.international_row_count = progress.international_row_count
         return progress
 
-    shipper = await get_shipper_for_job(job)
+    try:
+        shipper = await get_shipper_for_job(job)
 
-    # Resolve UPS credentials via runtime adapter (DB priority, env fallback)
-    from src.services.runtime_credentials import resolve_ups_credentials
+        # Resolve UPS credentials via runtime adapter (DB priority, env fallback)
+        from src.services.runtime_credentials import resolve_ups_credentials
 
-    ups_creds = resolve_ups_credentials()
-    if ups_creds is None:
-        raise RuntimeError(
-            "No UPS credentials configured. Open Settings to connect UPS."
+        ups_creds = resolve_ups_credentials()
+        if ups_creds is None:
+            raise RuntimeError(
+                "No UPS credentials configured. Open Settings to connect UPS."
+            )
+
+        logger.info("Batch execution using UPS environment=%s", ups_creds.environment)
+        account_number = ups_creds.account_number or os.environ.get(
+            "UPS_ACCOUNT_NUMBER", ""
         )
 
-    logger.info("Batch execution using UPS environment=%s", ups_creds.environment)
-    account_number = ups_creds.account_number or os.environ.get(
-        "UPS_ACCOUNT_NUMBER", ""
-    )
-
-    try:
         async with UPSMCPClient(
             client_id=ups_creds.client_id,
             client_secret=ups_creds.client_secret,
@@ -244,7 +339,9 @@ async def execute_batch(
         wb_status = write_back.get("status", "skipped")
         if failed == 0 and wb_status in ("error", "partial"):
             final_status = "completed_with_warnings"
-            diagnostic = project_terminal_diagnostic("E-4001")
+            diagnostic = project_terminal_diagnostic(
+                write_back.get("error_code", "E-4001")
+            )
             job.error_code = diagnostic.error_code
             job.error_message = diagnostic.message
             raw_failure_count = write_back.get("failure_count")
@@ -266,9 +363,22 @@ async def execute_batch(
         else:
             final_status = "failed"
 
-        job.status = final_status
-        job.completed_at = datetime.now(UTC).isoformat()
+        # A pause received during the last accepted call must not conceal a
+        # fully terminal result. Pending/in-flight rows still exclude this case.
+        terminal_sources = ["running"]
+        if progress.processed_rows == progress.total_rows:
+            terminal_sources.append("paused")
+        # Cancellation can land while the last accepted carrier call completes;
+        # keep it excluded from the persisted-state CAS in every case.
+        db_session.flush()
+        db_session.execute(
+            update(Job)
+            .where(Job.id == job_id, Job.status.in_(terminal_sources))
+            .values(status=final_status, completed_at=datetime.now(UTC).isoformat())
+        )
         db_session.commit()
+        db_session.refresh(job)
+        final_status = job.status
 
         logger.info(
             "Batch execution complete for job %s: %d successful, %d failed, "
@@ -305,6 +415,18 @@ async def execute_batch(
             "total_duties_taxes_cents": intl_duties,
         }
 
+    except asyncio.CancelledError:
+        # The engine reconciles accepted calls before gather propagates cancellation.
+        # Preserve completed rows, expose uncertain rows, and stop future launches.
+        _sync_authoritative_progress()
+        db_session.flush()
+        db_session.execute(
+            update(Job)
+            .where(Job.id == job_id, Job.status == "running")
+            .values(status="cancelled", completed_at=datetime.now(UTC).isoformat())
+        )
+        db_session.commit()
+        raise
     except Exception:
         logger.error("Batch execution failed for job %s", job_id)
         DecisionAuditService.log_event(
@@ -314,13 +436,17 @@ async def execute_batch(
             actor="system",
             payload={"job_id": job_id, "error_code": "E-4001"},
         )
-        # Update job to failed status
-        job = db_session.query(Job).filter(Job.id == job_id).first()
-        if job and job.status == "running":
-            job.status = "failed"
-            job.error_code = "E-4001"
-            job.error_message = (
-                "The row could not be processed because of a system error."
+        _sync_authoritative_progress()
+        db_session.flush()
+        db_session.execute(
+            update(Job)
+            .where(Job.id == job_id, Job.status == "running")
+            .values(
+                status="failed",
+                error_code="E-4001",
+                error_message="The row could not be processed because of a system error.",
+                completed_at=datetime.now(UTC).isoformat(),
             )
-            db_session.commit()
+        )
+        db_session.commit()
         raise

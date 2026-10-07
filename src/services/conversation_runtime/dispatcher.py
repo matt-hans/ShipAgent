@@ -12,6 +12,7 @@ from src.services.conversation_runtime.models import (
     ProviderToolResult,
 )
 from src.services.conversation_runtime.policy import RuntimePolicyEngine
+from src.services.decision_audit_service import DecisionAuditService
 from src.services.policy_decision import GENERIC_DENIAL_REASON, PolicyDecision
 from src.utils.redaction import sanitize_error_message
 
@@ -556,6 +557,11 @@ class LocalToolDispatcher:
     async def execute(self, call: ProviderToolCall) -> ProviderToolResult:
         decision = await self.policy.check_pre_tool(call)
         if not decision.allowed:
+            _audit(
+                "policy.tool_denied",
+                tool_name=call.tool_name,
+                payload={"denial_code": decision.code.value if decision.code else None},
+            )
             content = _policy_denial_content(decision)
             return ProviderToolResult(
                 call_id=call.call_id,
@@ -629,6 +635,11 @@ class LocalToolDispatcher:
         )
 
     def emit_tool_call(self, call: ProviderToolCall) -> None:
+        _audit(
+            "agent.tool_call.observed",
+            tool_name=call.tool_name,
+            payload={"tool_input_type": type(call.parsed_input).__name__},
+        )
         payload = {
             "tool_name": call.tool_name,
             "tool_input": dict(call.parsed_input),
@@ -637,6 +648,24 @@ class LocalToolDispatcher:
             payload["tool_use_id"] = call.call_id
 
         self.emit_frontend("tool_call", payload)
+
+
+def _audit(event_name: str, *, tool_name: str, payload: dict[str, Any]) -> None:
+    """Record a redacted decision event; auditing never blocks a tool call."""
+    try:
+        DecisionAuditService.log_event_from_context(
+            phase="tool_call",
+            event_name=event_name,
+            actor="agent",
+            tool_name=tool_name,
+            payload=payload,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Decision audit failed for event=%s exception_type=%s",
+            event_name,
+            type(exc).__name__,
+        )
 
 
 def _generic_error_content(tool_name: str) -> str:

@@ -8,11 +8,14 @@ Provides tools for:
 
 import hashlib
 from typing import Any
+from uuid import uuid4
 
 from fastmcp import Context
 
+from src.services.source_identity import source_binding_digest
 
-async def get_source_info(ctx: Context) -> dict:
+
+def describe_source(ctx: Context) -> dict:
     """Get metadata about the currently active data source.
 
     Returns:
@@ -23,8 +26,6 @@ async def get_source_info(ctx: Context) -> dict:
 
     if current_source is None:
         return {"active": False}
-
-    await ctx.info("Retrieving source info")
 
     # Build signature from schema if available as:
     # full SHA-256 hex digest of "name:type:nullable|..." (no truncation).
@@ -50,7 +51,7 @@ async def get_source_info(ctx: Context) -> dict:
     except Exception:
         pass
 
-    return {
+    info = {
         "active": True,
         "source_type": current_source.get("type", "unknown"),
         "path": current_source.get("path"),
@@ -62,7 +63,17 @@ async def get_source_info(ctx: Context) -> dict:
         "deterministic_ready": current_source.get("deterministic_ready", True),
         "row_key_strategy": current_source.get("row_key_strategy", "source_row_num"),
         "row_key_columns": current_source.get("row_key_columns", []),
+        "source_instance": current_source.setdefault("source_instance", str(uuid4())),
     }
+    info["binding_digest"] = source_binding_digest(info)
+    return info
+
+
+async def get_source_info(ctx: Context) -> dict:
+    """Return one coherent source snapshot without yielding during inspection."""
+    info = describe_source(ctx)
+    await ctx.info("Retrieving source info")
+    return info
 
 
 async def import_records(

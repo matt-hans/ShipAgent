@@ -294,10 +294,21 @@ class InProcessRunner:
             job_id: The job to approve and execute.
         """
         from src.db.connection import get_db
-        from src.services.batch_executor import execute_batch
+        from src.services.batch_executor import (
+            BatchConfirmationError,
+            confirm_batch,
+            execute_batch,
+        )
 
         db = next(get_db())
         try:
+            try:
+                confirm_batch(job_id, db, write_back_enabled=None)
+            except BatchConfirmationError as error:
+                raise ShipAgentClientError(
+                    message=str(error),
+                    status_code={"not_found": 404, "stale": 409}.get(error.reason, 400),
+                ) from error
             await execute_batch(job_id, db, on_progress=self._log_progress)
         finally:
             db.close()

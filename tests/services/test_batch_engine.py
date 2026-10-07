@@ -7,6 +7,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.services.batch_engine import BatchEngine
+from tests.services.batch_acceptance_support import (
+    bind_job_source,
+    offline_batch_gateways,  # noqa: F401
+    synthetic_source_info,
+)
 
 
 @pytest.fixture
@@ -37,9 +42,35 @@ def mock_ups_service():
 
 @pytest.fixture
 def mock_db_session():
-    """Create mock database session."""
-    session = MagicMock()
-    return session
+    """Use real persistence and original-source metadata for write permission."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from src.db.models import Base, Job
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        for job_id in (
+            "job-1",
+            "job-ext-1",
+            "job-ext-2",
+            "job-ext-3",
+            "job-amz-1",
+            "job-local-1",
+        ):
+            session.add(
+                Job(
+                    id=job_id,
+                    name="Test",
+                    original_command="ship all",
+                    status="running",
+                )
+            )
+            session.commit()
+            bind_job_source(session, job_id, synthetic_source_info())
+        yield session
+    engine.dispose()
 
 
 class TestBatchEngineExecute:
@@ -274,10 +305,7 @@ class TestBatchEngineExecute:
             new_callable=AsyncMock,
         ) as mock_get_gw:
             mock_gw = AsyncMock()
-            mock_gw.get_source_info.return_value = {
-                "active": True,
-                "source_type": "csv",
-            }
+            mock_gw.get_source_info.return_value = synthetic_source_info()
             mock_gw.write_back_batch.return_value = {
                 "success_count": 1,
                 "failure_count": 0,
@@ -346,10 +374,7 @@ class TestBatchEngineExecute:
             new_callable=AsyncMock,
         ) as mock_get_gw:
             mock_gw = AsyncMock()
-            mock_gw.get_source_info.return_value = {
-                "active": True,
-                "source_type": "csv",
-            }
+            mock_gw.get_source_info.return_value = synthetic_source_info()
             mock_gw.write_back_batch.return_value = {
                 "success_count": 0,
                 "failure_count": 1,
@@ -416,10 +441,7 @@ class TestBatchEngineExecute:
             new_callable=AsyncMock,
         ) as mock_get_gw:
             mock_gw = AsyncMock()
-            mock_gw.get_source_info.return_value = {
-                "active": True,
-                "source_type": "csv",
-            }
+            mock_gw.get_source_info.return_value = synthetic_source_info()
             mock_gw.write_back_batch.side_effect = RuntimeError(marker)
             mock_get_gw.return_value = mock_gw
 
@@ -847,10 +869,10 @@ class TestBatchEngineExternalWriteBack:
             "countryCode": "US",
         }
 
-    async def test_external_write_back_routes_to_platform(
+    async def test_external_write_back_blocks_unbound_platform(
         self, mock_ups_service, mock_db_session
     ):
-        """Source type 'shopify' → ext.update_tracking() called, not gw.write_back_batch()."""
+        """A platform label does not bind the original commerce account."""
         engine = BatchEngine(
             ups_service=mock_ups_service,
             db_session=mock_db_session,
@@ -872,7 +894,7 @@ class TestBatchEngineExternalWriteBack:
                 return_value=mock_gw,
             ),
             patch(
-                "src.services.batch_engine.get_external_sources_client",
+                "src.services.gateway_provider.get_external_sources_client",
                 new_callable=AsyncMock,
                 return_value=mock_ext,
             ),
@@ -885,14 +907,14 @@ class TestBatchEngineExternalWriteBack:
             )
 
         assert result["successful"] == 1
-        assert result["write_back"]["status"] == "success"
-        mock_ext.update_tracking.assert_called_once()
+        assert result["write_back"]["status"] == "error"
+        mock_ext.update_tracking.assert_not_called()
         mock_gw.write_back_batch.assert_not_called()
 
-    async def test_external_write_back_extracts_order_id(
+    async def test_external_write_back_does_not_infer_account_from_order_id(
         self, mock_ups_service, mock_db_session
     ):
-        """order_id correctly parsed from order_data JSON."""
+        """An order ID alone does not identify its originating commerce account."""
         engine = BatchEngine(
             ups_service=mock_ups_service,
             db_session=mock_db_session,
@@ -913,7 +935,7 @@ class TestBatchEngineExternalWriteBack:
                 return_value=mock_gw,
             ),
             patch(
-                "src.services.batch_engine.get_external_sources_client",
+                "src.services.gateway_provider.get_external_sources_client",
                 new_callable=AsyncMock,
                 return_value=mock_ext,
             ),
@@ -925,10 +947,7 @@ class TestBatchEngineExternalWriteBack:
                 write_back_enabled=True,
             )
 
-        call_kwargs = mock_ext.update_tracking.call_args[1]
-        assert call_kwargs["order_id"] == "SHOP-42"
-        assert call_kwargs["platform"] == "shopify"
-        assert "tracking_number" in call_kwargs
+        mock_ext.update_tracking.assert_not_called()
 
     async def test_external_write_back_skips_missing_order_id(
         self, mock_ups_service, mock_db_session
@@ -955,7 +974,7 @@ class TestBatchEngineExternalWriteBack:
                 return_value=mock_gw,
             ),
             patch(
-                "src.services.batch_engine.get_external_sources_client",
+                "src.services.gateway_provider.get_external_sources_client",
                 new_callable=AsyncMock,
                 return_value=mock_ext,
             ),
@@ -968,13 +987,13 @@ class TestBatchEngineExternalWriteBack:
             )
 
         assert result["write_back"]["failure_count"] == 1
-        assert result["write_back"]["status"] == "partial"
+        assert result["write_back"]["status"] == "error"
         mock_ext.update_tracking.assert_not_called()
 
-    async def test_amazon_write_back_routes_to_platform(
+    async def test_amazon_write_back_blocks_unbound_platform(
         self, mock_ups_service, mock_db_session
     ):
-        """Source type 'amazon' routes to ext.update_tracking(), not gw.write_back_batch()."""
+        """An Amazon label does not bind the original commerce account."""
         engine = BatchEngine(
             ups_service=mock_ups_service,
             db_session=mock_db_session,
@@ -996,7 +1015,7 @@ class TestBatchEngineExternalWriteBack:
                 return_value=mock_gw,
             ),
             patch(
-                "src.services.batch_engine.get_external_sources_client",
+                "src.services.gateway_provider.get_external_sources_client",
                 new_callable=AsyncMock,
                 return_value=mock_ext,
             ),
@@ -1009,11 +1028,9 @@ class TestBatchEngineExternalWriteBack:
             )
 
         assert result["successful"] == 1
-        assert result["write_back"]["status"] == "success"
-        mock_ext.update_tracking.assert_called_once()
-        call_kwargs = mock_ext.update_tracking.call_args[1]
-        assert call_kwargs["platform"] == "amazon"
-        assert call_kwargs["order_id"] == "AMZ-1001"
+        assert result["write_back"]["status"] == "error"
+        mock_ext.update_tracking.assert_not_called()
+
         mock_gw.write_back_batch.assert_not_called()
 
     async def test_local_write_back_unchanged_for_csv(
@@ -1028,9 +1045,7 @@ class TestBatchEngineExternalWriteBack:
         rows = [self._make_row(1)]
 
         mock_gw = AsyncMock()
-        mock_gw.get_source_info = AsyncMock(
-            return_value={"source_type": "csv", "file_path": "/tmp/test.csv"}
-        )
+        mock_gw.get_source_info = AsyncMock(return_value=synthetic_source_info())
         mock_gw.write_back_batch = AsyncMock(
             return_value={"success_count": 1, "failure_count": 0, "errors": []}
         )

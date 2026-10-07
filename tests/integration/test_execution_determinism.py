@@ -24,6 +24,7 @@ from src.services.write_back_worker import (
     enqueue_write_back,
     process_write_back_queue,
 )
+from tests.services.batch_acceptance_support import offline_batch_gateways  # noqa: F401
 
 
 def _make_row(
@@ -350,7 +351,24 @@ class TestWriteBackDurability:
 
         gateway = AsyncMock()
         gateway.write_back_single = selective_fail
-        db = MagicMock()
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import Session
+
+        from src.db.models import Base, Job
+        from tests.services.batch_acceptance_support import (
+            bind_job_source,
+            synthetic_source_info,
+        )
+
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        db = Session(engine)
+        db.add(
+            Job(id="job-wb", name="Test", original_command="ship all", status="running")
+        )
+        db.commit()
+        bind_job_source(db, "job-wb", synthetic_source_info())
+        gateway.get_source_info.return_value = synthetic_source_info()
 
         tasks = [
             WriteBackTask(
@@ -372,6 +390,9 @@ class TestWriteBackDurability:
         assert tasks[1].status == "pending"  # Failed but below max retries
         assert tasks[1].retry_count == 1
         assert tasks[2].status == "completed"
+
+        db.close()
+        engine.dispose()
 
 
 class TestLabelAtomicity:
