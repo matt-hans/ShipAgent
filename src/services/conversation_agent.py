@@ -10,10 +10,10 @@ from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
 
-# Explicit selectors for the shared-runtime Anthropic Messages adapter. The
-# legacy "auto"/"claude"/"claude_sdk"/"anthropic" selectors still resolve to the
-# Claude Agent SDK path until the cutover.
-_ANTHROPIC_MESSAGES_RUNTIMES = {"anthropic_messages", "anthropic-messages"}
+# These historical selectors remain configuration aliases only. Every real
+# provider runs in the ShipAgent-owned runtime.
+_ANTHROPIC_MESSAGES_RUNTIMES = {"anthropic", "anthropic_messages", "anthropic-messages"}
+_DEPRECATED_CLAUDE_RUNTIMES = {"claude", "claude_sdk"}
 
 
 class ConversationAgent(Protocol):
@@ -110,7 +110,6 @@ def create_conversation_agent(
     *,
     system_prompt: str | None = None,
     max_turns: int = 50,
-    permission_mode: str = "acceptEdits",
     model: str | None = None,
     runtime: str | None = None,
     interactive_shipping: bool = False,
@@ -127,6 +126,7 @@ def create_conversation_agent(
         .strip()
         .lower()
     )
+    model = model or os.environ.get("AGENT_MODEL") or os.environ.get("ANTHROPIC_MODEL")
     model_provider = _infer_model_provider(model)
     if runtime == "fake":
         from src.services.conversation_runtime.fake_provider import FakeProviderClient
@@ -143,66 +143,45 @@ def create_conversation_agent(
             prior_conversation=prior_conversation,
         )
 
-    if runtime in {"", "auto"} and model_provider == "openai":
-        return _create_openai_conversation_agent(
-            system_prompt=system_prompt,
-            interactive_shipping=interactive_shipping,
-            session_id=session_id,
-            max_turns=max_turns,
-            prior_conversation=prior_conversation,
-            model=model,
-        )
-    if runtime == "openai":
-        if model_provider not in {None, "openai"}:
-            return _runtime_model_mismatch(
-                runtime=runtime,
-                model_provider=model_provider,
-                session_id=session_id,
-                model=model,
-            )
-        return _create_openai_conversation_agent(
-            system_prompt=system_prompt,
-            interactive_shipping=interactive_shipping,
-            session_id=session_id,
-            max_turns=max_turns,
-            prior_conversation=prior_conversation,
-            model=model,
+    if runtime in _DEPRECATED_CLAUDE_RUNTIMES:
+        logger.warning(
+            "Runtime selector '%s' is deprecated; use 'anthropic' or 'auto'.", runtime
         )
 
-    if runtime in _ANTHROPIC_MESSAGES_RUNTIMES:
-        # Explicit opt-in only; auto/claude/anthropic keep the legacy SDK path
-        # until the cutover.
+    provider_name = None
+    if runtime in {"", "auto"}:
+        provider_name = model_provider if model else "anthropic"
+    elif runtime in _ANTHROPIC_MESSAGES_RUNTIMES | _DEPRECATED_CLAUDE_RUNTIMES:
         if model and model_provider != "anthropic":
+            if model_provider is not None and runtime in _DEPRECATED_CLAUDE_RUNTIMES:
+                return _runtime_model_mismatch(
+                    runtime=runtime,
+                    model_provider=model_provider,
+                    session_id=session_id,
+                    model=model,
+                )
             return _anthropic_model_mismatch(
                 runtime=runtime, session_id=session_id, model=model
             )
-        return _create_anthropic_conversation_agent(
-            system_prompt=system_prompt,
-            interactive_shipping=interactive_shipping,
-            session_id=session_id,
-            max_turns=max_turns,
-            prior_conversation=prior_conversation,
-            model=model,
-        )
-
-    if runtime in {"", "auto"} and model_provider == "gemini":
-        return _create_gemini_conversation_agent(
-            system_prompt=system_prompt,
-            interactive_shipping=interactive_shipping,
-            session_id=session_id,
-            max_turns=max_turns,
-            prior_conversation=prior_conversation,
-            model=model,
-        )
-    if runtime == "gemini":
-        if model_provider not in {None, "gemini"}:
+        provider_name = "anthropic"
+    elif runtime in {"openai", "gemini"}:
+        if model and model_provider != runtime:
             return _runtime_model_mismatch(
                 runtime=runtime,
                 model_provider=model_provider,
                 session_id=session_id,
                 model=model,
             )
-        return _create_gemini_conversation_agent(
+        provider_name = runtime
+
+    factories = {
+        "anthropic": _create_anthropic_conversation_agent,
+        "openai": _create_openai_conversation_agent,
+        "gemini": _create_gemini_conversation_agent,
+    }
+    factory = factories.get(provider_name)
+    if factory is not None:
+        return factory(
             system_prompt=system_prompt,
             interactive_shipping=interactive_shipping,
             session_id=session_id,
@@ -211,45 +190,12 @@ def create_conversation_agent(
             model=model,
         )
 
-    if runtime in {"", "auto", "claude", "claude_sdk", "anthropic"}:
-        if runtime not in {"", "auto"} and model_provider in {"openai", "gemini"}:
-            return _runtime_model_mismatch(
-                runtime=runtime,
-                model_provider=model_provider,
-                session_id=session_id,
-                model=model,
-            )
-
-        from src.orchestrator.agent.client import (
-            OrchestrationAgent,
-            is_claude_sdk_available,
-        )
-
-        if is_claude_sdk_available():
-            return OrchestrationAgent(
-                system_prompt=system_prompt,
-                max_turns=max_turns,
-                permission_mode=permission_mode,
-                model=model,
-                interactive_shipping=interactive_shipping,
-                session_id=session_id,
-            )
-        if runtime not in {"", "auto"}:
-            return UnavailableConversationAgent(
-                reason=(
-                    "Claude SDK runtime is not installed. Install backend "
-                    "dependencies with .venv/bin/python -m pip install -e '.[dev]' "
-                    "or choose another configured model runtime."
-                ),
-                session_id=session_id,
-                model=model,
-            )
-
-    logger.warning("No supported model runtime configured for model=%s", model)
+    logger.warning("No supported model runtime configured")
     return UnavailableConversationAgent(
         reason=(
-            "No supported model runtime is configured. Configure a model "
-            "provider before sending shipping commands."
+            "No supported model runtime is configured. Choose a supported "
+            "AGENT_MODEL and matching SHIPAGENT_AGENT_RUNTIME before sending "
+            "shipping commands."
         ),
         session_id=session_id,
         model=model,
