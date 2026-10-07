@@ -63,21 +63,24 @@ revert PR #50; no data migrations, no handlers or exports were enabled.
 
 | Outcome | Reservation |
 |---|---|
-| Handler returns | consumed (one-time) |
-| Handler raises `PreAcceptFailure` (provably before the target accepted) | released, one retry allowed |
-| Any other exception or cancellation | held non-reusable; replay denied `reconciliation_pending` until reconciled by idempotency key |
-| Handler returns but `consume` fails | acceptance still reported; grant held non-reusable (best effort) |
-| Malformed, mismatched or non-exact-type binding | released, call denied `execution_grant_invalid` |
+| Handler returns | consume attempted; successful consumption is one-time |
+| Handler raises `PreAcceptFailure` (provably before the target accepted) | release attempted; retry only if it succeeds within original expiry |
+| Any other exception or cancellation | hold attempted; replay denied `reconciliation_pending` or `grant_in_use` until reconciled by idempotency key |
+| Handler returns but `consume` fails or times out | acceptance still reported; existing reserve remains non-reusable, hold attempted only within remaining budget |
+| Malformed, mismatched or non-exact-type binding | release attempted, call denied `execution_grant_invalid` |
 | No authority, bad reference, authority error | denied `execution_grant_unavailable` |
 
 The gate reads `reservation.binding` once, requires the exact
 `ExecutionGrantBinding` type (a subclass could override `validate`), and hands
-that same validated object to the handler. Consume, release and hold steps run
-shielded: cancellation arriving mid-step is re-raised only after the step
-completes, so it never undoes an acceptance. A failed `release` or `hold` is
-logged and leaves the grant reserved (fail-closed until the authority expires or
-reconciles it). Cancellation during `reserve` itself, or a hung settlement step,
-is not bounded here; an authority must make `reserve` atomic.
+that same validated object to the handler. Consume, release and hold use one
+five-second monotonic settlement budget, including consume-to-hold fallback.
+Cancellation arriving mid-step is remembered and propagated after settlement or
+that deadline. Timeout requests cancellation of the local operation; it does not
+prove rollback of a remote write or target execution. Late outcomes are observed,
+and no new hold or release is started after the deadline. Failed settlement
+leaves the original reserve non-reusable; expiry means denial, never availability.
+The authority must make reserve atomic, bound its own I/O and safely clean up or
+quarantine interrupted reservations. No production authority exists here.
 A handler-raised `ToolAuthorizationError` is projected as the generic provider
 error like any other handler failure; only gate-raised errors keep their code.
 
@@ -86,17 +89,28 @@ error like any other handler failure; only gate-raised errors keep their code.
 - *Authority* (`ExecutionGrantAuthority.reserve`, no store exists yet): exclusively reserve; compare
   target, policy, amount, currency and payload against the live approved preview
   and reject any drift, including a lower amount; deny a second reservation.
+  Atomically fence settlement against the original owner, recheck expiry at
+  consume, and reconcile uncertain acceptance through the Plan 2 lifecycle.
+  Failed hold writes must not undo the original reservation's denial of reuse.
+  Never reconstruct missing/expired authorization from requests or SQL audit.
 - *Handler*: register only via `build_server(confirmed_tool_handlers=...)`
   (`(context, arguments, binding)`); invoke the bound Execution Target with the
-  binding's idempotency key and approved amount; raise `PreAcceptFailure` only
-  when nothing could have been accepted. Plain `tool_handlers` entries for a
+  binding's idempotency key and approved amount; return only after durable
+  acceptance, and raise `PreAcceptFailure` only when nothing could have been
+  accepted. A socket/ack timeout alone is insufficient proof. Plain `tool_handlers` entries for a
   confirming tool raise `ValueError` at `build_server`.
 - *Gate* checks what needs no live data: account, Provider Connection, preview,
   expiry (timezone-aware), policy equal to the tool's `confirmation_policy`,
   amount (`MONEY_PATTERN`, positive), currency (`RATE_CURRENCY_CODES`), identity fields.
 
 **Logging:** reserve, denial, hold, release and consume failures log tool name,
-denial code and exception type only, never identifiers, amounts or messages.
+operation, denial code and exception type only, never identifiers, amounts or
+authority exception messages. An accepted result preserved across settlement
+failure reports target acceptance, not successful persistence or final shipping.
+
+See [the authority contract and separate implementation prerequisites](execution-grant-authority-contract.md)
+for cancellation, original expiry, reconciliation and required real-store tests.
+Existing fake-backed gate tests do not satisfy issue 51's persistent replay proof.
 
 **Status:** no grant store, approval page, connector, non-status handler or
 provider export is enabled. `confirmation_artifact_id` and the `INGRESS` family

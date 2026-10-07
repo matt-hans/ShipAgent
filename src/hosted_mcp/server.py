@@ -57,6 +57,7 @@ MUTATING_SIDE_EFFECTS = frozenset(
 logger = logging.getLogger(__name__)
 
 PROVIDER_RESULT_ERROR = "Tool result could not be safely returned"
+GRANT_SETTLEMENT_TIMEOUT_SECONDS = 5.0
 
 
 class BoundRegistryTool(Tool):
@@ -74,6 +75,7 @@ class BoundRegistryTool(Tool):
         object.__setattr__(self, "_handler", handler)
         object.__setattr__(self, "_request_controls", request_controls)
         object.__setattr__(self, "_execution_grants", execution_grants)
+        object.__setattr__(self, "_settlement_tasks", set())
 
     @staticmethod
     def _context_missing_error() -> "ToolAuthorizationError":
@@ -105,7 +107,7 @@ class BoundRegistryTool(Tool):
         """Build the fail-closed error for an unverifiable approval."""
         return ToolAuthorizationError(
             code=ExecutionGrantDenial.GRANT_UNAVAILABLE.value,
-            message="approval could not be verified; prepare and approve again",
+            message="approval could not be verified; check approval and existing execution status",
         )
 
     @staticmethod
@@ -152,18 +154,32 @@ class BoundRegistryTool(Tool):
             )
         except ExecutionGrantError as err:
             self._audit_denial(err.denial)
+            message = "approval required before execution; check approval and existing execution status"
+            if err.denial in {
+                ExecutionGrantDenial.GRANT_IN_USE,
+                ExecutionGrantDenial.GRANT_CONSUMED,
+                ExecutionGrantDenial.RECONCILIATION_PENDING,
+            }:
+                message = "execution is in use or already accepted; check or recover the original job"
             raise ToolAuthorizationError(
                 code=err.denial.value,
-                message="approval required before execution; prepare and approve again",
+                message=message,
             ) from err
         except Exception as err:  # noqa: BLE001 - grant lookup is a fail-closed boundary.
             self._audit_denial(
                 ExecutionGrantDenial.GRANT_UNAVAILABLE, cause=type(err).__name__
             )
             raise self._grant_unavailable_error() from err
+        caller = asyncio.current_task()
+        if caller is not None and caller.cancelling():
+            # A misbehaving authority may swallow cancellation while returning
+            # ownership. No handler has run, so fenced pre-dispatch release is
+            # safe; never dispatch merely because reserve returned an object.
+            await self._settle(reservation, "release")
+            raise asyncio.CancelledError
         binding = self._validated_binding(reservation, context, preview_id)
         if binding is None:
-            await self._settle(self._release_quietly(reservation))
+            await self._settle(reservation, "release")
             self._audit_denial(ExecutionGrantDenial.GRANT_INVALID)
             raise self._grant_invalid_error()
         logger.info("Execution grant reserved for tool %s", self._contract.name)
@@ -209,70 +225,73 @@ class BoundRegistryTool(Tool):
             pass
         return None
 
-    @staticmethod
-    async def _settle(step: Awaitable[None]) -> None:
-        """Run a never-raising settlement step to completion despite cancellation.
-
-        The step runs as its own task, so a cancelled caller cannot interrupt it
-        and lose the grant state; cancellation is re-raised once it finishes.
-        """
-        task = asyncio.ensure_future(step)
-        cancelled = False
-        while not task.done():
-            try:
-                await asyncio.shield(task)
-            except asyncio.CancelledError:
-                cancelled = True
-        if cancelled:
-            raise asyncio.CancelledError
-
-    async def _release_quietly(self, reservation: ExecutionGrantReservation) -> None:
-        """Release a reservation without masking the primary failure.
-
-        A failed release leaves the grant reserved, which is fail-closed: it
-        stays unusable until the authority expires or reconciles it.
-        """
-        try:
-            await reservation.release()
-        except Exception as err:  # noqa: BLE001 - release is best effort; expiry bounds it.
+    def _observe_settlement(self, task: asyncio.Task[None], operation: str) -> None:
+        """Retain and observe late outcomes without logging authority payloads."""
+        self._settlement_tasks.discard(task)
+        cause = "CancelledError" if task.cancelled() else None
+        if not task.cancelled():
+            error = task.exception()
+            if error is not None:
+                cause = type(error).__name__
+        label = "hold" if operation == "hold_for_reconciliation" else operation
+        if cause is not None:
             logger.error(
-                "Execution grant release failed for tool %s cause=%s",
+                "Execution grant %s failed for tool %s cause=%s",
+                label,
                 self._contract.name,
-                type(err).__name__,
+                cause,
             )
-
-    async def _hold_quietly(self, reservation: ExecutionGrantReservation) -> None:
-        """Keep the reservation non-reusable when acceptance is unknown."""
-        try:
-            await reservation.hold_for_reconciliation()
+        elif operation == "hold_for_reconciliation":
             logger.warning(
                 "Execution grant held for reconciliation for tool %s",
                 self._contract.name,
             )
-        except Exception as err:  # noqa: BLE001 - never mask the primary failure.
-            logger.error(
-                "Execution grant hold failed for tool %s cause=%s",
-                self._contract.name,
-                type(err).__name__,
-            )
 
-    async def _consume_after_acceptance(
-        self, reservation: ExecutionGrantReservation
+    async def _settle(
+        self, reservation: ExecutionGrantReservation, operation: str
     ) -> None:
-        """Consume the grant once the target accepted; never hide the acceptance.
+        """Bound local settlement waiting; a timeout never authorizes replay.
 
-        If consume fails the grant is held so it can never be reserved again
-        before accepted work is reconciled.
+        Consume and its failure-to-hold fallback share one monotonic deadline.
+        Caller cancellation waits only within that budget. Cancelling the local
+        operation at expiry does not prove its remote write was rolled back:
+        reserve must already be non-reusable, and every write must be fenced.
         """
-        try:
-            await reservation.consume()
-        except Exception as err:  # noqa: BLE001 - accepted work must still be reported.
-            logger.error(
-                "Execution grant consume failed for tool %s cause=%s",
-                self._contract.name,
-                type(err).__name__,
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + GRANT_SETTLEMENT_TIMEOUT_SECONDS
+        cancelled = False
+        while True:
+
+            async def invoke(action: str = operation) -> None:
+                await getattr(reservation, action)()
+
+            task = asyncio.create_task(invoke())
+            self._settlement_tasks.add(task)
+            task.add_done_callback(
+                lambda done, action=operation: self._observe_settlement(done, action)
             )
-            await self._hold_quietly(reservation)
+            while not task.done():
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                try:
+                    await asyncio.wait([task], timeout=remaining)
+                except asyncio.CancelledError:
+                    cancelled = True
+            if not task.done():
+                logger.error(
+                    "Execution grant settlement deadline exceeded for tool %s operation=%s",
+                    self._contract.name,
+                    operation,
+                )
+                task.cancel()
+                break
+            failed = task.cancelled() or task.exception() is not None
+            if not failed or operation != "consume" or loop.time() >= deadline:
+                break
+            operation = "hold_for_reconciliation"
+        if cancelled:
+            raise asyncio.CancelledError
 
     async def _invoke_confirmed(
         self,
@@ -285,19 +304,20 @@ class BoundRegistryTool(Tool):
 
         Success consumes; a ``PreAcceptFailure`` releases; any other failure or
         cancellation holds the reservation because acceptance is unknown. Every
-        settlement step is shielded so cancellation cannot undo it.
+        settlement path has one bounded deadline; cancellation never releases
+        possibly accepted work.
         """
         try:
             result = self._handler(context, arguments, binding)
             if inspect.isawaitable(result):
                 result = await result
         except PreAcceptFailure:
-            await self._settle(self._release_quietly(reservation))
+            await self._settle(reservation, "release")
             raise
         except BaseException:
-            await self._settle(self._hold_quietly(reservation))
+            await self._settle(reservation, "hold_for_reconciliation")
             raise
-        await self._settle(self._consume_after_acceptance(reservation))
+        await self._settle(reservation, "consume")
         return result
 
     async def run(self, arguments: dict[str, Any]) -> ToolResult:
