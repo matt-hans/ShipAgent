@@ -41,3 +41,7 @@ class ControlPlaneSettings(BaseSettings):
             "operator-client": "operator",
         }
     )
+
+    # Dormant unless the control-plane operator explicitly enables retention.
+    audit_retention_days: int = Field(default=90, ge=30, le=365, strict=True)
+    retention_background_tasks_enabled: bool = False
