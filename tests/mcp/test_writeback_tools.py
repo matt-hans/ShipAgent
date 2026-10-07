@@ -656,6 +656,53 @@ class TestExtractTableName:
     def test_join_query(self):
         """Test that JOIN queries don't extract first table."""
         # JOIN queries should return the first table, but we document limitation
-        result = _extract_table_name("SELECT * FROM orders JOIN customers ON orders.id = customers.order_id")
+        result = _extract_table_name(
+            "SELECT * FROM orders JOIN customers ON orders.id = customers.order_id"
+        )
         # This will return "orders" - simple extraction works for first table
         assert result == "orders"
+
+
+async def test_database_writeback_uses_bound_snapshot_before_first_yield(
+    duckdb_conn, mock_ctx
+):
+    """A source replacement triggered by logging cannot receive an earlier write."""
+    from src.mcp.data_source.tools.source_info_tools import describe_source
+
+    db = duckdb_conn
+    db.execute(
+        f"CREATE TABLE source_table ({SOURCE_ROW_NUM_COLUMN} INTEGER, tracking_number VARCHAR, shipped_at VARCHAR)"
+    )
+    db.execute("INSERT INTO source_table VALUES (1, NULL, NULL)")
+    db.execute("CREATE VIEW imported_data AS SELECT * FROM source_table")
+    lifespan = mock_ctx.request_context.lifespan_context
+    lifespan.update(
+        db=db,
+        current_source={"type": "database", "query": "SELECT * FROM source_table"},
+    )
+    binding = describe_source(mock_ctx)["binding_digest"]
+    replaced = False
+
+    async def replace_source_on_yield(_message):
+        nonlocal replaced
+        if replaced:
+            return
+        replaced = True
+        db.execute("ALTER TABLE source_table RENAME TO original_source")
+        db.execute(
+            f"CREATE TABLE source_table ({SOURCE_ROW_NUM_COLUMN} INTEGER, tracking_number VARCHAR, shipped_at VARCHAR)"
+        )
+        db.execute("INSERT INTO source_table VALUES (1, NULL, NULL)")
+        lifespan["current_source"] = {
+            "type": "database",
+            "query": "SELECT * FROM source_table",
+        }
+
+    mock_ctx.info = replace_source_on_yield
+    await write_back(
+        1, "1ZBOUND", mock_ctx, "2026-10-07T00:00:00Z", expected_source_binding=binding
+    )
+    assert db.execute("SELECT tracking_number FROM original_source").fetchone() == (
+        "1ZBOUND",
+    )
+    assert db.execute("SELECT tracking_number FROM source_table").fetchone() == (None,)

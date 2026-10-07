@@ -4,7 +4,6 @@ Handles single-shipment preview with auto-populated shipper,
 address normalization, and account masking.
 """
 
-import hashlib
 import json
 import logging
 import os
@@ -487,16 +486,9 @@ async def preview_interactive_shipment_tool(
                 logger.error("interactive preview rate failed for job %s: %s", job.id, e)
                 return _err(f"Rating failed for job {job.id}: {e}")
 
-            # Compute preview integrity hash (TOCTOU protection).
-            # Must match the algorithm in confirm_job() so confirmation accepts
-            # agent-created interactive previews.
-            checksum_concat = "|".join(
-                f"{r.row_number}:{r.row_checksum}" for r in db_rows
-            )
-            job.preview_hash = hashlib.sha256(
-                checksum_concat.encode()
-            ).hexdigest()
-            db.commit()
+            from src.services.batch_preview import save_priced_preview
+
+            save_priced_preview(db, job, db_rows, result)
 
             job_id = job.id
 

@@ -613,10 +613,15 @@ class JobService:
             .scalar()
         ) or 0
 
-        # pending_count excludes needs_review and in_flight
+        # Count pending rows directly. ``processed_rows`` is persisted from the
+        # authoritative progress projection, which already counts needs_review
+        # rows as processed, so deriving this from totals goes negative.
         pending_count = (
-            job.total_rows - job.processed_rows - needs_review_count - in_flight_count
-        )
+            self.db.query(func.count(JobRow.id))
+            .filter(JobRow.job_id == job_id)
+            .filter(JobRow.status == RowStatus.pending.value)
+            .scalar()
+        ) or 0
 
         # Calculate total cost from successful rows
         total_cost_result = (

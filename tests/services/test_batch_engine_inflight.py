@@ -9,6 +9,7 @@ import pytest
 from src.services.batch_engine import BatchEngine
 from src.services.errors import UPSServiceError
 from src.services.mcp_client import MCPConnectionError
+from tests.services.batch_acceptance_support import offline_batch_gateways  # noqa: F401
 
 
 def _make_row(

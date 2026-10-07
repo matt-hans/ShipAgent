@@ -93,6 +93,7 @@ class DataSourceGateway(Protocol):
         row_number: int,
         tracking_number: str,
         shipped_at: str | None = None,
+        expected_source_binding: str | None = None,
     ) -> None:
         """Write tracking number back to source for a single row.
 
@@ -107,7 +108,8 @@ class DataSourceGateway(Protocol):
         ...
 
     async def write_back_batch(
-        self, updates: dict[int, dict[str, str]]
+        self, updates: dict[int, dict[str, str]],
+        expected_source_binding: str | None = None,
     ) -> dict[str, Any]:
         """Write tracking numbers back to source for multiple rows.
 

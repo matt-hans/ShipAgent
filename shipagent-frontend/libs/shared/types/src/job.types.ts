@@ -260,6 +260,8 @@ export interface BatchPreview {
   additional_rows: number;
   total_estimated_cost_cents: number;
   rows_with_warnings: number;
+  /** False when rating failed; warnings alone do not authorize a purchase. */
+  confirmation_ready?: boolean;
   // International shipping aggregates
   total_duties_taxes_cents?: number;
   international_row_count?: number;

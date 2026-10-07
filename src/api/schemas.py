@@ -233,6 +233,7 @@ class BatchPreviewResponse(BaseModel):
     )
     total_duties_taxes_cents: int | None = None
     international_row_count: int = 0
+    confirmation_ready: bool = False
 
 
 class SkipRowsRequest(BaseModel):

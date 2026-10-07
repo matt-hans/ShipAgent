@@ -34,6 +34,7 @@ async def write_back(
     tracking_number: str,
     ctx: Context,
     shipped_at: str | None = None,
+    expected_source_binding: str | None = None,
 ) -> dict:
     """Write tracking number back to the original data source.
 
@@ -60,6 +61,14 @@ async def write_back(
         >>> print(result["success"])
         True
     """
+    # This check and the write below must not yield between source inspection
+    # and mutation. Each imported source owns one stable row-number mapping.
+    if expected_source_binding is not None:
+        from src.mcp.data_source.tools.source_info_tools import describe_source
+
+        if describe_source(ctx).get("binding_digest") != expected_source_binding:
+            raise ValueError("Original source binding no longer matches; write-back blocked")
+
     # Get current source from lifespan context
     current_source = ctx.request_context.lifespan_context.get("current_source")
 
@@ -91,11 +100,6 @@ async def write_back(
                 raise ValueError(
                     f"Write-back target directory does not exist: {resolved.parent}"
                 )
-
-    await ctx.info(
-        f"Writing tracking number {tracking_number} to row {row_number} "
-        f"in {source_type} source"
-    )
 
     if source_type == "csv":
         await _write_back_csv(
@@ -238,8 +242,7 @@ async def _write_back_database(
     # Double-quote for DuckDB identifier escaping (defense-in-depth).
     safe_table = f'"{table_name}"'
 
-    await ctx.info(f"Updating database table {table_name} row {row_number}")
-
+    # Do not yield before SQL: the caller just verified this source snapshot.
     # Use parameterized query to prevent SQL injection
     # Note: DuckDB uses $1, $2 syntax for parameters
     update_sql = f"""

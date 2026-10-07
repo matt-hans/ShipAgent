@@ -426,6 +426,13 @@ ERROR_REGISTRY: dict[str, ErrorCode] = {
         message_template="User cancelled the operation.",
         remediation="The operation was cancelled by the user.",
     ),
+    "E-4013": ErrorCode(
+        code="E-4013",
+        category=ErrorCategory.SYSTEM,
+        title="Write-back Blocked",
+        message_template="Tracking was not written because the original source could not be verified.",
+        remediation="Keep the purchased labels. Verify the original source before retrying write-back; do not recreate shipments.",
+    ),
     # Auth errors (E-5xxx)
     "E-5001": ErrorCode(
         code="E-5001",

@@ -50,6 +50,8 @@ def canonical_terminal_error_code(error_code: Any) -> str:
 
 def safe_terminal_message(error_code: str) -> str:
     """Return the fixed safe message mapped to an allowlisted error code."""
+    if error_code == "E-4013":
+        return "Shipments saved; tracking not written. Verify the original source before retrying write-back."
     return _SAFE_MESSAGES[ERROR_REGISTRY[error_code].category]
 
 

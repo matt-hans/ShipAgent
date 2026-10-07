@@ -225,6 +225,8 @@ def _mock_batch_engine():
     """Create a mock BatchEngine that returns preview results."""
     engine = MagicMock()
     engine.preview = AsyncMock(return_value={
+        "additional_rows": 0,
+        "confirmation_ready": True,
         "job_id": "test-job-id",
         "total_rows": 2,
         "total_estimated_cost_cents": 2400,

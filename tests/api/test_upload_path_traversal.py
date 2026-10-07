@@ -5,8 +5,24 @@ directory traversal sequences, absolute paths, and hidden files.
 """
 
 import io
+from unittest.mock import AsyncMock
 
+import pytest
 from fastapi.testclient import TestClient
+
+
+@pytest.fixture(autouse=True)
+def _offline_upload_source(monkeypatch, tmp_path):
+    gateway = AsyncMock()
+    gateway.import_file.return_value = {
+        "source_type": "csv",
+        "row_count": 1,
+        "columns": [],
+    }
+    monkeypatch.setattr(
+        "src.api.routes.data_sources.get_data_gateway", AsyncMock(return_value=gateway)
+    )
+    monkeypatch.setattr("src.api.routes.data_sources.UPLOAD_DIR", tmp_path)
 
 
 class TestUploadPathTraversal:

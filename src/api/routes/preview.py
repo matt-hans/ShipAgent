@@ -7,13 +7,10 @@ frontend updates.
 """
 
 import asyncio
-import hashlib
 import json
 import logging
-from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from src.api.schemas import (
@@ -29,7 +26,6 @@ from src.services.ups_constants import DEFAULT_ORIGIN_COUNTRY
 from src.services.ups_service_codes import (
     SERVICE_CODE_NAMES,
     ServiceCode,
-    resolve_service_code,
 )
 
 logger = logging.getLogger(__name__)
@@ -104,6 +100,12 @@ def get_job_preview(job_id: str, db: Session = Depends(get_db)) -> BatchPreviewR
             detail="Job has no rows for preview. Command may not have been processed yet.",
         )
 
+    from src.services.batch_preview import get_priced_preview
+
+    priced = get_priced_preview(db, job, rows)
+    if priced is not None:
+        return BatchPreviewResponse.model_validate(priced)
+
     # Build preview rows from ALL job rows
     preview_rows: list[PreviewRowResponse] = []
     total_estimated_cost = 0
@@ -176,14 +178,6 @@ def get_job_preview(job_id: str, db: Session = Depends(get_db)) -> BatchPreviewR
             row, "destination_country", None
         ) and row.destination_country not in (DEFAULT_ORIGIN_COUNTRY, "PR"):
             international_count += 1
-
-    # Compute preview integrity hash from all row checksums (TOCTOU protection).
-    # Uses "|" delimiter with row_number prefix to prevent collision (CWE-345):
-    # e.g. ["ab","cd"] vs ["abc","d"] would collide with plain join.
-    checksum_concat = "|".join(f"{r.row_number}:{r.row_checksum}" for r in rows)
-    preview_hash = hashlib.sha256(checksum_concat.encode()).hexdigest()
-    job.preview_hash = preview_hash
-    db.commit()
 
     return BatchPreviewResponse(
         job_id=job_id,
@@ -258,7 +252,15 @@ async def _execute_batch(
             service_code_override=selected_service_code,
         )
 
-        if result["failed"] == 0:
+        if result.get("status") == "cancelled":
+            await observer.on_batch_failed(
+                job_id,
+                "E-4012",
+                "Batch cancelled.",
+                result["successful"] + result["failed"],
+                status="cancelled",
+            )
+        elif result["failed"] == 0:
             await observer.on_batch_completed(
                 job_id,
                 result["successful"] + result["failed"],
@@ -277,6 +279,16 @@ async def _execute_batch(
                 duties_taxes_cents=result.get("total_duties_taxes_cents", 0),
                 international_row_count=result.get("international_row_count", 0),
             )
+    except asyncio.CancelledError:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        await observer.on_batch_failed(
+            job_id,
+            "E-4012",
+            "Batch cancelled.",
+            job.processed_rows if job else 0,
+            status="cancelled",
+        )
+        raise
     except Exception:
         logger.error("Background batch execution failed for job %s", job_id)
         await observer.on_batch_failed(job_id, "E-4001", "Batch execution failed.", 0)
@@ -290,8 +302,8 @@ async def _execute_batch_safe(
 ) -> None:
     """Wrapper that catches and logs errors from batch execution.
 
-    Ensures background task failures are logged and job status is updated
-    appropriately even if unexpected errors occur.
+    The canonical executor owns persisted lifecycle outcomes; this wrapper
+    only prevents unobserved background-task errors.
 
     Args:
         job_id: The job UUID to process.
@@ -300,21 +312,6 @@ async def _execute_batch_safe(
         await _execute_batch(job_id, selected_service_code=selected_service_code)
     except Exception:
         logger.error("Background batch execution failed for job %s", job_id)
-        # Update job to failed status
-        from src.db.connection import get_db as get_db_session
-
-        db = next(get_db_session())
-        try:
-            job = db.query(Job).filter(Job.id == job_id).first()
-            if job and job.status == "running":
-                job.status = "failed"
-                job.error_code = "E-4001"
-                job.error_message = (
-                    "The row could not be processed because of a system error."
-                )
-                db.commit()
-        finally:
-            db.close()
 
 
 @router.post("/jobs/{job_id}/confirm", response_model=ConfirmResponse)
@@ -340,92 +337,19 @@ async def confirm_job(
     Raises:
         HTTPException: If job not found or not in pending status.
     """
-    # --- Pre-CAS validation (Finding 2, CWE-367) ---
-    # Verify preview and data integrity BEFORE the atomic CAS transition.
-    # This eliminates the TOCTOU window where the job is "running" but
-    # data hasn't been verified yet, and avoids rollback races.
-    job = db.query(Job).filter(Job.id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+    from src.services.batch_executor import BatchConfirmationError, confirm_batch
 
-    if job.status != "pending":
-        raise HTTPException(
-            status_code=400,
-            detail=f"Job cannot be confirmed. Current status: {job.status}. "
-            "Only pending jobs can be confirmed.",
+    try:
+        job, selected_service_code = confirm_batch(
+            job_id,
+            db,
+            write_back_enabled=req.write_back_enabled if req else True,
+            selected_service_code=req.selected_service_code if req else None,
         )
+    except BatchConfirmationError as error:
+        status_code = {"not_found": 404, "stale": 409}.get(error.reason, 400)
+        raise HTTPException(status_code=status_code, detail=str(error)) from error
 
-    # SECURITY: Require preview to have been run before confirming (H-1, CWE-367).
-    # Agent Design Invariant #4: "No tool skips approval." A job with no
-    # preview_hash means the user never saw estimated costs.
-    if not job.preview_hash:
-        raise HTTPException(
-            status_code=400,
-            detail="Job must be previewed before confirmation. "
-            "Call batch_preview first to review costs.",
-        )
-
-    # TOCTOU check: verify rows haven't changed since preview
-    current_rows = (
-        db.query(JobRow)
-        .filter(JobRow.job_id == job_id)
-        .order_by(JobRow.row_number)
-        .all()
-    )
-    checksum_concat = "|".join(f"{r.row_number}:{r.row_checksum}" for r in current_rows)
-    current_hash = hashlib.sha256(checksum_concat.encode()).hexdigest()
-    if current_hash != job.preview_hash:
-        raise HTTPException(
-            status_code=409,
-            detail="Job data has changed since preview. Please re-preview before confirming.",
-        )
-
-    # --- Atomic CAS: transition pending → running (no rollback needed) ---
-    # All validations passed. The CAS prevents two concurrent confirms.
-    result = db.execute(
-        update(Job)
-        .where(Job.id == job_id, Job.status == "pending")
-        .values(status="running", started_at=datetime.now(UTC).isoformat())
-    )
-    db.commit()
-
-    if result.rowcount == 0:
-        # Another concurrent request already transitioned this job
-        raise HTTPException(
-            status_code=400,
-            detail="Job cannot be confirmed (concurrent modification). "
-            "Another request may have already confirmed this job.",
-        )
-
-    # Re-fetch job after atomic transition for subsequent logic
-    job = db.query(Job).filter(Job.id == job_id).first()
-
-    # Write-back preference: user toggle overrides, but interactive always off
-    if req and req.write_back_enabled is not None:
-        job.write_back_enabled = req.write_back_enabled and not job.is_interactive
-    else:
-        job.write_back_enabled = not job.is_interactive
-
-    selected_service_code: str | None = None
-    if req and req.selected_service_code is not None:
-        if not job.is_interactive:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "selected_service_code is only valid for interactive shipment jobs."
-                ),
-            )
-        selected_service_code = resolve_service_code(
-            str(req.selected_service_code).strip(),
-            default="",
-        )
-        if not selected_service_code:
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid selected_service_code.",
-            )
-
-    db.commit()
     run_id = DecisionAuditService.resolve_run_id_for_job(job_id)
     DecisionAuditService.log_event(
         run_id=run_id,

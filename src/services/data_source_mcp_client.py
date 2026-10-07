@@ -353,11 +353,14 @@ class DataSourceMCPClient:
         info = await self.get_source_info()
         if info is None:
             return None
-        return {
+        signature = {
             "source_type": info.get("source_type", "unknown"),
             "source_ref": info.get("path") or info.get("query") or "",
             "schema_fingerprint": info.get("signature", ""),
         }
+        if isinstance(info.get("binding_digest"), str):
+            signature["binding_digest"] = info["binding_digest"]
+        return signature
 
     async def get_schema(self) -> dict[str, Any]:
         """Get column schema of active data source."""
@@ -444,6 +447,7 @@ class DataSourceMCPClient:
         row_number: int,
         tracking_number: str,
         shipped_at: str | None = None,
+        expected_source_binding: str | None = None,
     ) -> None:
         """Write tracking number back to source for a single row.
 
@@ -459,10 +463,12 @@ class DataSourceMCPClient:
             "row_number": row_number,
             "tracking_number": tracking_number,
             "shipped_at": shipped_at,
+            **({"expected_source_binding": expected_source_binding} if expected_source_binding is not None else {}),
         })
 
     async def write_back_batch(
-        self, updates: dict[int, dict[str, str]]
+        self, updates: dict[int, dict[str, str]],
+        expected_source_binding: str | None = None,
     ) -> dict[str, Any]:
         """Write tracking numbers back to source for multiple rows.
 
@@ -485,6 +491,7 @@ class DataSourceMCPClient:
                     "row_number": row_number,
                     "tracking_number": data["tracking_number"],
                     "shipped_at": data.get("shipped_at"),
+                    **({"expected_source_binding": expected_source_binding} if expected_source_binding is not None else {}),
                 })
                 success_count += 1
             except Exception as e:

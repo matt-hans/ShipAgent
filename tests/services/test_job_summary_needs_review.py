@@ -149,3 +149,24 @@ class TestJobSummaryNeedsReview:
         assert summary["needs_review_count"] == 3
         assert summary["in_flight_count"] == 0
         assert summary["pending_count"] == 0
+
+    def test_pending_count_is_never_negative_when_processed_counts_needs_review(
+        self, db_session,
+    ) -> None:
+        """Execution persists the authoritative projection, whose processed_rows
+        already includes needs_review rows; pending_count must not subtract them
+        a second time."""
+        job_id, _ = _create_job_with_rows(
+            db_session,
+            ["completed", "completed", "completed", "needs_review"],
+        )
+        job = JobService(db_session).get_job(job_id)
+        job.processed_rows = 4
+        job.successful_rows = 3
+        job.failed_rows = 1
+        db_session.commit()
+
+        summary = JobService(db_session).get_job_summary(job_id)
+
+        assert summary["needs_review_count"] == 1
+        assert summary["pending_count"] == 0
