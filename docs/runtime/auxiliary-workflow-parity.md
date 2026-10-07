@@ -37,7 +37,7 @@ expiry and session teardown invalidate pending authority. Previews expire after
 Carrier exceptions, interrupted calls and unrecognized success responses have
 an unconfirmed outcome. Check carrier status before trying a new operation.
 The original confirmation cannot be retried, and the client disables that card.
-The gateway already gives these mutations zero automatic retries. Confirmation
+The auxiliary gateway operations also reject the historical 503/upstream retry exception. They make exactly one carrier attempt; pre-existing shipment-only retry policy is unchanged. Confirmation
 and outcome events are recorded in the redaction-aware decision audit.
 
 ## Local data and continued workflows
