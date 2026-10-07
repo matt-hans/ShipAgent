@@ -723,3 +723,164 @@ async def test_full_lifecycle_pair_loss_still_requires_nonreusable_authority_res
     assert replay["status"] == "processing_unknown"
     assert replay["job_ref"] == first["job_ref"]
     assert len(target.dispatches) == 1
+
+
+async def test_consume_failure_preserves_accepted_job_and_retries_only_settlement(
+    real_redis,
+):
+    bound = bound_identity()
+    grants = GrantRecorder()
+    target = DurableTarget(bound, grants)
+    calls = 0
+
+    async def consume(record):
+        nonlocal calls
+        calls += 1
+        grants.calls.append(("consume", record))
+        if calls == 1:
+            raise ConnectionError("PRIVATE_SETTLEMENT_CANARY")
+
+    grants.consume_on_accept = consume
+    first = await coordinator(real_redis).invoke(
+        target=target, identity=bound, arguments={}, grant_callbacks=grants
+    )
+    assert first["status"] == "processing"
+    assert [name for name, _ in grants.calls] == ["reserve", "consume", "hold"]
+    second = await coordinator(real_redis).reconcile(
+        target=target,
+        job_ref=first["job_ref"],
+        account_id=bound.account_id,
+        provider_connection_id=bound.provider_connection_id,
+        grant_callbacks=grants,
+    )
+    assert second == first
+    assert calls == 2
+    assert len(target.dispatches) == 1
+    assert "PRIVATE_" not in str(first)
+
+
+async def test_expired_negative_evidence_never_releases_reserved_authorization(
+    real_redis,
+):
+    import asyncio
+    from datetime import timedelta
+
+    from src.control_plane.relay.protocol import TargetAcceptanceEvidence
+
+    bound = bound_identity(
+        authorization_expires_at=datetime.now(UTC) + timedelta(seconds=0.03)
+    )
+    grants = GrantRecorder()
+    target = DurableTarget(bound, grants)
+
+    async def send(*, identity, **kwargs):
+        target.proof = TargetAcceptanceEvidence(
+            identity=identity,
+            outcome="not_accepted",
+            proof_id="sha256:" + "d" * 64,
+            rejection_fenced=True,
+        )
+        await asyncio.sleep(0.05)
+
+    target.dispatch_invocation = send
+    result = await coordinator(real_redis).invoke(
+        target=target, identity=bound, arguments={}, grant_callbacks=grants
+    )
+    assert result["reason"] == "approval_expired"
+    assert [name for name, _ in grants.calls] == ["reserve"]
+
+
+async def test_stale_unknown_reconciliation_cannot_replace_concurrent_acceptance(
+    real_redis,
+):
+    import asyncio
+
+    from src.control_plane.relay.lifecycle_store import (
+        InvocationLifecycleStore,
+        InvocationState,
+        JobReferenceStore,
+    )
+    from src.control_plane.relay.protocol import TargetAcceptanceEvidence
+
+    bound = bound_identity()
+    store = InvocationLifecycleStore(real_redis)
+    initial, _ = await store.create(bound)
+    sent = await store.transition(initial, InvocationState.SENT_TO_TARGET)
+    entered = asyncio.Event()
+    finish = asyncio.Event()
+    grants = GrantRecorder()
+    target = DurableTarget(bound, grants)
+
+    async def unknown(identity):
+        entered.set()
+        await finish.wait()
+        return TargetAcceptanceEvidence(identity=identity, outcome="unknown")
+
+    target.get_acceptance = unknown
+    pending = asyncio.create_task(
+        coordinator(real_redis).reconcile(
+            target=target,
+            job_ref=initial.job_ref,
+            account_id=bound.account_id,
+            provider_connection_id=bound.provider_connection_id,
+            grant_callbacks=grants,
+        )
+    )
+    await asyncio.wait_for(entered.wait(), 1)
+    accepted = await store.record_evidence(
+        sent,
+        TargetAcceptanceEvidence(
+            identity=bound,
+            outcome="accepted",
+            local_job_id="original-job",
+            proof_id="sha256:" + "c" * 64,
+            accepted_at=datetime.now(UTC),
+        ),
+    )
+    finish.set()
+    await asyncio.wait_for(pending, 1)
+    assert (
+        await JobReferenceStore(real_redis).resolve(
+            initial.job_ref,
+            account_id=bound.account_id,
+            provider_connection_id=bound.provider_connection_id,
+        )
+        == accepted
+    )
+    assert "release" not in [name for name, _ in grants.calls]
+
+
+async def test_acceptance_timeout_keeps_recoverable_deadline_state(real_redis):
+    import asyncio
+
+    from src.control_plane.relay.lifecycle import TimeoutLadder
+    from src.control_plane.relay.lifecycle_store import (
+        InvocationState,
+        JobReferenceStore,
+    )
+
+    bound = bound_identity()
+    grants = GrantRecorder()
+    target = DurableTarget(bound, grants)
+
+    async def slow_query(identity):
+        await asyncio.sleep(0.2)
+        return target.proof
+
+    target.get_acceptance = slow_query
+    first = await coordinator(
+        real_redis,
+        timeout_ladder=TimeoutLadder(
+            cloud_send_seconds=0.01,
+            target_accept_seconds=0.02,
+            sync_hard_deadline_seconds=0.1,
+        ),
+    ).invoke(target=target, identity=bound, arguments={}, grant_callbacks=grants)
+    assert first["status"] == "processing_unknown"
+    record = await JobReferenceStore(real_redis).resolve(
+        first["job_ref"],
+        account_id=bound.account_id,
+        provider_connection_id=bound.provider_connection_id,
+    )
+    assert record.state == InvocationState.DEADLINE_EXCEEDED
+    assert "release" not in [name for name, _ in grants.calls]

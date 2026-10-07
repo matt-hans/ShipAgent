@@ -119,6 +119,17 @@ extend retention to avoid designing lifecycle recovery.
 
 ## Separately bounded implementation prerequisites
 
+The shared persistence primitives are documented in
+[authorization-persistence.md](../control-plane/authorization-persistence.md).
+Issue 66's bounded `InvocationLifecycleCoordinator`, `GrantCallbacks` and
+`JobReferenceStore` seam is documented in
+[invocation-recovery.md](../control-plane/invocation-recovery.md). It supplies
+real-Redis acceptance/recovery evidence and a deterministic process target;
+production grant authority, gate ownership adaptation, safe authorized preaccept
+retry and hosted enablement remain issue 67 / issue 51 obligations. Its terminal
+rejection evidence must not be mistaken for an implemented redispatch protocol.
+
+
 Issue 51 explicitly excludes building the store. The following missing work
 must be tracked separately, then used for issue 51's real-store verification:
 

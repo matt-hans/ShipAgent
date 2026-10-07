@@ -241,3 +241,32 @@ async def test_protocol_target_rejects_invalid_existing_envelope_fields(
             )
         assert (await target.get_acceptance(identity)).outcome == "unknown"
         assert effects(journal) == []
+
+
+async def test_protocol_target_rejects_nonincreasing_session_sequence(tmp_path):
+    first = bound_identity()
+    second = bound_identity(idempotency_key="different_server_key_" + "a" * 32)
+    async with target_process(tmp_path, first) as (endpoint, journal):
+        target = ProtocolTarget(
+            port=endpoint["port"],
+            session_id=endpoint["session_id"],
+            execution_target_id=first.execution_target_id,
+        )
+        await target.dispatch_invocation(
+            identity=first,
+            arguments={},
+            deadline_at=datetime.now(UTC) + timedelta(seconds=5),
+        )
+        restarted_transport = ProtocolTarget(
+            port=endpoint["port"],
+            session_id=endpoint["session_id"],
+            execution_target_id=second.execution_target_id,
+        )
+        with pytest.raises(RuntimeError, match="synthetic_protocol_rejected"):
+            await restarted_transport.dispatch_invocation(
+                identity=second,
+                arguments={},
+                deadline_at=datetime.now(UTC) + timedelta(seconds=5),
+            )
+        assert len(effects(journal)) == 1
+        assert (await target.get_acceptance(second)).outcome == "unknown"

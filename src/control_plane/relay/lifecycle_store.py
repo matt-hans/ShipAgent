@@ -18,8 +18,11 @@ from src.control_plane.relay.protocol import (
     TargetAcceptanceEvidence,
 )
 from src.registry.identifiers import (
+    SHIPAGENT_ID_HEX_LENGTH,
     ShipAgentIdFamily,
     parse_shipagent_id,
+    shipagent_id_pattern,
+    shipagent_id_prefix,
 )
 
 
@@ -75,7 +78,7 @@ class InvocationRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     identity: InvocationIdentity
-    job_ref: str = Field(pattern=r"^sa_job_[0-9a-f]{32}$")
+    job_ref: str = Field(pattern=shipagent_id_pattern(ShipAgentIdFamily.JOB))
     created_at_ms: int = Field(gt=0, strict=True)
     expires_at_ms: int = Field(gt=0, strict=True)
     state: InvocationState = InvocationState.QUEUED
@@ -149,12 +152,12 @@ class LifecycleUnavailable(Exception):
         super().__init__("invocation_state_unavailable")
 
 
-_CREATE = """
+_CREATE = f"""
 local t = redis.call('TIME')
 local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
 if tonumber(ARGV[3]) > now or tonumber(ARGV[4]) <= now then return -1 end
-if tonumber(ARGV[4]) - tonumber(ARGV[3]) > 86400000 then return -1 end
-if tonumber(ARGV[5]) <= now or tonumber(ARGV[5]) - now > 900000 then return -1 end
+if tonumber(ARGV[4]) - tonumber(ARGV[3]) > {RedisTtl.INVOCATION_SECONDS * 1000} then return -1 end
+if tonumber(ARGV[5]) <= now or tonumber(ARGV[5]) - now > {RedisTtl.EXECUTION_GRANT_SECONDS * 1000} then return -1 end
 if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
 if redis.call('EXISTS', KEYS[2]) == 1 then return -1 end
 redis.call('SET', KEYS[1], ARGV[1], 'PXAT', ARGV[4])
@@ -216,10 +219,10 @@ class InvocationLifecycleStore:
             # Domain separation keeps the public reference opaque and stable if
             # only one half of a pair is lost. A surviving pointer must deny a
             # replacement pair, not become an orphan beside a newly minted job.
-            job_ref="sa_job_"
+            job_ref=shipagent_id_prefix(ShipAgentIdFamily.JOB)
             + hashlib.sha256(
                 ("shipagent-job-reference:" + identity.idempotency_key).encode()
-            ).hexdigest()[:32],
+            ).hexdigest()[:SHIPAGENT_ID_HEX_LENGTH],
             created_at_ms=now,
             expires_at_ms=now + RedisTtl.INVOCATION_SECONDS * 1000,
         )

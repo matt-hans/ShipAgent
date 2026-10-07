@@ -22,6 +22,7 @@ from src.control_plane.relay.protocol import (
     InvocationIdentity,
     relay_invocation_input_hash,
 )
+from src.errors.registry import get_error
 
 
 class GrantCallbacks(Protocol):
@@ -125,35 +126,46 @@ def build_processing_envelope(
     return {"status": "processing", "job_ref": job_ref, "poll_after_ms": poll_after_ms}
 
 
+# Fixed reason/code mapping: dependency text never becomes provider copy.
+_PROVIDER_CODES = {
+    "target_offline": "E-6001",
+    "processing_unknown": "E-6004",
+    "invocation_unavailable": "E-6007",
+    "approval_expired": "E-6008",
+}
+
+
+def _degraded(*, reason: str, status: str, terminal: bool) -> dict[str, object]:
+    error = get_error(_PROVIDER_CODES[reason])
+    assert error is not None
+    return {
+        "status": status,
+        "reason": reason,
+        "terminal": terminal,
+        "message": f"{error.message_template} {error.remediation}",
+    }
+
+
 def build_unknown_envelope(
     job_ref: str, poll_after_ms: int = 2000
 ) -> dict[str, object]:
     return {
-        "status": "processing_unknown",
-        "reason": "processing_unknown",
-        "terminal": False,
-        "message": "Check the existing job before retrying; acceptance is still being reconciled.",
+        **_degraded(
+            reason="processing_unknown", status="processing_unknown", terminal=False
+        ),
         "job_ref": job_ref,
         "poll_after_ms": poll_after_ms,
     }
 
 
 def build_expired_envelope() -> dict[str, object]:
-    return {
-        "status": "blocked",
-        "reason": "approval_expired",
-        "terminal": True,
-        "message": "This authorization expired. Check any existing job before requesting a new preview and approval.",
-    }
+    return _degraded(reason="approval_expired", status="blocked", terminal=True)
 
 
 def build_unavailable_envelope() -> dict[str, object]:
-    return {
-        "status": "unavailable",
-        "reason": "invocation_unavailable",
-        "terminal": True,
-        "message": "The existing invocation cannot be verified. Do not retry a purchase; check its original status.",
-    }
+    return _degraded(
+        reason="invocation_unavailable", status="unavailable", terminal=True
+    )
 
 
 class InvocationLifecycleCoordinator:
@@ -231,10 +243,12 @@ class InvocationLifecycleCoordinator:
             if record is not None:
                 await self._cancel_and_hold(record, grant_callbacks, budget)
             raise
-        except Exception:
+        except Exception as exc:
             if record is None:
                 return build_unavailable_envelope()
-            await self._unknown(record, grant_callbacks, budget)
+            await self._unknown(
+                record, grant_callbacks, budget, timed_out=isinstance(exc, TimeoutError)
+            )
             return build_unknown_envelope(record.job_ref, self.timeouts.poll_after_ms)
 
     async def reconcile(
@@ -293,12 +307,16 @@ class InvocationLifecycleCoordinator:
             except asyncio.CancelledError:
                 continue
 
-    async def _unknown(self, record, callbacks, budget):
+    async def _unknown(self, record, callbacks, budget, *, timed_out=False):
         try:
             state = (
                 InvocationState.ABANDONED
                 if record.state == InvocationState.QUEUED
-                else InvocationState.TARGET_DISCONNECTED_MID_CALL
+                else (
+                    InvocationState.DEADLINE_EXCEEDED
+                    if timed_out
+                    else InvocationState.TARGET_DISCONNECTED_MID_CALL
+                )
             )
             if record.state in {InvocationState.QUEUED, InvocationState.SENT_TO_TARGET}:
                 changed = await budget.call(self.invocations.transition(record, state))
@@ -333,8 +351,10 @@ class InvocationLifecycleCoordinator:
             )
             if accepted is None:
                 raise LifecycleUnavailable()
-        except Exception:
-            await self._unknown(record, callbacks, budget)
+        except Exception as exc:
+            await self._unknown(
+                record, callbacks, budget, timed_out=isinstance(exc, TimeoutError)
+            )
             return build_unknown_envelope(record.job_ref, self.timeouts.poll_after_ms)
         return await self._settle(accepted, callbacks, budget)
 
@@ -350,12 +370,9 @@ class InvocationLifecycleCoordinator:
                 return build_unknown_envelope(
                     record.job_ref, self.timeouts.poll_after_ms
                 )
-            return {
-                "status": "unavailable",
-                "reason": "target_offline",
-                "terminal": True,
-                "message": "The target positively rejected this invocation. Reconnect before continuing.",
-            }
+            return _degraded(
+                reason="target_offline", status="unavailable", terminal=True
+            )
         if expired:
             await self._hold(record, callbacks, budget)
         else:
