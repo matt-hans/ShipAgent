@@ -254,8 +254,11 @@ async def _execute_batch(
 
         if result.get("status") == "cancelled":
             await observer.on_batch_failed(
-                job_id, "E-4012", "Batch cancelled.",
-                result["successful"] + result["failed"], status="cancelled",
+                job_id,
+                "E-4012",
+                "Batch cancelled.",
+                result["successful"] + result["failed"],
+                status="cancelled",
             )
         elif result["failed"] == 0:
             await observer.on_batch_completed(
@@ -279,8 +282,11 @@ async def _execute_batch(
     except asyncio.CancelledError:
         job = db.query(Job).filter(Job.id == job_id).first()
         await observer.on_batch_failed(
-            job_id, "E-4012", "Batch cancelled.",
-            job.processed_rows if job else 0, status="cancelled",
+            job_id,
+            "E-4012",
+            "Batch cancelled.",
+            job.processed_rows if job else 0,
+            status="cancelled",
         )
         raise
     except Exception:
@@ -335,7 +341,8 @@ async def confirm_job(
 
     try:
         job, selected_service_code = confirm_batch(
-            job_id, db,
+            job_id,
+            db,
             write_back_enabled=req.write_back_enabled if req else True,
             selected_service_code=req.selected_service_code if req else None,
         )

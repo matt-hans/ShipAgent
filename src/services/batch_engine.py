@@ -232,7 +232,9 @@ class BatchEngine:
             async with semaphore:
                 order_data: dict[str, Any] = {}
                 rate_error: str | None = None
-                safe_rate_error = "Rate unavailable. Re-preview before confirming this batch."
+                safe_rate_error = (
+                    "Rate unavailable. Re-preview before confirming this batch."
+                )
                 cost_cents = 0
                 try:
                     order_data = self._parse_order_data(row)
@@ -304,7 +306,9 @@ class BatchEngine:
                     amount = rate_result.get("totalCharges", {}).get("monetaryValue")
                     cost_cents = _dollars_to_cents(amount)
                 except TimeoutError:
-                    safe_rate_error = "Rate timeout. Re-preview before confirming this batch."
+                    safe_rate_error = (
+                        "Rate timeout. Re-preview before confirming this batch."
+                    )
                     rate_error = (
                         f"[E-3006] Preview rate timeout after {rate_timeout_s:.1f}s "
                         "while calling UPS rate service."
@@ -428,9 +432,8 @@ class BatchEngine:
             "preview_rows": preview_rows,
             "additional_rows": additional_rows,
             "total_estimated_cost_cents": total_estimated_cost_cents,
-            "confirmation_ready": bool(preview_rows) and not any(
-                row.get("rate_error") for row in preview_rows
-            ),
+            "confirmation_ready": bool(preview_rows)
+            and not any(row.get("rate_error") for row in preview_rows),
         }
 
     async def execute(
@@ -612,7 +615,9 @@ class BatchEngine:
                     async with db_lock:
                         # Query the persisted column, not a cached Job object:
                         # queued rows must observe cancellation from another session.
-                        status = self._db.query(Job.status).filter(Job.id == job_id).scalar()
+                        status = (
+                            self._db.query(Job.status).filter(Job.id == job_id).scalar()
+                        )
                         if status is None or status == "cancelled":
                             return
                         row.status = "in_flight"
@@ -928,8 +933,11 @@ class BatchEngine:
             except WriteBackBlocked:
                 mark_tasks_blocked(self._db, job_id)
                 write_back_result = {
-                    "status": "error", "action": "write_back", "error_code": "E-4013",
-                    "success_count": 0, "failure_count": len(successful_write_back_updates),
+                    "status": "error",
+                    "action": "write_back",
+                    "error_code": "E-4013",
+                    "success_count": 0,
+                    "failure_count": len(successful_write_back_updates),
                 }
             except Exception:
                 failure_count = len(successful_write_back_updates)
