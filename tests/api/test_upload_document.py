@@ -154,7 +154,8 @@ class TestUploadDocument:
 
         agent_messages = []
 
-        async def capture_message(sid, msg, run_id=None):
+        async def capture_message(sid, msg, run_id=None, turn_id=None):
+            assert isinstance(turn_id, str) and turn_id
             agent_messages.append(msg)
 
         with patch(
