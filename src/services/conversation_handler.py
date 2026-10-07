@@ -855,6 +855,8 @@ async def process_message(
 
                     yield event
 
+                if not _turn_active():
+                    return
                 if public_text_block.length:
                     await session.agent.interrupt()
                     run_status = AgentDecisionRunStatus.failed
