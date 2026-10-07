@@ -1,0 +1,63 @@
+{
+  "source_index": "https://deb.debian.org/debian/dists/trixie/main/binary-amd64/Packages.xz",
+  "verified_date": "2026-10-07",
+  "architecture": "Debian 13 amd64",
+  "packages": [
+    {
+      "name": "libpq5",
+      "version": "17.11-0+deb13u1",
+      "url": "https://deb.debian.org/debian/pool/main/p/postgresql-17/libpq5_17.11-0+deb13u1_amd64.deb",
+      "size": 237376,
+      "sha256": "20a4c9ef58b4baf90deda67cfb2cc062871c062830dddc234d28f5ac7931b86b",
+      "copyright_file": "usr/share/doc/libpq5/copyright"
+    },
+    {
+      "name": "postgresql-17",
+      "version": "17.11-0+deb13u1",
+      "url": "https://deb.debian.org/debian/pool/main/p/postgresql-17/postgresql-17_17.11-0+deb13u1_amd64.deb",
+      "size": 16678028,
+      "sha256": "d2ce1ddffafa783f9acda4c92c86fc21e8288bff3782d739294f14fa797d7886",
+      "copyright_file": "usr/share/doc/postgresql-17/copyright"
+    },
+    {
+      "name": "postgresql-client-17",
+      "version": "17.11-0+deb13u1",
+      "url": "https://deb.debian.org/debian/pool/main/p/postgresql-17/postgresql-client-17_17.11-0+deb13u1_amd64.deb",
+      "size": 2071508,
+      "sha256": "9d8558f8dd57c8e92e218a20698383575d53742ca3f9e7c2b7fe5f246d5216ae",
+      "copyright_file": "usr/share/doc/postgresql-client-17/copyright"
+    },
+    {
+      "name": "redis-server",
+      "version": "5:8.0.2-3+deb13u2",
+      "url": "https://deb.debian.org/debian/pool/main/r/redis/redis-server_8.0.2-3+deb13u2_amd64.deb",
+      "size": 66576,
+      "sha256": "0edc72458f66c68f2d4ccd0c9959a85a81f4ec7de410a28861cde4a2059f245c",
+      "copyright_file": "usr/share/doc/redis-server/copyright"
+    },
+    {
+      "name": "redis-tools",
+      "version": "5:8.0.2-3+deb13u2",
+      "url": "https://deb.debian.org/debian/pool/main/r/redis/redis-tools_8.0.2-3+deb13u2_amd64.deb",
+      "size": 1245324,
+      "sha256": "9d7cbe20963c8bfc00af3e8a3a33451bb815f7501b12e55583f9e942a767859b",
+      "copyright_file": "usr/share/doc/redis-tools/copyright"
+    },
+    {
+      "name": "liblzf1",
+      "version": "3.6-4+b3",
+      "url": "https://deb.debian.org/debian/pool/main/libl/liblzf/liblzf1_3.6-4+b3_amd64.deb",
+      "size": 10112,
+      "sha256": "1f7677f1098f9f643806d64a2ed54d14bcd5954e71b63c2aa1e9bb7bcd84d783",
+      "copyright_file": "usr/share/doc/liblzf1/copyright"
+    },
+    {
+      "name": "libjemalloc2",
+      "version": "5.3.0-3",
+      "url": "https://deb.debian.org/debian/pool/main/j/jemalloc/libjemalloc2_5.3.0-3_amd64.deb",
+      "size": 274324,
+      "sha256": "e7d64919e620e8ea46960104efe1e9c977d751e5b610a5d89b0b51aeae9530d7",
+      "copyright_file": "usr/share/doc/libjemalloc2/copyright"
+    }
+  ]
+}
