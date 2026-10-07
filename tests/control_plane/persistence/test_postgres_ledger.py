@@ -301,3 +301,28 @@ async def test_cleanup_cannot_bypass_legal_hold_and_deletion_cleans_released_hol
         )
         == 0
     )
+
+
+async def test_audit_cleanup_cannot_delete_held_evidence(postgres_db):
+    from src.control_plane.audit.models import ControlPlaneAuditEvent
+    from src.control_plane.audit.service import ControlPlaneAuditService
+    from src.control_plane.retention.legal_hold import LegalHoldService
+
+    data = await seed(postgres_db)
+    await LegalHoldService.place(
+        session=postgres_db,
+        account_id=data.account_id,
+        reason_hash="a" * 64,
+        actor_id_hash="b" * 64,
+    )
+    await postgres_db.commit()
+    with pytest.raises(PermissionError, match="active legal hold"):
+        await ControlPlaneAuditService.cleanup_for_account(
+            session=postgres_db, account_id=data.account_id
+        )
+    assert (
+        await postgres_db.scalar(
+            select(func.count()).select_from(ControlPlaneAuditEvent)
+        )
+        == 1
+    )
