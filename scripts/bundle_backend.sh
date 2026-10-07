@@ -61,13 +61,16 @@ PID=""
 # Also stop the smoke sidecar on any abort (set -e) so it is never orphaned.
 trap 'if [ -n "$PID" ]; then kill "$PID" 2>/dev/null || true; wait "$PID" 2>/dev/null || true; fi; rm -rf "$SMOKE_DATA_DIR"' EXIT
 # SMOKE_LAUNCH_BEGIN
-env -i PATH="$PATH" HOME="$SMOKE_DATA_DIR" \
+(
+cd "$SMOKE_DATA_DIR"
+exec env -i PATH="$PATH" HOME="$SMOKE_DATA_DIR" \
 PYTHON_DOTENV_DISABLED=1 \
 SHIPAGENT_DATA_DIR="$SMOKE_DATA_DIR" \
 SHIPAGENT_KEYRING_DISABLED=1 \
 DATABASE_URL="sqlite:///$SMOKE_DATA_DIR/shipagent.db" \
 FILTER_TOKEN_SECRET="smoke-test-filter-secret-000000000000" \
-    "$BINARY" serve --port 0 > "$BINARY_DIR/.smoke_stdout" 2>&1 &
+    "$BINARY" serve --port 0
+) > "$BINARY_DIR/.smoke_stdout" 2>&1 &
 PID=$!
 # SMOKE_LAUNCH_END
 

@@ -60,7 +60,7 @@ def test_bundle_smoke_does_not_inherit_operator_settings_or_credentials(tmp_path
     binary.write_text(
         f"#!{sys.executable}\n"
         "import json, os\n"
-        "print(json.dumps(dict(os.environ)))\n"
+        "print(json.dumps({**dict(os.environ), '__cwd__': os.getcwd()}))\n"
     )
     binary.chmod(0o755)
     home = tmp_path / "smoke-home"
@@ -86,6 +86,7 @@ def test_bundle_smoke_does_not_inherit_operator_settings_or_credentials(tmp_path
     assert result.returncode == 0, result.stdout + result.stderr
     environment = json.loads((tmp_path / ".smoke_stdout").read_text())
     assert environment["HOME"] == str(home)
+    assert environment["__cwd__"] == str(home)
     assert environment["PYTHON_DOTENV_DISABLED"] == "1"
     assert environment["SHIPAGENT_KEYRING_DISABLED"] == "1"
     assert not {"ANTHROPIC_API_KEY", "SHIPAGENT_API_KEY", "AGENT_MODEL"} & environment.keys()
