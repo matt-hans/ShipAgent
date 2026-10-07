@@ -8,18 +8,72 @@ Tasks are DB-persisted, so they survive process crashes. On restart,
 any pending tasks can be drained via process_write_back_queue().
 """
 
+import json
 import logging
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from src.db.models import WriteBackTask
+from src.db.models import AuditLog, Job, WriteBackTask
 
 logger = logging.getLogger(__name__)
 
 # Maximum retry attempts before moving to dead letter
 MAX_RETRIES = 3
+
+
+class WriteBackBlocked(ValueError):
+    """The original destination or saved write permission cannot be proven."""
+
+
+async def require_write_back_binding(db: Session, job_id: str, gateway: Any) -> str:
+    """Authorize one original-source write; callers pass the result to the tool.
+
+    External commerce imports currently lack original account identity. Never
+    infer that identity from whichever connection happens to be active now.
+    """
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not isinstance(job, Job) or not job.write_back_enabled:
+        raise WriteBackBlocked("Write-back was not authorized for this job")
+    record = (
+        db.query(AuditLog)
+        .filter(AuditLog.job_id == job_id, AuditLog.message == "job_source_signature")
+        .order_by(AuditLog.timestamp.asc())
+        .first()
+    )
+    try:
+        expected = json.loads(record.details)["source_signature"]["binding_digest"]
+    except (AttributeError, TypeError, ValueError, KeyError):
+        expected = None
+    if not isinstance(expected, str) or not expected:
+        raise WriteBackBlocked("Original source binding is unavailable")
+    current = await gateway.get_source_info()
+    if not isinstance(current, dict) or current.get("binding_digest") != expected:
+        raise WriteBackBlocked("Original source is disconnected or has changed")
+    if current.get("source_type") not in {
+        "csv",
+        "delimited",
+        "json",
+        "xml",
+        "edi",
+        "fixed_width",
+        "excel",
+        "database",
+    }:
+        raise WriteBackBlocked("Original external account binding is unavailable")
+    return expected
+
+
+def mark_tasks_blocked(db: Session, job_id: str) -> int:
+    """Park unbound work; normal queue retries must never pick it up."""
+    count = (
+        db.query(WriteBackTask)
+        .filter(WriteBackTask.job_id == job_id, WriteBackTask.status == "pending")
+        .update({"status": "blocked"})
+    )
+    db.commit()
+    return count
 
 
 def _find_existing_task(
@@ -181,14 +235,24 @@ async def process_write_back_queue(
     dead_letter = 0
 
     for task in tasks:
+        if task.status != "pending":
+            continue
         try:
+            binding = await require_write_back_binding(db, task.job_id, gateway)
             await gateway.write_back_single(
                 row_number=task.row_number,
                 tracking_number=task.tracking_number,
                 shipped_at=task.shipped_at,
+                expected_source_binding=binding,
             )
             task.status = "completed"
             processed += 1
+        except WriteBackBlocked:
+            task.status = "blocked"
+            failed += 1
+            logger.warning(
+                "Write-back blocked: job=%s row=%d", task.job_id, task.row_number
+            )
         except Exception as e:
             task.retry_count = (task.retry_count or 0) + 1
             if task.retry_count >= MAX_RETRIES:
@@ -197,16 +261,22 @@ async def process_write_back_queue(
                 logger.warning(
                     "Write-back task dead-lettered: job=%s row=%d "
                     "tracking=%s retries=%d error=%s",
-                    task.job_id, task.row_number, task.tracking_number,
-                    task.retry_count, e,
+                    task.job_id,
+                    task.row_number,
+                    task.tracking_number,
+                    task.retry_count,
+                    e,
                 )
             else:
                 failed += 1
                 logger.info(
                     "Write-back task failed (will retry): job=%s row=%d "
                     "retry=%d/%d error=%s",
-                    task.job_id, task.row_number,
-                    task.retry_count, MAX_RETRIES, e,
+                    task.job_id,
+                    task.row_number,
+                    task.retry_count,
+                    MAX_RETRIES,
+                    e,
                 )
 
     db.commit()

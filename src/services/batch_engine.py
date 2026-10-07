@@ -29,7 +29,7 @@ from src.errors.terminal_diagnostics import (
     project_terminal_row_diagnostic,
 )
 from src.services.errors import UPSServiceError
-from src.services.gateway_provider import get_data_gateway, get_external_sources_client
+from src.services.gateway_provider import get_data_gateway
 from src.services.idempotency import generate_idempotency_key
 from src.services.international_rules import (
     enrich_order_data_for_international,
@@ -46,9 +46,12 @@ from src.services.ups_payload_builder import (
 )
 from src.services.ups_service_codes import ServiceCode, upgrade_to_international
 from src.services.write_back_worker import (
+    WriteBackBlocked,
     enqueue_write_back,
     mark_rows_completed,
+    mark_tasks_blocked,
     mark_tasks_completed,
+    require_write_back_binding,
 )
 
 logger = logging.getLogger(__name__)
@@ -748,7 +751,7 @@ class BatchEngine:
                                     "shipped_at": row.processed_at or "",
                                 }
 
-                        if tracking_number:
+                        if tracking_number and write_back_enabled:
                             # Enqueue durable write-back task (survives crashes)
                             async with db_lock:
                                 enqueue_write_back(
@@ -849,84 +852,67 @@ class BatchEngine:
         elif successful_write_back_updates:
             try:
                 gw = await get_data_gateway()
-                source_info = await gw.get_source_info()
-                if source_info is not None:
-                    source_type = source_info.get("source_type", "")
+                binding = await require_write_back_binding(self._db, job_id, gw)
+                gw_result = await gw.write_back_batch(
+                    successful_write_back_updates,
+                    expected_source_binding=binding,
+                )
 
-                    # Route to external platform or local file write-back
-                    if source_type in (
-                        "shopify",
-                        "amazon",
-                        "woocommerce",
-                        "sap",
-                        "oracle",
-                    ):
-                        ext = await get_external_sources_client()
-                        gw_result = await self._write_back_external(
-                            ext,
-                            source_type,
-                            successful_write_back_updates,
-                            rows,
-                        )
-                    else:
-                        gw_result = await gw.write_back_batch(
-                            successful_write_back_updates,
-                        )
+                update_count = len(successful_write_back_updates)
+                failures = _bounded_write_back_count(
+                    gw_result.get("failure_count"),
+                    update_count,
+                )
+                successes = _bounded_write_back_count(
+                    gw_result.get("success_count"),
+                    update_count - failures,
+                )
+                write_back_result = {
+                    "status": "partial" if failures > 0 else "success",
+                    "action": "write_back",
+                    "success_count": successes,
+                    "failure_count": failures,
+                }
+                if failures > 0:
+                    write_back_result["error_code"] = "E-4001"
 
-                    update_count = len(successful_write_back_updates)
-                    failures = _bounded_write_back_count(
-                        gw_result.get("failure_count"),
-                        update_count,
-                    )
-                    successes = _bounded_write_back_count(
-                        gw_result.get("success_count"),
-                        update_count - failures,
-                    )
-                    write_back_result = {
-                        "status": "partial" if failures > 0 else "success",
-                        "action": "write_back",
-                        "success_count": successes,
-                        "failure_count": failures,
+                # Mark durable queue tasks as completed
+                if failures == 0:
+                    mark_tasks_completed(self._db, job_id)
+                else:
+                    # Partial success: mark only rows that succeeded
+                    failed_rows = {
+                        e["row_number"]
+                        for e in gw_result.get("errors", [])
+                        if "row_number" in e
                     }
-                    if failures > 0:
-                        write_back_result["error_code"] = "E-4001"
-
-                    # Mark durable queue tasks as completed
-                    if failures == 0:
-                        mark_tasks_completed(self._db, job_id)
-                    else:
-                        # Partial success: mark only rows that succeeded
-                        failed_rows = {
-                            e["row_number"]
-                            for e in gw_result.get("errors", [])
-                            if "row_number" in e
-                        }
-                        ok_rows = [
-                            rn
-                            for rn in successful_write_back_updates
-                            if rn not in failed_rows
-                        ]
-                        if ok_rows:
-                            mark_rows_completed(self._db, job_id, ok_rows)
-                    logger.info(
-                        "batch_write_back_finished action=write_back "
-                        "success_count=%d failure_count=%d status=%s",
+                    ok_rows = [
+                        rn
+                        for rn in successful_write_back_updates
+                        if rn not in failed_rows
+                    ]
+                    if ok_rows:
+                        mark_rows_completed(self._db, job_id, ok_rows)
+                logger.info(
+                    "batch_write_back_finished action=write_back "
+                    "success_count=%d failure_count=%d status=%s",
+                    successes,
+                    failures,
+                    write_back_result["status"],
+                )
+                if failures > 0:
+                    logger.warning(
+                        "batch_write_back_partial action=write_back "
+                        "error_code=E-4001 success_count=%d failure_count=%d",
                         successes,
                         failures,
-                        write_back_result["status"],
                     )
-                    if failures > 0:
-                        logger.warning(
-                            "batch_write_back_partial action=write_back "
-                            "error_code=E-4001 success_count=%d failure_count=%d",
-                            successes,
-                            failures,
-                        )
-                else:
-                    write_back_result = {
-                        "status": "skipped",
-                        "message": "No active source connected for write-back.",
-                    }
+            except WriteBackBlocked:
+                mark_tasks_blocked(self._db, job_id)
+                write_back_result = {
+                    "status": "error", "action": "write_back", "error_code": "E-4013",
+                    "success_count": 0, "failure_count": len(successful_write_back_updates),
+                }
             except Exception:
                 failure_count = len(successful_write_back_updates)
                 write_back_result = {
