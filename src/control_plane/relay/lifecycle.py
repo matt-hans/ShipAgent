@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 from collections.abc import Coroutine
 from dataclasses import dataclass
@@ -118,18 +119,22 @@ class _Budget:
         return task.result()
 
 
-def build_processing_envelope(job_ref: str) -> dict[str, str | int]:
-    return {"status": "processing", "job_ref": job_ref, "poll_after_ms": 2000}
+def build_processing_envelope(
+    job_ref: str, poll_after_ms: int = 2000
+) -> dict[str, str | int]:
+    return {"status": "processing", "job_ref": job_ref, "poll_after_ms": poll_after_ms}
 
 
-def build_unknown_envelope(job_ref: str) -> dict[str, object]:
+def build_unknown_envelope(
+    job_ref: str, poll_after_ms: int = 2000
+) -> dict[str, object]:
     return {
         "status": "processing_unknown",
         "reason": "processing_unknown",
         "terminal": False,
         "message": "Check the existing job before retrying; acceptance is still being reconciled.",
         "job_ref": job_ref,
-        "poll_after_ms": 2000,
+        "poll_after_ms": poll_after_ms,
     }
 
 
@@ -139,6 +144,15 @@ def build_expired_envelope() -> dict[str, object]:
         "reason": "approval_expired",
         "terminal": True,
         "message": "This authorization expired. Check any existing job before requesting a new preview and approval.",
+    }
+
+
+def build_unavailable_envelope() -> dict[str, object]:
+    return {
+        "status": "unavailable",
+        "reason": "invocation_unavailable",
+        "terminal": True,
+        "message": "The existing invocation cannot be verified. Do not retry a purchase; check its original status.",
     }
 
 
@@ -165,6 +179,8 @@ class InvocationLifecycleCoordinator:
         budget = _Budget(self.timeouts.sync_hard_deadline_seconds)
         record = None
         try:
+            # Snapshot nested transit-only data before the first suspension.
+            arguments = json.loads(json.dumps(arguments, allow_nan=False))
             if (
                 target.execution_target_id != identity.execution_target_id
                 or relay_invocation_input_hash(identity.tool_name, arguments)
@@ -209,11 +225,15 @@ class InvocationLifecycleCoordinator:
                 cap=self.timeouts.cloud_send_seconds,
             )
             return await self._reconcile(target, sent, grant_callbacks, budget)
+        except asyncio.CancelledError:
+            if record is not None:
+                await self._cancel_and_hold(record, grant_callbacks, budget)
+            raise
         except Exception:
             if record is None:
-                raise LifecycleUnavailable() from None
+                return build_unavailable_envelope()
             await self._unknown(record, grant_callbacks, budget)
-            return build_unknown_envelope(record.job_ref)
+            return build_unknown_envelope(record.job_ref, self.timeouts.poll_after_ms)
 
     async def reconcile(
         self,
@@ -225,14 +245,51 @@ class InvocationLifecycleCoordinator:
         grant_callbacks: GrantCallbacks,
     ) -> dict[str, object]:
         budget = _Budget(self.timeouts.sync_hard_deadline_seconds)
-        record = await budget.call(
-            self.job_refs.resolve(
-                job_ref,
-                account_id=account_id,
-                provider_connection_id=provider_connection_id,
+        record = None
+        try:
+            record = await budget.call(
+                self.job_refs.resolve(
+                    job_ref,
+                    account_id=account_id,
+                    provider_connection_id=provider_connection_id,
+                )
             )
-        )
-        return await self._reconcile(target, record, grant_callbacks, budget)
+            return await self._reconcile(target, record, grant_callbacks, budget)
+        except asyncio.CancelledError:
+            if record is not None:
+                await self._cancel_and_hold(record, grant_callbacks, budget)
+            raise
+        except Exception:
+            return build_unavailable_envelope()
+
+    async def _cancel_and_hold(self, record, callbacks, budget):
+        """Remember caller cancellation while spending only the remaining budget."""
+
+        async def settle():
+            try:
+                latest = await budget.call(
+                    self.invocations.get(
+                        record.relay_invocation_id,
+                        account_id=record.identity.account_id,
+                        provider_connection_id=record.identity.provider_connection_id,
+                    )
+                )
+            except Exception:
+                latest = record
+            await self._unknown(latest, callbacks, budget)
+
+        operation = asyncio.create_task(settle())
+        _PENDING_OPERATIONS.add(operation)
+        operation.add_done_callback(_observe_operation)
+        while not operation.done():
+            remaining = budget.deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                operation.cancel()
+                return
+            try:
+                await asyncio.wait({operation}, timeout=remaining)
+            except asyncio.CancelledError:
+                continue
 
     async def _unknown(self, record, callbacks, budget):
         try:
@@ -266,7 +323,9 @@ class InvocationLifecycleCoordinator:
             )
             if proof.outcome == "unknown":
                 await self._hold(record, callbacks, budget)
-                return build_unknown_envelope(record.job_ref)
+                return build_unknown_envelope(
+                    record.job_ref, self.timeouts.poll_after_ms
+                )
             accepted = await budget.call(
                 self.invocations.record_evidence(record, proof)
             )
@@ -274,7 +333,7 @@ class InvocationLifecycleCoordinator:
                 raise LifecycleUnavailable()
         except Exception:
             await self._unknown(record, callbacks, budget)
-            return build_unknown_envelope(record.job_ref)
+            return build_unknown_envelope(record.job_ref, self.timeouts.poll_after_ms)
         return await self._settle(accepted, callbacks, budget)
 
     async def _settle(self, record, callbacks, budget):
@@ -286,7 +345,9 @@ class InvocationLifecycleCoordinator:
                 await budget.call(callbacks.release(record))
             except Exception:
                 await self._hold(record, callbacks, budget)
-                return build_unknown_envelope(record.job_ref)
+                return build_unknown_envelope(
+                    record.job_ref, self.timeouts.poll_after_ms
+                )
             return {
                 "status": "unavailable",
                 "reason": "target_offline",
@@ -300,4 +361,4 @@ class InvocationLifecycleCoordinator:
                 await budget.call(callbacks.consume_on_accept(record))
             except Exception:
                 await self._hold(record, callbacks, budget)
-        return build_processing_envelope(record.job_ref)
+        return build_processing_envelope(record.job_ref, self.timeouts.poll_after_ms)

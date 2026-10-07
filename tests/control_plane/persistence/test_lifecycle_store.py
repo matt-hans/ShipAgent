@@ -307,3 +307,19 @@ async def test_repeated_identical_recovered_evidence_is_idempotent(real_redis):
     assert recovered.state == InvocationState.RECOVERED_BY_POLL
     assert await store.record_evidence(recovered, proof) == recovered
     assert await store.record_evidence(unknown, proof) == recovered
+
+
+async def test_partial_pair_loss_cannot_mint_a_replacement_job_reference(real_redis):
+    from src.control_plane.relay.lifecycle_store import (
+        InvocationLifecycleStore,
+        LifecycleUnavailable,
+    )
+
+    store = InvocationLifecycleStore(real_redis)
+    bound = identity()
+    original, _ = await store.create(bound)
+    await real_redis.delete(RedisKey.invocation(bound.relay_invocation_id))
+    with pytest.raises(LifecycleUnavailable):
+        await store.create(bound)
+    assert await real_redis.dbsize() == 1
+    assert await real_redis.exists(RedisKey.job_reference(original.job_ref))

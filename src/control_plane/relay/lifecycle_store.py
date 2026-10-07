@@ -7,6 +7,7 @@ not construct these stores or require Redis.
 
 from __future__ import annotations
 
+import hashlib
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -18,7 +19,6 @@ from src.control_plane.relay.protocol import (
 )
 from src.registry.identifiers import (
     ShipAgentIdFamily,
-    mint_shipagent_id,
     parse_shipagent_id,
 )
 
@@ -213,7 +213,13 @@ class InvocationLifecycleStore:
         now = seconds * 1000 + micros // 1000
         candidate = InvocationRecord(
             identity=identity,
-            job_ref=mint_shipagent_id(ShipAgentIdFamily.JOB),
+            # Domain separation keeps the public reference opaque and stable if
+            # only one half of a pair is lost. A surviving pointer must deny a
+            # replacement pair, not become an orphan beside a newly minted job.
+            job_ref="sa_job_"
+            + hashlib.sha256(
+                ("shipagent-job-reference:" + identity.idempotency_key).encode()
+            ).hexdigest()[:32],
             created_at_ms=now,
             expires_at_ms=now + RedisTtl.INVOCATION_SECONDS * 1000,
         )
