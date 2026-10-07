@@ -142,6 +142,7 @@ class TestConfirmJob:
         self, client: TestClient, test_db: Session, sample_job: Job
     ):
         """Confirming pending job updates status to running."""
+        _persist_quote(test_db, sample_job)
         response = client.post(f"/api/v1/jobs/{sample_job.id}/confirm")
 
         assert response.status_code == 200
@@ -163,6 +164,8 @@ class TestConfirmJob:
         test_db.add(job)
         test_db.commit()
         test_db.refresh(job)
+        if job.preview_hash:
+            _persist_quote(test_db, job)
 
         response = client.post(f"/api/v1/jobs/{job.id}/confirm")
 
@@ -180,6 +183,8 @@ class TestConfirmJob:
         test_db.add(job)
         test_db.commit()
         test_db.refresh(job)
+        if job.preview_hash:
+            _persist_quote(test_db, job)
 
         response = client.post(f"/api/v1/jobs/{job.id}/confirm")
 
@@ -196,14 +201,17 @@ class TestConfirmJob:
         test_db.add(job)
         test_db.commit()
         test_db.refresh(job)
+        if job.preview_hash:
+            _persist_quote(test_db, job)
 
         response = client.post(f"/api/v1/jobs/{job.id}/confirm")
 
         assert response.status_code == 400
         assert "cannot be confirmed" in response.json()["detail"].lower()
 
-    def test_confirm_response_format(self, client: TestClient, sample_job: Job):
+    def test_confirm_response_format(self, client: TestClient, sample_job: Job, test_db: Session):
         """Confirm response has correct format."""
+        _persist_quote(test_db, sample_job)
         response = client.post(f"/api/v1/jobs/{sample_job.id}/confirm")
 
         assert response.status_code == 200
@@ -223,6 +231,8 @@ class TestConfirmJob:
         test_db.add(job)
         test_db.commit()
         test_db.refresh(job)
+        if job.preview_hash:
+            _persist_quote(test_db, job)
 
         response = client.post(
             f"/api/v1/jobs/{job.id}/confirm",
@@ -246,6 +256,8 @@ class TestConfirmJob:
         test_db.add(job)
         test_db.commit()
         test_db.refresh(job)
+        if job.preview_hash:
+            _persist_quote(test_db, job)
 
         response = client.post(f"/api/v1/jobs/{job.id}/confirm")
 
@@ -267,6 +279,8 @@ class TestConfirmJob:
         test_db.add(job)
         test_db.commit()
         test_db.refresh(job)
+        if job.preview_hash:
+            _persist_quote(test_db, job)
 
         response = client.post(
             f"/api/v1/jobs/{job.id}/confirm",
@@ -291,6 +305,8 @@ class TestConfirmJob:
         test_db.add(job)
         test_db.commit()
         test_db.refresh(job)
+        if job.preview_hash:
+            _persist_quote(test_db, job)
 
         response = client.post(
             f"/api/v1/jobs/{job.id}/confirm",
@@ -317,6 +333,7 @@ class TestConfirmJob:
         test_db.commit()
         test_db.refresh(job)
 
+        _persist_quote(test_db, job)
         mocked_execute = AsyncMock()
         fake_task = MagicMock()
         fake_task.add_done_callback = MagicMock()
@@ -488,6 +505,7 @@ class TestConfirmAtomicRace:
         test_db.commit()
         test_db.refresh(job)
 
+        _persist_quote(test_db, job)
         # First confirm succeeds
         resp1 = client.post(f"/api/v1/jobs/{job.id}/confirm")
         assert resp1.status_code == 200

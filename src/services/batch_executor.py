@@ -12,7 +12,10 @@ import json
 import logging
 import os
 from collections.abc import Callable, Coroutine
+from datetime import UTC, datetime
 from typing import Any
+
+from sqlalchemy import update
 
 from src.db.models import Job, JobRow, RowStatus
 from src.errors.terminal_diagnostics import project_terminal_diagnostic
@@ -28,6 +31,90 @@ logger = logging.getLogger(__name__)
 
 # Type for progress callback: async def(event_type: str, **kwargs) -> None
 ProgressCallback = Callable[..., Coroutine[Any, Any, None]]
+
+
+class BatchConfirmationError(ValueError):
+    """A safe domain rejection that an entry-point adapter can translate."""
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+def confirm_batch(
+    job_id: str,
+    db: Any,
+    *,
+    write_back_enabled: bool = True,
+    selected_service_code: str | None = None,
+) -> tuple[Job, str | None]:
+    """Validate the entire confirmation, then claim the pending job atomically."""
+    from src.services.batch_preview import get_priced_preview, preview_checksum
+    from src.services.ups_service_codes import resolve_service_code
+
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if job is None:
+        raise BatchConfirmationError("not_found", f"Job not found: {job_id}")
+    if job.status != "pending":
+        raise BatchConfirmationError(
+            "invalid",
+            f"Job cannot be confirmed. Current status: {job.status}. Only pending jobs can be confirmed.",
+        )
+    if selected_service_code is not None:
+        if not job.is_interactive:
+            raise BatchConfirmationError(
+                "invalid",
+                "selected_service_code is only valid for interactive shipment jobs.",
+            )
+        selected_service_code = resolve_service_code(
+            str(selected_service_code).strip(), default=""
+        )
+        if not selected_service_code:
+            raise BatchConfirmationError("invalid", "Invalid selected_service_code.")
+    if not job.preview_hash:
+        raise BatchConfirmationError(
+            "invalid",
+            "Job must be previewed before confirmation. Re-preview to review valid costs.",
+        )
+    rows = (
+        db.query(JobRow)
+        .filter(JobRow.job_id == job_id)
+        .order_by(JobRow.row_number)
+        .all()
+    )
+    if preview_checksum(rows) != job.preview_hash:
+        raise BatchConfirmationError(
+            "stale",
+            "Job data has changed since preview. Please re-preview before confirming.",
+        )
+    priced = get_priced_preview(db, job, rows)
+    if priced is None or not priced["confirmation_ready"]:
+        raise BatchConfirmationError(
+            "invalid",
+            "Job must be previewed with valid costs before confirmation. Please re-preview.",
+        )
+
+    claimed = db.execute(
+        update(Job)
+        .where(
+            Job.id == job_id,
+            Job.status == "pending",
+            Job.preview_hash == job.preview_hash,
+        )
+        .values(
+            status="running",
+            started_at=datetime.now(UTC).isoformat(),
+            write_back_enabled=bool(write_back_enabled and not job.is_interactive),
+        )
+    )
+    db.commit()
+    if claimed.rowcount != 1:
+        raise BatchConfirmationError(
+            "invalid",
+            "Job cannot be confirmed (concurrent modification). Another request may have already confirmed this job.",
+        )
+    db.refresh(job)
+    return job, selected_service_code
 
 
 async def get_shipper_for_job(job: Job) -> dict:
@@ -184,23 +271,23 @@ async def execute_batch(
         job.international_row_count = progress.international_row_count
         return progress
 
-    shipper = await get_shipper_for_job(job)
+    try:
+        shipper = await get_shipper_for_job(job)
 
-    # Resolve UPS credentials via runtime adapter (DB priority, env fallback)
-    from src.services.runtime_credentials import resolve_ups_credentials
+        # Resolve UPS credentials via runtime adapter (DB priority, env fallback)
+        from src.services.runtime_credentials import resolve_ups_credentials
 
-    ups_creds = resolve_ups_credentials()
-    if ups_creds is None:
-        raise RuntimeError(
-            "No UPS credentials configured. Open Settings to connect UPS."
+        ups_creds = resolve_ups_credentials()
+        if ups_creds is None:
+            raise RuntimeError(
+                "No UPS credentials configured. Open Settings to connect UPS."
+            )
+
+        logger.info("Batch execution using UPS environment=%s", ups_creds.environment)
+        account_number = ups_creds.account_number or os.environ.get(
+            "UPS_ACCOUNT_NUMBER", ""
         )
 
-    logger.info("Batch execution using UPS environment=%s", ups_creds.environment)
-    account_number = ups_creds.account_number or os.environ.get(
-        "UPS_ACCOUNT_NUMBER", ""
-    )
-
-    try:
         async with UPSMCPClient(
             client_id=ups_creds.client_id,
             client_secret=ups_creds.client_secret,
