@@ -9,7 +9,7 @@ from typing import Literal
 import jwt
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 HANDSHAKE_AUDIENCE = "shipagent-cloud-relay"
 MAX_RELAY_HANDSHAKE_LIFETIME_SECONDS = 60
@@ -320,3 +320,86 @@ def build_handshake_claims(
         issued_at=issued_at,
         expires_at=issued_at + timedelta(seconds=lifetime_seconds),
     )
+
+
+class InvocationIdentity(RelayProtocolModel):
+    """Immutable server-side purchase identity; never a provider execute input."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    account_id: str
+    provider_connection_id: str
+    execution_target_id: str
+    approval_request_id: str
+    tool_name: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    arguments_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    idempotency_key: str = Field(pattern=r"^[A-Za-z0-9_-]{16,128}$", repr=False)
+    authorization_expires_at: datetime
+
+    @model_validator(mode="after")
+    def validate_identity(self):
+        from src.control_plane.audit.hash_validation import (
+            require_account_id,
+            require_connection_id,
+            require_reference,
+        )
+        from src.registry.identifiers import ShipAgentIdFamily
+
+        require_account_id(self.account_id)
+        require_connection_id(self.provider_connection_id)
+        require_reference(self.execution_target_id, ShipAgentIdFamily.DEVICE)
+        require_reference(self.approval_request_id, ShipAgentIdFamily.APPROVAL_REQUEST)
+        if self.authorization_expires_at.tzinfo is None:
+            raise ValueError("authorization expiry must be timezone aware")
+        return self
+
+    @property
+    def relay_invocation_id(self) -> str:
+        # Stable even if account/target/hash is changed: such a replay must collide
+        # with the original and deny, not create another dispatchable invocation.
+        return (
+            "relay_invocation_"
+            + hashlib.sha256(self.idempotency_key.encode("utf-8")).hexdigest()
+        )
+
+
+class TargetAcceptanceEvidence(RelayProtocolModel):
+    """Trusted target-owned evidence, scoped to the exact original identity.
+
+    ``not_accepted`` requires a durable target rejection fence. Absence from a
+    lookup, a disconnect or a local timeout is only ``unknown``. An adapter must
+    authenticate the target and validate the evidence; these types alone are
+    not cryptographic proof or authorization.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    identity: InvocationIdentity
+    outcome: Literal["accepted", "not_accepted", "unknown"]
+    local_job_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,128}$")
+    proof_id: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    accepted_at: datetime | None = None
+    rejection_fenced: bool = Field(default=False, strict=True)
+
+    @model_validator(mode="after")
+    def validate_evidence(self):
+        if self.outcome == "accepted":
+            if (
+                self.local_job_id is None
+                or self.proof_id is None
+                or self.accepted_at is None
+                or self.accepted_at.tzinfo is None
+                or self.accepted_at > self.identity.authorization_expires_at
+                or self.rejection_fenced
+            ):
+                raise ValueError("invalid acceptance evidence")
+        elif self.outcome == "not_accepted":
+            if not self.rejection_fenced or self.proof_id is None:
+                raise ValueError("nonacceptance requires a durable rejection fence")
+            if self.local_job_id is not None or self.accepted_at is not None:
+                raise ValueError("invalid nonacceptance evidence")
+        elif any(
+            (self.local_job_id, self.proof_id, self.accepted_at, self.rejection_fenced)
+        ):
+            raise ValueError("invalid unknown evidence")
+        return self
