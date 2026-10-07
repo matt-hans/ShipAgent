@@ -246,11 +246,21 @@ async def test_interrupted_upload_retains_one_owner_outcome_and_never_replays(
     lifecycle, monkeypatch, kind, cancel_task
 ):
     import asyncio
+    from unittest.mock import MagicMock
 
+    from src.db.models import AgentDecisionRunStatus
     from src.services import attachment_store
     from tests.services.provider_scenarios import Call
 
     db, svc = lifecycle
+    monkeypatch.setattr(
+        "src.services.conversation_handler.DecisionAuditService.start_run",
+        lambda **kwargs: "upload-audit-run",
+    )
+    complete = MagicMock()
+    monkeypatch.setattr(
+        "src.services.conversation_handler.DecisionAuditService.complete_run", complete
+    )
     opened, release = asyncio.Event(), asyncio.Event()
     calls = []
     gateway = AsyncMock()
@@ -323,6 +333,7 @@ async def test_interrupted_upload_retains_one_owner_outcome_and_never_replays(
     )
     assert not any(e["event"] in {"paperless_result", "agent_message"} for e in events)
     assert len(calls) == 1
+    assert complete.call_args.kwargs["status"] == AgentDecisionRunStatus.cancelled
     assert not attachment_store.has_pending("lifecycle", attachment_id)
     assert "OWNER-FILE" not in wire(rendered) and "OWNER-ACCEPTED-DOCUMENT" not in wire(
         rendered
