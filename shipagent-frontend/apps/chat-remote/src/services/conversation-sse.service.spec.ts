@@ -126,6 +126,20 @@ describe('ConversationSseService — SSE → store mapping', () => {
       expect(last.content).toBe('Hello from the agent');
     });
 
+    it('keeps one message for a completed-block delta followed by its final message', () => {
+      const countBefore = conversationStore.messages().length;
+      const text = 'Review the priced preview.';
+      sseMock.emit('agent_message_delta', { text });
+      const streamingId = conversationStore.messages().at(-1)?.id;
+      expect(conversationStore.messages().length).toBe(countBefore + 1);
+
+      sseMock.emit('agent_message', { text });
+      const messages = conversationStore.messages();
+      expect(messages.length).toBe(countBefore + 1);
+      expect(messages.at(-1)?.id).toBe(streamingId);
+      expect(messages.at(-1)?.content).toBe(text);
+    });
+
     it('should accept the "message" field as content fallback', () => {
       sseMock.emit('agent_message', { message: 'Fallback content' });
 

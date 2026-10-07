@@ -129,8 +129,7 @@ async def test_env_selected_anthropic_streams_over_real_route_and_sse(
     events, history, _ = await _converse("hi there")
 
     assert events == [
-        {"event": "agent_message_delta", "data": {"text": "Hello "}},
-        {"event": "agent_message_delta", "data": {"text": "operator"}},
+        {"event": "agent_message_delta", "data": {"text": "Hello operator"}},
         {"event": "agent_message", "data": {"text": "Hello operator"}},
         {"event": "done", "data": {}},
     ]
