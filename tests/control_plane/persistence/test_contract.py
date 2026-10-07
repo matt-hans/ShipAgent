@@ -137,3 +137,16 @@ def test_retention_is_bounded_and_not_enabled_by_local_settings():
     for days in (29, 366, True):
         with pytest.raises(ValidationError):
             ControlPlaneSettings(audit_retention_days=days)
+
+
+def test_state_serializer_rejects_subclasses_before_persisting():
+    from src.control_plane.authorization_state import AuthorizationState, _encode
+
+    class UntrustedState(AuthorizationState):
+        def __post_init__(self):
+            pass
+
+    now = datetime.now(UTC)
+    record = UntrustedState(metadata=metadata(), created_at=now, expires_at=now)
+    with pytest.raises(ValueError, match="invalid authorization state"):
+        _encode(record)

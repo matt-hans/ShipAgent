@@ -1,6 +1,7 @@
 """Explicit, transactionally audited legal holds, serialized with account cleanup."""
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.control_plane.audit.hash_validation import (
     require_account_id,
@@ -11,7 +12,9 @@ from src.control_plane.audit.service import ControlPlaneAuditService
 from src.control_plane.models import CloudAccount
 
 
-async def lock_account(session, account_id: str, *, required: bool = True):
+async def lock_account(
+    session: AsyncSession, account_id: str, *, required: bool = True
+) -> CloudAccount | None:
     require_account_id(account_id)
     account = await session.scalar(
         select(CloudAccount).where(CloudAccount.id == account_id).with_for_update()
@@ -23,7 +26,7 @@ async def lock_account(session, account_id: str, *, required: bool = True):
 
 class LegalHoldService:
     @classmethod
-    async def has_active_hold(cls, *, session, account_id: str) -> bool:
+    async def has_active_hold(cls, *, session: AsyncSession, account_id: str) -> bool:
         require_account_id(account_id)
         return (
             await session.scalar(
@@ -39,8 +42,13 @@ class LegalHoldService:
 
     @classmethod
     async def place(
-        cls, *, session, account_id: str, reason_hash: str, actor_id_hash: str
-    ):
+        cls,
+        *,
+        session: AsyncSession,
+        account_id: str,
+        reason_hash: str,
+        actor_id_hash: str,
+    ) -> ControlPlaneLegalHold:
         require_sha256_hex(reason_hash)
         require_sha256_hex(actor_id_hash)
         await lock_account(session, account_id)
@@ -62,7 +70,9 @@ class LegalHoldService:
         return hold
 
     @classmethod
-    async def release(cls, *, session, hold_id: str, actor_id_hash: str):
+    async def release(
+        cls, *, session: AsyncSession, hold_id: str, actor_id_hash: str
+    ) -> ControlPlaneLegalHold:
         require_account_id(hold_id)
         require_sha256_hex(actor_id_hash)
         hold = await session.get(ControlPlaneLegalHold, hold_id)

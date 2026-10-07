@@ -1,6 +1,14 @@
 """Allowlisted evidence only; SQL records are never executable authority."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+if TYPE_CHECKING:
+    from src.control_plane.audit.models import ControlPlaneAuthorizationLedgerEvent
 
 from src.control_plane.audit.hash_validation import (
     require_account_id,
@@ -101,12 +109,12 @@ class AuthorizationLedgerService:
     async def record(
         cls,
         *,
-        session,
+        session: AsyncSession,
         metadata: AuthorizationMetadata,
         event_type: str,
         grant_transition: str | None = None,
         result_category: str | None = None,
-    ):
+    ) -> ControlPlaneAuthorizationLedgerEvent:
         from dataclasses import asdict
 
         from sqlalchemy import select
@@ -153,7 +161,9 @@ class AuthorizationLedgerService:
             raise AuthorizationLedgerError() from None
 
     @classmethod
-    async def cleanup_for_account(cls, *, session, account_id: str) -> int:
+    async def cleanup_for_account(
+        cls, *, session: AsyncSession, account_id: str
+    ) -> int:
         from sqlalchemy import delete
 
         from src.control_plane.audit.models import ControlPlaneAuthorizationLedgerEvent

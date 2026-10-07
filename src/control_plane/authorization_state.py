@@ -55,6 +55,8 @@ def _encode(state: AuthorizationState) -> str:
     import json
     from dataclasses import asdict
 
+    if type(state) is not AuthorizationState:
+        raise ValueError("invalid authorization state")
     state.__post_init__()
     return json.dumps(
         {

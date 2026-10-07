@@ -209,6 +209,17 @@ class ControlPlaneAuditService:
             key="account_id",
             max_length=cls._ID_MAX_LENGTHS["account_id"],
         )
+        # This public cleanup seam must not bypass the explicit hold guard.
+        from src.control_plane.retention.legal_hold import (
+            LegalHoldService,
+            lock_account,
+        )
+
+        await lock_account(session, account_id, required=False)
+        if await LegalHoldService.has_active_hold(
+            session=session, account_id=account_id
+        ):
+            raise PermissionError("active legal hold")
         result = await session.execute(
             delete(ControlPlaneAuditEvent).where(
                 ControlPlaneAuditEvent.account_id == account_id
