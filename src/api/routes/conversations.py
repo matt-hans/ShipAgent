@@ -188,6 +188,7 @@ async def _process_agent_message(
     session_id: str,
     content: str,
     run_id: str | None = None,
+    turn_id: str | None = None,
 ) -> None:
     """Process a user message through the persistent agent.
 
@@ -248,6 +249,7 @@ async def _process_agent_message(
             interactive_shipping=session.interactive_shipping,
             emit_callback=_emit_sync,
             turn_generation_callback=_record_turn_generation,
+            turn_id=turn_id,
         ):
             if not _turn_can_emit():
                 break
@@ -277,11 +279,12 @@ def _schedule_agent_message(
     session_id: str,
     content: str,
     run_id: str | None = None,
+    turn_id: str | None = None,
 ) -> None:
     """Schedule agent message processing and bind task to session lifecycle."""
     session = _session_manager.get_or_create_session(session_id)
     task = asyncio.create_task(
-        _process_agent_message(session_id, content, run_id=run_id)
+        _process_agent_message(session_id, content, run_id=run_id, turn_id=turn_id)
     )
     session.message_tasks.add(task)
 
@@ -438,8 +441,9 @@ async def send_message(
     """
     session = _resolve_session(session_id)
 
-    # Store user message in history
-    _session_manager.add_message(session_id, "user", payload.content)
+    # Keep accepted ingress visible immediately, but out of earlier model turns.
+    turn_id = str(uuid4())
+    session.add_message("user", payload.content, turn_id=turn_id, queued=True)
 
     # Persist user message to database and set title from first message
     try:
@@ -447,7 +451,15 @@ async def send_message(
 
         with get_db_context() as db:
             svc = ConversationPersistenceService(db)
-            svc.save_message(session_id, "user", payload.content)
+            svc.save_message(
+                session_id,
+                "user",
+                payload.content,
+                metadata={
+                    "conversation_turn_id": turn_id,
+                    "conversation_turn_state": "queued",
+                },
+            )
             svc.set_title_from_first_message(session_id, payload.content)
     except Exception as e:
         logger.error("Failed to persist user message to DB: %s", e)
@@ -471,7 +483,7 @@ async def send_message(
     )
 
     # Process via app-level task (not request-scoped background task)
-    _schedule_agent_message(session_id, payload.content, run_id=run_id)
+    _schedule_agent_message(session_id, payload.content, run_id=run_id, turn_id=turn_id)
 
     return SendMessageResponse(status="accepted", session_id=session_id)
 
@@ -603,7 +615,25 @@ async def upload_document(
     agent_message = f"[DOCUMENT_ATTACHED attachment_id={attachment_id} document_type={document_type}]{notes_suffix}"
 
     # Store in conversation history and trigger agent processing
-    _session_manager.add_message(session_id, "user", agent_message)
+    turn_id = str(uuid4())
+    session.add_message("user", agent_message, turn_id=turn_id, queued=True)
+    try:
+        from src.db.connection import get_db_context
+
+        with get_db_context() as db:
+            ConversationPersistenceService(db).save_message(
+                session_id,
+                "user",
+                agent_message,
+                metadata={
+                    "conversation_turn_id": turn_id,
+                    "conversation_turn_state": "queued",
+                },
+            )
+    except Exception as exc:
+        logger.warning(
+            "Failed to persist upload message exception_type=%s", type(exc).__name__
+        )
     run_id = DecisionAuditService.start_run(
         session_id=session_id,
         user_message=agent_message,
@@ -625,7 +655,7 @@ async def upload_document(
             "document_type": document_type,
         },
     )
-    _schedule_agent_message(session_id, agent_message, run_id=run_id)
+    _schedule_agent_message(session_id, agent_message, run_id=run_id, turn_id=turn_id)
 
     return UploadDocumentResponse(
         success=True,

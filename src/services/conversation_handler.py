@@ -4,6 +4,7 @@ Extracts the canonical agent session orchestration from conversations.py
 so both HTTP routes and InProcessRunner call the same code path.
 """
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -17,12 +18,16 @@ from src.orchestrator.agent.intent_detection import (
     is_confirmation_response,
     is_shipping_request,
 )
-from src.services.agent_session_manager import AgentSession
-from src.services.conversation_agent import create_conversation_agent
+from src.services.agent_session_manager import AgentSession, current_conversation_turn
+from src.services.conversation_agent import (
+    UnavailableConversationAgent,
+    create_conversation_agent,
+)
 from src.services.conversation_privacy import (
     TEXT_BLOCK_PRIVACY_ERROR,
     PublicTextBlock,
     TextBlockPrivacyError,
+    provider_authored_text,
     provider_conversation_history,
 )
 from src.services.decision_audit_context import (
@@ -38,9 +43,6 @@ from src.services.gateway_provider import get_data_gateway
 from src.utils.redaction import project_public_artifact
 
 logger = logging.getLogger(__name__)
-
-# Max messages to load for system prompt injection on resume
-MAX_RESUME_MESSAGES = 30
 
 
 def _resolve_agent_model() -> str | None:
@@ -104,7 +106,7 @@ def _contacts_rebuild_signature(contacts: list[dict]) -> list[dict]:
 
 
 def _load_prior_conversation(session_id: str) -> list[dict] | None:
-    """Load prior conversation messages from DB for system prompt injection.
+    """Load authored history from DB; the adapter applies its history budget.
 
     Mirrors the _get_mru_contacts_for_prompt() pattern: uses get_db_context
     for clean session management, returns data or None on failure.
@@ -123,9 +125,7 @@ def _load_prior_conversation(session_id: str) -> list[dict] | None:
     try:
         with get_db_context() as db:
             svc = ConversationPersistenceService(db)
-            result = svc.get_session_with_messages(
-                session_id, limit=MAX_RESUME_MESSAGES
-            )
+            result = svc.get_session_with_messages(session_id)
             if result is None or not result["messages"]:
                 return None
             return provider_conversation_history(result["messages"])
@@ -143,13 +143,15 @@ def _without_current_user_turn(
     """Drop the just-persisted current user turn from resume history."""
     if not prior_conversation or current_user_message is None:
         return prior_conversation
-    last_message = prior_conversation[-1]
-    if (
-        last_message.get("role") == "user"
-        and last_message.get("content") == current_user_message
-    ):
-        trimmed = prior_conversation[:-1]
-        return trimmed or None
+    current_text = provider_authored_text(current_user_message)
+    # Turn IDs handle real queued callers. For legacy callers, only inspect the
+    # trailing unanswered user suffix; never remove a completed older exchange.
+    for index in range(len(prior_conversation) - 1, -1, -1):
+        message = prior_conversation[index]
+        if message.get("role") != "user":
+            break
+        if message.get("content") == current_text:
+            return prior_conversation[:index] or None
     return prior_conversation
 
 
@@ -315,7 +317,13 @@ def _persist_assistant_message(session_id: str, text: str) -> None:
 
         with get_db_context() as db:
             svc = ConversationPersistenceService(db)
-            svc.save_message(session_id, "assistant", text)
+            turn_id = current_conversation_turn.get()
+            svc.save_message(
+                session_id,
+                "assistant",
+                text,
+                metadata={"conversation_turn_id": turn_id} if turn_id else None,
+            )
     except Exception as exc:
         logger.error(
             "Failed to persist assistant msg for %s: %s", session_id, type(exc).__name__
@@ -399,7 +407,35 @@ async def ensure_agent(
     """
     from src.orchestrator.agent.system_prompt import build_system_prompt
 
+    generation = getattr(session, "turn_generation", None)
     source_hash = compute_source_hash(source_info)
+    # Snapshot settings under the session turn lock, before any stop/start await.
+    model = (
+        _resolve_agent_model()
+        or os.environ.get("AGENT_MODEL")
+        or os.environ.get("ANTHROPIC_MODEL")
+    )
+    runtime = os.environ.get("SHIPAGENT_AGENT_RUNTIME", "auto").strip().lower()
+    if (model or "").startswith("openai:") or (model is None and runtime == "openai"):
+        from src.services.conversation_runtime.openai_provider import (
+            resolve_openai_model,
+        )
+
+        model = "openai:" + resolve_openai_model(model)
+    elif (model or "").startswith("gemini:") or (model is None and runtime == "gemini"):
+        from src.services.conversation_runtime.gemini_provider import (
+            resolve_gemini_model,
+        )
+
+        model = "gemini:" + resolve_gemini_model(model)
+    model_signature = json.dumps(
+        [
+            model,
+            runtime,
+            os.environ.get("OPENAI_MODEL", ""),
+            os.environ.get("GEMINI_MODEL", ""),
+        ]
+    )
 
     # Fetch MRU contacts for prompt injection (C1 fix)
     contacts = _get_mru_contacts_for_prompt()
@@ -416,41 +452,78 @@ async def ensure_agent(
     )
 
     # Reuse existing agent if config hasn't changed
-    if session.agent is not None and session.agent_source_hash == combined_hash:
+    if (
+        session.agent is not None
+        and not isinstance(session.agent, UnavailableConversationAgent)
+        and session.agent_source_hash == combined_hash
+        and session.agent_model_signature == model_signature
+    ):
         return False
 
     # Stop existing agent if config changed mid-conversation
     if session.agent is not None:
+        old_agent = session.agent
+        session.agent = None
+        session.agent_source_hash = None
+        session.agent_model_signature = None
         try:
-            await session.agent.stop()
+            await old_agent.stop()
         except Exception as e:
             logger.warning("Error stopping old agent: %s", type(e).__name__)
         session.confirmed_resolutions.clear()
 
     # Load prior conversation for resumed sessions
     prior_conversation = _without_current_user_turn(
-        provider_conversation_history(_load_prior_conversation(session.session_id)) or None,
+        provider_conversation_history(
+            _load_prior_conversation(session.session_id) or session.history
+        )
+        or None,
         current_user_message,
     )
 
+    shared_runtime = runtime in {
+        "fake",
+        "openai",
+        "gemini",
+        "anthropic_messages",
+        "anthropic-messages",
+    } or (runtime in {"", "auto"} and (model or "").startswith(("openai:", "gemini:")))
     system_prompt = build_system_prompt(
         source_info=source_info,
         interactive_shipping=interactive_shipping,
         contacts=contacts,
-        prior_conversation=prior_conversation,
+        prior_conversation=None if shared_runtime else prior_conversation,
     )
 
     agent = create_conversation_agent(
         system_prompt=system_prompt,
         interactive_shipping=interactive_shipping,
         session_id=session.session_id,
-        model=_resolve_agent_model(),
+        model=model,
+        runtime=runtime,
         prior_conversation=prior_conversation,
     )
-    await agent.start()
+    try:
+        await agent.start()
+    except BaseException:
+        try:
+            await agent.stop()
+        except Exception as exc:
+            logger.warning(
+                "Failed startup cleanup exception_type=%s", type(exc).__name__
+            )
+        raise
+
+    if getattr(session, "terminating", False) is True or (
+        isinstance(generation, int)
+        and not session.is_turn_generation_active(generation)
+    ):
+        await agent.stop()
+        return False
 
     session.agent = agent
     session.agent_source_hash = combined_hash
+    session.agent_model_signature = model_signature
     session.interactive_shipping = interactive_shipping
 
     return True
@@ -462,6 +535,7 @@ async def process_message(
     interactive_shipping: bool = False,
     emit_callback: Any | None = None,
     turn_generation_callback: Any | None = None,
+    turn_id: str | None = None,
 ) -> AsyncIterator[dict]:
     """Process a user message through the agent, yielding SSE-compatible events.
 
@@ -469,10 +543,11 @@ async def process_message(
     and InProcessRunner.send_message() call this function.
 
     IMPORTANT — History Write Ownership:
-        The CALLER owns history writes (both user and assistant messages).
+        The CALLER owns accepted user ingress; this service owns assistant text.
         - conversations.py route adds user message before calling this function.
         - InProcessRunner.send_message() adds user message before calling this.
-        This function does NOT add user messages — only stores assistant
+        Callers tag queued ingress with a turn_id so later submissions cannot
+        enter earlier turns. This function claims that ingress and stores assistant
         response text from agent_message events (see below).
 
     Args:
@@ -484,6 +559,7 @@ async def process_message(
     Yields:
         Event dicts with 'event' and 'data' keys.
     """
+    turn_token = current_conversation_turn.set(turn_id)
     existing_run_id = get_decision_run_id()
     active_run_id = existing_run_id
     run_token = None
@@ -501,7 +577,38 @@ async def process_message(
 
     try:
         async with session.lock:
-            _turn_active = _begin_turn_guard(session, turn_generation_callback)
+            # Queued callers may have captured a mode that a preceding turn
+            # changed while they waited. Session ownership wins at this boundary.
+            interactive_shipping = session.interactive_shipping
+            if turn_id:
+                for message in session.history:
+                    metadata = message.get("metadata") or {}
+                    if metadata.get("conversation_turn_id") == turn_id:
+                        metadata["conversation_turn_state"] = "started"
+                from src.db.connection import get_db_context
+                from src.services.conversation_persistence_service import (
+                    ConversationPersistenceService,
+                )
+
+                try:
+                    with get_db_context() as db:
+                        ConversationPersistenceService(db).start_conversation_turn(
+                            session.session_id, turn_id
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to persist conversation turn state exception_type=%s",
+                        type(exc).__name__,
+                    )
+            is_current_turn = _begin_turn_guard(session, turn_generation_callback)
+
+            def _turn_active() -> bool:
+                nonlocal run_status
+                active = is_current_turn()
+                if not active:
+                    run_status = AgentDecisionRunStatus.cancelled
+                return active
+
             from src.services.workflow_confirmation import PendingWorkflowActions
 
             if isinstance(
@@ -559,6 +666,21 @@ async def process_message(
                 )
                 session.interactive_shipping = False
                 interactive_shipping = False
+                try:
+                    from src.db.connection import get_db_context
+                    from src.services.conversation_persistence_service import (
+                        ConversationPersistenceService,
+                    )
+
+                    with get_db_context() as db:
+                        ConversationPersistenceService(db).update_session_mode(
+                            session.session_id, "batch"
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to persist conversation mode exception_type=%s",
+                        type(exc).__name__,
+                    )
 
             await ensure_agent(
                 session,
@@ -644,6 +766,11 @@ async def process_message(
 
             bridge = getattr(session.agent, "emitter_bridge", None)
             if bridge is not None:
+                bridge.effect_callback = (
+                    lambda event_type, data: _persist_artifact_once(
+                        event_type, project_public_artifact(data)
+                    )
+                )
                 bridge.callback = _service_emit
                 bridge.last_user_message = content
                 if is_shipping_request(content):
@@ -669,6 +796,8 @@ async def process_message(
                         if not _turn_active():
                             return
                         yield bridge_event
+                        if not _turn_active():
+                            return
 
                     event_type = event.get("event")
                     data = event.get("data", {})
@@ -715,6 +844,8 @@ async def process_message(
                                 "event": "agent_message_delta",
                                 "data": {"text": text},
                             }
+                        if not _turn_active():
+                            return
                         if hide_transient_chat:
                             if text:
                                 buffered_agent_messages.append(text)
@@ -727,7 +858,11 @@ async def process_message(
                         run_status = AgentDecisionRunStatus.failed
 
                     yield event
+                    if not _turn_active():
+                        return
 
+                if not _turn_active():
+                    return
                 if public_text_block.length:
                     await session.agent.interrupt()
                     run_status = AgentDecisionRunStatus.failed
@@ -741,6 +876,8 @@ async def process_message(
                     if not _turn_active():
                         return
                     yield bridge_event
+                    if not _turn_active():
+                        return
 
                 if hide_transient_chat:
                     if not _turn_active():
@@ -764,6 +901,10 @@ async def process_message(
                 bridge = getattr(session.agent, "emitter_bridge", None)
                 if bridge is not None:
                     bridge.callback = None
+                    bridge.effect_callback = None
+    except (asyncio.CancelledError, GeneratorExit):
+        run_status = AgentDecisionRunStatus.cancelled
+        raise
     except Exception as exc:
         run_status = AgentDecisionRunStatus.failed
         _log_decision_event(
@@ -806,6 +947,7 @@ async def process_message(
                         type(exc).__name__,
                     )
         finally:
+            current_conversation_turn.reset(turn_token)
             reset_decision_job_id(job_token)
             if run_token is not None:
                 reset_decision_run_id(run_token)
@@ -844,7 +986,12 @@ async def decide_workflow_action(
         )
         try:
             result = await decide_action(
-                session.workflow_actions, confirmation_token, decision
+                session.workflow_actions,
+                confirmation_token,
+                decision,
+                record_outcome=lambda event_type, data: _persist_artifact_message(
+                    session.session_id, event_type, data
+                ),
             )
             if result is None:
                 status = AgentDecisionRunStatus.cancelled

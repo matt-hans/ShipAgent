@@ -7,6 +7,7 @@ argument, quoted token, or natural-language confirmation grants execution.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from dataclasses import dataclass
@@ -153,6 +154,7 @@ async def decide_action(
     actions: PendingWorkflowActions,
     token: str,
     decision: str,
+    record_outcome: Any | None = None,
 ) -> tuple[str, dict[str, Any]] | None:
     """Execute one exact user-confirmed action; cancellation consumes it too."""
     action = actions.take(token)
@@ -163,6 +165,26 @@ async def decide_action(
 
     from src.services.gateway_provider import get_ups_gateway
 
+    dispatched = False
+
+    def record_unconfirmed() -> None:
+        if dispatched and record_outcome is not None:
+            pickup = action.operation in {"schedule_pickup", "cancel_pickup"}
+            record_outcome(
+                "pickup_result" if pickup else "paperless_result",
+                {
+                    "action": {
+                        "schedule_pickup": "scheduled",
+                        "cancel_pickup": "cancelled",
+                        "push_document": "pushed",
+                        "delete_document": "deleted",
+                    }[action.operation],
+                    "success": False,
+                    "outcome": "unconfirmed",
+                    "message": "Carrier outcome is unconfirmed. Check its status before requesting a new action; this confirmation cannot be retried.",
+                },
+            )
+
     try:
         gateway = await get_ups_gateway()
         if gateway is not action.gateway:
@@ -171,6 +193,7 @@ async def decide_action(
             )
         payload = json.loads(action.payload_json)
         if action.operation == "schedule_pickup":
+            dispatched = True
             result = await gateway.schedule_pickup(**payload)
             prn = result.get("prn")
             if (
@@ -188,6 +211,7 @@ async def decide_action(
                 }
             )
         if action.operation in {"cancel_pickup", "push_document", "delete_document"}:
+            dispatched = True
             result = await getattr(gateway, action.operation)(**payload)
             if result.get("success") is not True:
                 raise WorkflowExecutionError()
@@ -209,9 +233,13 @@ async def decide_action(
                 }
             )
         raise WorkflowConfirmationError("Unsupported confirmation action.")
+    except asyncio.CancelledError:
+        record_unconfirmed()
+        raise
     except WorkflowConfirmationError:
         raise
     except Exception as exc:
+        record_unconfirmed()
         # The remote side may already have committed. No automatic retry or
         # re-arming the preview; keep carrier payloads out of logs and errors.
         raise WorkflowExecutionError(

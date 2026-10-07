@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import itertools
 import json
 import logging
 from collections.abc import AsyncIterator
+from copy import copy
+from dataclasses import asdict
 from typing import Any
 
 from src.orchestrator.agent.tools.core import EventEmitterBridge
@@ -31,6 +34,7 @@ from src.services.conversation_runtime.tool_catalog import WorkflowToolCatalog
 logger = logging.getLogger(__name__)
 _GENERIC_PROVIDER_ERROR_MESSAGE = "Provider error"
 _MAX_PROVIDER_HISTORY_MESSAGES = 30
+_MAX_PROVIDER_HISTORY_CHARS = 16000
 _HISTORY_ROLES = {"user", "assistant"}
 CONFLICTING_TOOL_CALL_ID_MESSAGE = (
     "The model reused a tool call ID for a different request. The turn was "
@@ -72,6 +76,7 @@ class ConversationRuntimeSession:
         self._last_turn_count = 0
         self._turn_generation = itertools.count(1)
         self._active_generation = 0
+        self._provider_tasks: dict[int, asyncio.Task[None]] = {}
         self._interrupted_generations: set[int] = set()
         self.last_result_metadata: ProviderResultMetadata | None = None
         self.emitter_bridge = EventEmitterBridge()
@@ -81,15 +86,21 @@ class ConversationRuntimeSession:
             limit=_MAX_PROVIDER_HISTORY_MESSAGES,
         )
 
+        self._history_omitted = len(self._history) < len(
+            provider_conversation_history(prior_conversation)
+        )
+
     async def start(self) -> None:
         if self._started:
             raise RuntimeError("Agent already started.")
         self._started = True
 
     async def stop(self, timeout: float = 5.0) -> None:
-        _ = timeout
         self._started = False
-        self._interrupted_generations.add(self._active_generation)
+        try:
+            await asyncio.wait_for(self.interrupt(), timeout=timeout)
+        except TimeoutError:
+            logger.warning("Provider cancellation timed out")
         self.emitter_bridge.callback = None
 
     async def process_command(self, user_input: str) -> str:
@@ -113,6 +124,10 @@ class ConversationRuntimeSession:
         if not self._started:
             raise RuntimeError("Agent not started. Call start() first.")
 
+        self._interrupted_generations.add(self._active_generation)
+        old_request = self._provider_tasks.get(self._active_generation)
+        if old_request is not None:
+            old_request.cancel()
         generation = next(self._turn_generation)
         self._active_generation = generation
         self._last_turn_count = 0
@@ -123,7 +138,12 @@ class ConversationRuntimeSession:
         user_input: str,
         generation: int,
     ) -> AsyncIterator[dict[str, Any]]:
-        self.emitter_bridge.last_user_message = user_input
+        if self._is_generation_interrupted(generation):
+            return
+        # A late handler must keep its own generation callback, even if a new
+        # turn starts before the old carrier/tool operation returns.
+        bridge = copy(self.emitter_bridge)
+        bridge.last_user_message = user_input
         frontend_events: list[dict[str, Any]] = []
 
         def capture_frontend_event(event_type: str, data: dict[str, Any]) -> None:
@@ -136,7 +156,7 @@ class ConversationRuntimeSession:
             frontend_events.clear()
             return events
 
-        self.emitter_bridge.callback = capture_frontend_event
+        bridge.callback = capture_frontend_event
         user_message = ProviderInputMessage(
             role="user",
             content=[ProviderContentPart(text=provider_authored_text(user_input))],
@@ -144,7 +164,7 @@ class ConversationRuntimeSession:
         messages: list[ProviderInputMessage] = [*self._history, user_message]
         catalog = WorkflowToolCatalog.for_mode(
             interactive_shipping=self._interactive_shipping,
-            bridge=self.emitter_bridge,
+            bridge=bridge,
         )
         dispatcher = LocalToolDispatcher(
             catalog=catalog,
@@ -154,18 +174,29 @@ class ConversationRuntimeSession:
             emit_frontend=capture_frontend_event,
         )
         system_instructions = [ProviderSystemInstruction(content=self._system_prompt)]
+        if self._history_omitted:
+            system_instructions.append(
+                ProviderSystemInstruction(
+                    content="Earlier conversation context was omitted to fit the history budget. Missing context never authorizes execution or retrying prior side effects."
+                )
+            )
         metadata_turn_count: int | None = None
         emitted_tool_call_ids: dict[str, tuple[str, str]] = {}
         turn_history_messages: list[ProviderInputMessage] = [user_message]
+        authored_turn_messages: list[ProviderInputMessage] = [user_message]
+        history_committed = False
 
         try:
             for _provider_turn in range(self._max_turns):
+                if metadata_turn_count is None:
+                    self._last_turn_count += 1
                 assistant_parts: list[ProviderContentPart] = []
                 tool_calls: list[ProviderToolCall] = []
                 text_block = PublicTextBlock()
                 stream = None
                 try:
-                    stream = self._provider.stream_turn(
+                    stream = self._provider_events(
+                        generation=generation,
                         messages=messages,
                         system_instructions=system_instructions,
                         tools=catalog.provider_declarations(),
@@ -183,14 +214,20 @@ class ConversationRuntimeSession:
                             text, streamed = text_block.complete(event.text or "")
                             if not text:
                                 continue
-                            if metadata_turn_count is None:
-                                self._last_turn_count += 1
                             assistant_parts.append(ProviderContentPart(text=text))
+                            authored_turn_messages.append(
+                                ProviderInputMessage(
+                                    role="assistant",
+                                    content=[ProviderContentPart(text=text)],
+                                )
+                            )
                             if streamed:
                                 yield {
                                     "event": "agent_message_delta",
                                     "data": {"text": text},
                                 }
+                            if self._is_generation_interrupted(generation):
+                                return
                             yield {"event": "agent_message", "data": {"text": text}}
                         elif (
                             event.type == ProviderStreamEventType.PROVIDER_OUTPUT_ITEM
@@ -232,6 +269,8 @@ class ConversationRuntimeSession:
                             return
                         elif event.type == ProviderStreamEventType.STREAM_COMPLETE:
                             break
+                    if self._is_generation_interrupted(generation):
+                        return
                     if text_block.length:
                         raise TextBlockPrivacyError(TEXT_BLOCK_PRIVACY_ERROR)
                 except TextBlockPrivacyError:
@@ -261,6 +300,9 @@ class ConversationRuntimeSession:
 
                 finally:
                     await close_owned_stream(stream)
+
+                if self._is_generation_interrupted(generation):
+                    return
 
                 # Nothing runs until every call in the batch is vetted: a call
                 # without an ID cannot be paired with its result, a repeated ID
@@ -305,6 +347,7 @@ class ConversationRuntimeSession:
                         messages.append(assistant_message)
                         turn_history_messages.append(assistant_message)
                     self._append_history(turn_history_messages)
+                    history_committed = True
                     return
 
                 assistant_message = ProviderInputMessage(
@@ -329,15 +372,25 @@ class ConversationRuntimeSession:
 
                     dispatcher.emit_tool_call(call)
                     for frontend_event in drain_frontend_events():
+                        if self._is_generation_interrupted(generation):
+                            return
                         yield frontend_event
+                        if self._is_generation_interrupted(generation):
+                            return
 
+                    if self._is_generation_interrupted(generation):
+                        return
                     result = await dispatcher.execute(call)
                     if self._is_generation_interrupted(generation):
                         frontend_events.clear()
                         return
 
                     for frontend_event in drain_frontend_events():
+                        if self._is_generation_interrupted(generation):
+                            return
                         yield frontend_event
+                        if self._is_generation_interrupted(generation):
+                            return
 
                     tool_result_message = ProviderInputMessage(
                         role="tool",
@@ -352,6 +405,8 @@ class ConversationRuntimeSession:
                     messages.append(tool_result_message)
                     turn_history_messages.append(tool_result_message)
 
+            self._append_history(turn_history_messages)
+            history_committed = True
             yield {
                 "event": "error",
                 "data": {
@@ -361,11 +416,72 @@ class ConversationRuntimeSession:
                 },
             }
         finally:
-            if self.emitter_bridge.callback is capture_frontend_event:
-                self.emitter_bridge.callback = None
+            if not history_committed and generation == self._active_generation:
+                # Retain completed authored text on errors/interruption without
+                # introducing incomplete call/result protocol into the next turn.
+                self._append_history(authored_turn_messages)
+            bridge.callback = None
+
+    async def _provider_events(
+        self, *, generation: int, **kwargs: Any
+    ) -> AsyncIterator[Any]:
+        """Own the whole transport iteration in one cancellable task/context.
+
+        Cancellation never reaches deterministic tool execution. Keeping one task
+        for the entire stream also preserves adapter ContextVar cleanup ownership.
+        """
+        queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=1)
+
+        async def read_request() -> None:
+            stream = None
+            try:
+                stream = self._provider.stream_turn(**kwargs)
+                async for event in stream:
+                    await queue.put(event)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                await queue.put(exc)
+            finally:
+                await close_owned_stream(stream)
+                task = asyncio.current_task()
+                if task is not None and task.cancelling():
+                    if queue.empty():
+                        queue.put_nowait(None)
+                else:
+                    await queue.put(None)
+
+        request = asyncio.create_task(read_request())
+        self._provider_tasks[generation] = request
+
+        def wake_cancelled_reader(task: asyncio.Task[None]) -> None:
+            if task.cancelled() and queue.empty():
+                queue.put_nowait(None)
+
+        request.add_done_callback(wake_cancelled_reader)
+        try:
+            while True:
+                event = await queue.get()
+                if event is None:
+                    return
+                if isinstance(event, Exception):
+                    raise event
+                yield event
+        finally:
+            request.cancel()
+            try:
+                await request
+            except asyncio.CancelledError:
+                pass
+            if self._provider_tasks.get(generation) is request:
+                self._provider_tasks.pop(generation, None)
 
     async def interrupt(self) -> None:
         self._interrupted_generations.add(self._active_generation)
+        request = self._provider_tasks.get(self._active_generation)
+        if request is not None:
+            request.cancel()
+
         if self._provider.capabilities.supports_cancellation:
             try:
                 await self._provider.cancel()
@@ -385,15 +501,19 @@ class ConversationRuntimeSession:
         return self._last_turn_count
 
     def _is_generation_interrupted(self, generation: int) -> bool:
-        return generation in self._interrupted_generations
+        return (
+            generation != self._active_generation
+            or generation in self._interrupted_generations
+        )
 
     def _append_history(self, messages: list[ProviderInputMessage]) -> None:
         if not messages:
             return
-        self._history = [
-            *self._history,
-            *messages,
-        ][-_MAX_PROVIDER_HISTORY_MESSAGES:]
+        combined = [*self._history, *messages]
+        self._history = _bounded_provider_history(
+            combined, limit=_MAX_PROVIDER_HISTORY_MESSAGES
+        )
+        self._history_omitted |= len(self._history) < len(combined)
 
 
 def _build_provider_history(
@@ -416,4 +536,33 @@ def _build_provider_history(
                 content=[ProviderContentPart(text=content)],
             )
         )
-    return history[-limit:]
+    return _bounded_provider_history(history, limit=limit)
+
+
+def _bounded_provider_history(
+    history: list[ProviderInputMessage], *, limit: int
+) -> list[ProviderInputMessage]:
+    """Keep recent complete user turns within the existing 30-message/4K-token budget.
+
+    Never retain an orphan tool result/private continuation. If even the newest
+    completed turn exceeds the budget, omit that whole turn; its durable owner
+    transcript and outcomes remain available through the conversation history.
+    The active provider loop is not truncated between tool calls and results.
+    """
+    sizes = [len(json.dumps(asdict(message), default=str)) for message in history]
+    start = 0
+    while (
+        len(history) - start > limit or sum(sizes[start:]) > _MAX_PROVIDER_HISTORY_CHARS
+    ):
+        next_user = next(
+            (
+                index
+                for index in range(start + 1, len(history))
+                if history[index].role == "user"
+            ),
+            None,
+        )
+        if next_user is None:
+            return []
+        start = next_user
+    return history[start:]

@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -165,6 +166,14 @@ async def run_scenario(
     session.agent_source_hash = (
         f"none|interactive={interactive}|contacts={contacts_hash}"
     )
+    session.agent_model_signature = json.dumps(
+        [
+            None,
+            os.environ.get("SHIPAGENT_AGENT_RUNTIME", "auto").strip().lower(),
+            os.environ.get("OPENAI_MODEL", ""),
+            os.environ.get("GEMINI_MODEL", ""),
+        ]
+    )
     session.lock = asyncio.Lock()
     session.confirmed_resolutions = {}
     session.interactive_shipping = interactive
@@ -210,6 +219,9 @@ async def run_scenario(
         return ups_gateway if ups_gateway is not None else MagicMock()
 
     with (
+        patch(
+            "src.services.conversation_handler._resolve_agent_model", return_value=None
+        ),
         patch(
             "src.services.conversation_handler.get_data_gateway",
             new_callable=AsyncMock,

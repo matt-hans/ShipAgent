@@ -378,7 +378,7 @@ def test_artifact_text_write_and_legacy_export_remove_labeled_secrets(privacy_db
     "failure",
     [
         "transport",
-        "mutating_retry",
+        "mutating_ambiguous",
         "ELICITATION_INVALID_RESPONSE",
         "STRUCTURAL_FIELDS_REQUIRED",
     ],
@@ -402,7 +402,7 @@ async def test_real_ups_client_logs_no_transport_or_preflight_payload(
         await client._recover_transport(
             "get_rate", RuntimeError(SECRET), client._connection_generation
         )
-    elif failure == "mutating_retry":
+    elif failure == "mutating_ambiguous":
         transport.call_tool.side_effect = [
             MCPToolError(
                 "create_shipment",
@@ -417,7 +417,9 @@ async def test_real_ups_client_logs_no_transport_or_preflight_payload(
             {"ok": True},
         ]
         monkeypatch.setattr("src.services.ups_mcp_client.asyncio.sleep", AsyncMock())
-        assert await client._call("create_shipment", {}) == {"ok": True}
+        with pytest.raises(MCPToolError):
+            await client._call("create_shipment", {})
+        assert transport.call_tool.await_count == 1
     else:
         client._translate_error(
             MCPToolError(

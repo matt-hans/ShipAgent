@@ -19,13 +19,52 @@ def provider_conversation_history(
     messages: list[dict[str, Any]] | None,
 ) -> list[dict[str, str]]:
     """Project only authored conversation text, never artifact/private metadata."""
-    return [
-        {"role": message["role"], "content": provider_authored_text(message["content"])}
+
+    def turn_metadata(message: dict[str, Any]) -> dict[str, Any]:
+        metadata = message.get("metadata")
+        if not isinstance(metadata, dict):
+            return {}
+        turn_id = metadata.get("conversation_turn_id")
+        if not isinstance(turn_id, str):
+            return {}
+        return metadata
+
+    # Physical persistence order follows ingress arrival, which can precede the
+    # previous turn's answer. Restore authored order by trusted turn identity.
+    # Legacy records remain in their original order. Artifacts never participate.
+    authored = [
+        message
         for message in messages or []
         if message.get("role") in {"user", "assistant"}
         and message.get("message_type", "text") == "text"
         and isinstance(message.get("content"), str)
         and message["content"]
+    ]
+    linked: dict[str, list[dict[str, Any]]] = {}
+    user_ids = {
+        turn_metadata(m).get("conversation_turn_id")
+        for m in authored
+        if m.get("role") == "user" and isinstance(m.get("metadata"), dict)
+    }
+    for message in authored:
+        meta = turn_metadata(message)
+        turn_id = meta.get("conversation_turn_id")
+        if message["role"] == "assistant" and turn_id in user_ids and turn_id:
+            linked.setdefault(turn_id, []).append(message)
+    ordered = []
+    for message in authored:
+        meta = turn_metadata(message)
+        turn_id = meta.get("conversation_turn_id")
+        if meta.get("conversation_turn_state") == "queued":
+            continue
+        if message["role"] == "assistant" and turn_id in linked:
+            continue
+        ordered.append(message)
+        if message["role"] == "user" and turn_id:
+            ordered.extend(linked.get(turn_id, []))
+    return [
+        {"role": m["role"], "content": provider_authored_text(m["content"])}
+        for m in ordered
     ]
 
 
