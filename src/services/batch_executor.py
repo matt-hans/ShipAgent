@@ -8,6 +8,7 @@ Callers provide a progress_callback to adapt events to their
 transport (SSE for HTTP, Rich for CLI, logging for watchdog).
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -331,7 +332,9 @@ async def execute_batch(
         wb_status = write_back.get("status", "skipped")
         if failed == 0 and wb_status in ("error", "partial"):
             final_status = "completed_with_warnings"
-            diagnostic = project_terminal_diagnostic(write_back.get("error_code", "E-4001"))
+            diagnostic = project_terminal_diagnostic(
+                write_back.get("error_code", "E-4001")
+            )
             job.error_code = diagnostic.error_code
             job.error_message = diagnostic.message
             raw_failure_count = write_back.get("failure_count")
@@ -353,9 +356,17 @@ async def execute_batch(
         else:
             final_status = "failed"
 
-        job.status = final_status
-        job.completed_at = datetime.now(UTC).isoformat()
+        # Flush counters separately from the conditional terminal transition.
+        # Cancellation can land while the last accepted carrier call completes.
+        db_session.flush()
+        db_session.execute(
+            update(Job)
+            .where(Job.id == job_id, Job.status == "running")
+            .values(status=final_status, completed_at=datetime.now(UTC).isoformat())
+        )
         db_session.commit()
+        db_session.refresh(job)
+        final_status = job.status
 
         logger.info(
             "Batch execution complete for job %s: %d successful, %d failed, "
@@ -392,6 +403,18 @@ async def execute_batch(
             "total_duties_taxes_cents": intl_duties,
         }
 
+    except asyncio.CancelledError:
+        # The engine reconciles accepted calls before gather propagates cancellation.
+        # Preserve completed rows, expose uncertain rows, and stop future launches.
+        _sync_authoritative_progress()
+        db_session.flush()
+        db_session.execute(
+            update(Job)
+            .where(Job.id == job_id, Job.status == "running")
+            .values(status="cancelled", completed_at=datetime.now(UTC).isoformat())
+        )
+        db_session.commit()
+        raise
     except Exception:
         logger.error("Batch execution failed for job %s", job_id)
         DecisionAuditService.log_event(
@@ -401,13 +424,17 @@ async def execute_batch(
             actor="system",
             payload={"job_id": job_id, "error_code": "E-4001"},
         )
-        # Update job to failed status
-        job = db_session.query(Job).filter(Job.id == job_id).first()
-        if job and job.status == "running":
-            job.status = "failed"
-            job.error_code = "E-4001"
-            job.error_message = (
-                "The row could not be processed because of a system error."
+        _sync_authoritative_progress()
+        db_session.flush()
+        db_session.execute(
+            update(Job)
+            .where(Job.id == job_id, Job.status == "running")
+            .values(
+                status="failed",
+                error_code="E-4001",
+                error_message="The row could not be processed because of a system error.",
+                completed_at=datetime.now(UTC).isoformat(),
             )
-            db_session.commit()
+        )
+        db_session.commit()
         raise
