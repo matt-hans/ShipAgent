@@ -18,18 +18,18 @@ registry exports, and CLI.
   building, credentials, settings, contacts, audit, labels, write-back, MCP
   client gateways, and provider-neutral conversation ownership.
 - `src/services/conversation_runtime/` owns provider-neutral model/runtime
-  contracts, OpenAI/Gemini adapters, fake-provider tests, tool catalog projection,
+  contracts, Anthropic/OpenAI/Gemini adapters, fake-provider tests, tool catalog projection,
   policy gates, local tool dispatch, safe tool-result projection, and runtime
   session loops. Policy gates return the vendor-free `PolicyDecision` /
-  `PolicyDenialCode` from `src/services/policy_decision.py`; only
-  `src/orchestrator/agent/hooks.py` projects them into Claude hook envelopes.
+  `PolicyDenialCode` from `src/services/policy_decision.py`. No provider envelope
+  or agent-framework compatibility path belongs in core policy.
   `batch_execute` is denied for every model call
   (`EXECUTION_REQUIRES_USER_CONFIRMATION`): its `approved` argument is
   model-supplied, so shipments are only purchased from the confirm route
   after the user presses Confirm on a priced preview.
-- `src/orchestrator/agent/` owns the Claude Agent SDK compatibility adapter,
-  dynamic system prompt, mode-aware tool registration, hooks, and deterministic
-  tool handlers used by Claude and by neutral workflow wrappers.
+- `src/orchestrator/agent/` retains shared dynamic prompts, mode-aware tool
+  registration, deterministic handlers and gateway subprocess configuration.
+  Runtime loops and policy gates belong to the shared conversation runtime.
 - `src/mcp/` owns internal MCP connectivity modules for data sources and
   external commerce platforms.
 - `src/carriers/` and carrier services are integration boundaries. UPS access
@@ -69,8 +69,8 @@ registry exports, and CLI.
   for agent message processing. Keep history write ownership explicit.
 - Use `AgentSessionManager` for per-session agent lifecycle. Stop and remove
   sessions when temporary flows finish.
-- For OpenAI/Gemini/fake-provider behavior, extend
-  `src/services/conversation_runtime/` rather than the Claude adapter. Preserve
+- For Anthropic/OpenAI/Gemini/fake-provider behavior, extend
+  `src/services/conversation_runtime/` rather than adding a separate provider-owned loop. Preserve
   provider output items needed for continuation, especially OpenAI reasoning and
   function-call items.
 - Keep FastAPI request/response models in `src/api/schemas*.py` unless a domain
@@ -130,7 +130,7 @@ cross-layer flows.
 .venv/bin/python -m pip install -e '.[dev]'
 ```
 
-- Start the backend through the script so `.env`, `AGENT_MODEL`, model SDK
+- Start the backend through the script so `.env`, `AGENT_MODEL`, protocol-client
   dependency probes, MCP subprocesses, and the single-worker setting are handled
   consistently:
 

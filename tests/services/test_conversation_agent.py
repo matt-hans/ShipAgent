@@ -291,3 +291,16 @@ def test_legacy_model_environment_alias(monkeypatch, preferred):
         monkeypatch.setenv("AGENT_MODEL", preferred)
     agent = create_conversation_agent()
     assert agent._provider.capabilities.model == (preferred or "claude-opus-4-6")
+
+
+@pytest.mark.parametrize("runtime", ["claude", "claude_sdk", "anthropic"])
+def test_legacy_runtime_alias_warns_without_changing_provider(
+    monkeypatch, caplog, runtime
+):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    agent = create_conversation_agent(
+        runtime=runtime, model="claude-haiku-4-5-20251001"
+    )
+    assert agent._provider.capabilities.provider == "anthropic"
+    assert "deprecated" in caplog.text
+    assert "anthropic_messages" in caplog.text

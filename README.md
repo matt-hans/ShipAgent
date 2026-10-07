@@ -13,6 +13,11 @@ Available as a native desktop app (macOS/Windows/Linux) or Docker deployment.
 
 ---
 
+For model selection, legacy selector migration and SDK-free startup, see the
+[local runtime guide](docs/runtime/sdk-free-runtime.md). ShipAgent owns the loop
+for all three supported providers; configured model APIs still require network
+access.
+
 ## Features
 
 ### Core Shipping
@@ -104,7 +109,7 @@ ShipAgent uses the **Model Context Protocol (MCP)** to separate concerns into in
                                      ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                       Orchestration Agent                                   │
-│         (Python workflow services + Claude SDK adapter + canonical tools)   │
+│         (Python workflow services + shared conversation runtime + canonical tools)   │
 │  ┌───────────┐ ┌───────────┐ ┌───────────┐ ┌───────────┐ ┌───────────┐    │
 │  │ Pipeline  │ │Interactive│ │  Pickup   │ │  Docs /   │ │ Tracking  │    │
 │  │ (Batch)   │ │ (Single)  │ │ Schedule  │ │ Paperless │ │           │    │
@@ -153,7 +158,7 @@ ShipAgent is moving toward a canonical workflow/tool registry. Public app-store 
 | **Desktop App** | Tauri v2 (Rust), tauri-plugin-shell, tauri-plugin-updater (registered only when `plugins.updater` is configured; currently not) |
 | **Backend** | Python 3.12+, FastAPI, SQLAlchemy, SQLite |
 | **Bundling** | PyInstaller (one-folder), `bundle_entry.py` subcommand dispatch |
-| **Runtime Adapter** | Claude Agent SDK adapter, Anthropic API, extensible provider adapters |
+| **Runtime Adapter** | ShipAgent-owned loop; Anthropic Messages, OpenAI Responses and Gemini adapters |
 | **MCP Protocol** | FastMCP v2 (servers), `mcp` (stdio clients) |
 | **Credentials** | `keyring` (macOS Keychain / Linux Secret Service), `cryptography` (AES-256-GCM) |
 | **Data Processing** | DuckDB, openpyxl, xmltodict, defusedxml, pydifact (EDI) |
@@ -707,7 +712,7 @@ shipagent/
 │   │           ├── sap.py
 │   │           └── oracle.py
 │   └── orchestrator/               # AI orchestration
-│       ├── agent/                  # Claude Agent SDK
+│       ├── agent/                  # Shared prompts and deterministic workflow tools
 │       │   ├── client.py           # OrchestrationAgent (conversation mgmt)
 │       │   ├── config.py           # Agent config + MCP server setup
 │       │   ├── hooks.py            # Pre/PostToolUse validation hooks
@@ -848,7 +853,7 @@ Follow the UPSMCPClient pattern:
 - [x] Phase 2: Data Source MCP (CSV, Excel, Database)
 - [x] Phase 3: UPS MCP Integration (Ship, Rate, Validate)
 - [x] Phase 4: NL Engine (Intent Parsing, Filter Compilation, Column Mapping)
-- [x] Phase 5: Agent Orchestration (Claude Agent SDK, 25+ Tools)
+- [x] Phase 5: Agent Orchestration (shared runtime and canonical tools)
 - [x] Phase 6: Batch Execution Engine (Preview, Confirm, Recovery)
 - [x] Phase 7: Web Interface (SSE Streaming, Label Preview)
 - [x] Phase 8: CLI Suite (Daemon, Job Control, REPL, Watchdog)
@@ -887,7 +892,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Acknowledgments
 
-- [Anthropic Claude](https://www.anthropic.com/) — AI orchestration via Agent SDK
+- [Anthropic Claude](https://www.anthropic.com/) — Models via the shared Anthropic Messages adapter
 - [Model Context Protocol](https://modelcontextprotocol.io/) — MCP specification
 - [UPS Developer Kit](https://developer.ups.com/) — Shipping APIs
 - [Tauri](https://v2.tauri.app/) — Desktop app framework

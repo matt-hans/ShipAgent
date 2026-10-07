@@ -12,8 +12,8 @@ logger = logging.getLogger(__name__)
 
 # These historical selectors remain configuration aliases only. Every real
 # provider runs in the ShipAgent-owned runtime.
-_ANTHROPIC_MESSAGES_RUNTIMES = {"anthropic", "anthropic_messages", "anthropic-messages"}
-_DEPRECATED_CLAUDE_RUNTIMES = {"claude", "claude_sdk"}
+_ANTHROPIC_MESSAGES_RUNTIMES = {"anthropic_messages", "anthropic-messages"}
+_DEPRECATED_CLAUDE_RUNTIMES = {"claude", "claude_sdk", "anthropic"}
 
 
 class ConversationAgent(Protocol):
@@ -171,7 +171,8 @@ def create_conversation_agent(
 
     if runtime in _DEPRECATED_CLAUDE_RUNTIMES:
         logger.warning(
-            "Runtime selector '%s' is deprecated; use 'anthropic' or 'auto'.", runtime
+            "Runtime selector '%s' is deprecated; use 'anthropic_messages' or 'auto'.",
+            runtime,
         )
 
     provider_name = None

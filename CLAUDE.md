@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **ShipAgent** is an AI-native shipping automation platform. The goal is to build the most robust shipping workflow platform ever — a system where provider runtimes expose the same canonical workflow/tool backbone, with internal connectivity modules for external systems and deterministic services for execution.
 
-**Provider-Neutral Backbone:** ShipAgent's backbone is the canonical workflow/tool layer. Claude Agent SDK, OpenAI Apps SDK, Anthropic connectors, Microsoft Copilot, Gemini function calling, generic MCP clients, CLI, API routes, and desktop/Tauri are runtime or distribution adapters over that backbone.
+**Provider-Neutral Backbone:** ShipAgent's backbone is the canonical workflow/tool layer. Model protocol adapters, OpenAI Apps SDK, Anthropic connectors, Microsoft Copilot, Gemini function calling, generic MCP clients, CLI, API routes, and desktop/Tauri are runtime or distribution adapters over that backbone.
 
 **Runtime Adapter Rule:** Provider runtimes may plan, render, stream, or package workflows, but shipping business logic lives in workflow services and canonical registry definitions. Do not add new provider-specific shipping logic directly inside model SDK handlers.
 
@@ -48,7 +48,7 @@ User → Browser UI (Angular) → FastAPI REST API → Conversation SSE Route
                                                        ↓
                                               AgentSessionManager
                                                        ↓
-                                              OrchestrationAgent (Claude SDK adapter)
+                                              ConversationRuntimeSession (shared provider loop)
                                                ↓              ↓
                                     Orchestrator Tools    UPS MCP (stdio)
                                          ↓
@@ -63,7 +63,7 @@ User → Browser UI (Angular) → FastAPI REST API → Conversation SSE Route
 
 ### System Components
 
-**Agent Layer:** `OrchestrationAgent` (Claude SDK) → 9 tool modules → Pre/PostToolUse hooks → `AgentSessionManager` (per-conversation lifecycle).
+**Agent Layer:** `ConversationRuntimeSession` → canonical tool catalog and neutral policy → deterministic handlers; `AgentSessionManager` owns conversation lifecycle.
 **MCP Layer:** Data Source MCP (FastMCP+DuckDB, stdio), UPS MCP (local fork, stdio, 18 tools), External Sources MCP (FastMCP, stdio — Shopify/WooCommerce/SAP/Oracle). Gateway singletons in `gateway_provider.py`.
 **Execution Layer:** `BatchEngine` (concurrent preview+execute), `UPSMCPClient` (programmatic batch), `ConversationPersistenceService` (session/message DB).
 **Presentation:** FastAPI backend (REST+SSE), Angular 21+Nx+Native Federation frontend, Typer+Rich headless CLI. SQLite+SQLAlchemy for persistence.
@@ -195,7 +195,7 @@ src/
     │   ├── mapping.py          # Column mapping models
     │   ├── elicitation.py      # Elicitation models
     │   └── correction.py       # Self-correction loop tracking (max 3 attempts)
-    ├── agent/                  # Claude Agent SDK runtime adapter
+    ├── agent/                  # Shared prompts and deterministic workflow tools
     │   ├── client.py           # OrchestrationAgent — SDK agent with streaming + MCP coordination
     │   ├── system_prompt.py    # Dynamic system prompt builder (domain knowledge + data schema)
     │   ├── tools/              # Deterministic SDK tools (split by concern — 9 modules)
@@ -250,8 +250,11 @@ scripts/
 
 ## Key Services
 
-### OrchestrationAgent (`src/orchestrator/agent/client.py`)
-Claude Agent SDK runtime adapter. Manages conversation state, tool dispatch, MCP servers, hooks, streaming, error recovery. `process_message_stream()` yields SSE events. MCP servers: `orchestrator` (in-process) + `ups` (stdio). Default model: `AGENT_MODEL` → `ANTHROPIC_MODEL` → Claude Haiku 4.5.
+### Conversation runtime (`src/services/conversation_runtime/`)
+ShipAgent owns state, policy, dispatch, streaming and cancellation for Anthropic,
+OpenAI and Gemini. The shared factory is `src/services/conversation_agent.py`;
+API, CLI and desktop use the same conversation service. See
+`docs/runtime/sdk-free-runtime.md` for settings precedence and legacy aliases.
 
 ### UPS MCP Server (local fork: `matt-hans/ups-mcp`)
 Stdio child process, editable install from pinned commit. 18 tools across 6 domains: Shipping, Address/Transit, Landed Cost, Paperless, Locator, Pickup.
@@ -260,7 +263,7 @@ Stdio child process, editable install from pinned commit. 18 tools across 6 doma
 Concurrent preview + execution (`asyncio.gather` + semaphore, `BATCH_CONCURRENCY` env, default 5). Per-row state writes for crash recovery. SSE events for real-time progress. Integrated write-back.
 
 ### AgentSessionManager (`src/services/agent_session_manager.py`)
-Per-conversation isolated history, persistent `OrchestrationAgent`, `agent_source_hash` for change detection, `asyncio.Lock` for serialization.
+Per-conversation isolated history, persistent `ConversationAgent`, `agent_source_hash` for change detection, `asyncio.Lock` for serialization.
 
 ### UPSPayloadBuilder (`src/services/ups_payload_builder.py`)
 Builds payloads from column-mapped data + canonical constants. All field limits imported from `ups_constants.py` — never inline.
@@ -316,7 +319,7 @@ All endpoints use `/api/v1/` prefix. See route files in `src/api/routes/` for fu
 | Desktop App | Tauri v2 (Rust), tauri-plugin-shell, tauri-plugin-updater (Ed25519; inactive until `plugins.updater` is configured) |
 | Backend | Python 3.12+, FastAPI, SQLAlchemy, SQLite |
 | Bundling | PyInstaller (one-folder), `bundle_entry.py` subcommand dispatch |
-| Runtime Adapter | Claude Agent SDK adapter (`claude-agent-sdk>=0.1.22`), Anthropic API, extensible provider adapters |
+| Runtime Adapter | ShipAgent-owned runtime; Anthropic Messages, OpenAI Responses and Gemini adapters |
 | MCP Protocol | FastMCP v2 (servers), `mcp` (stdio clients) |
 | Credentials | `keyring` (macOS Keychain / Linux Secret Service), `platformdirs` |
 | Data Processing | DuckDB (in-memory analytics), openpyxl (Excel), `defusedxml` (XXE prevention) |
@@ -474,7 +477,6 @@ All enums inherit from both `str` and `Enum` for JSON serialization.
 - SSE/streaming tests may hang — use `pytest -k "not stream and not sse and not progress"`
 - After backend restart, Shopify connection lost (in-memory) — call `GET /api/v1/platforms/shopify/env-status`
 - EDI adapter test collection errors (10 tests, unrelated to core features)
-- **Claude Agent SDK bug [#265](https://github.com/anthropics/claude-agent-sdk-python/issues/265)**: PreToolUse hook denials generate a synthetic "API Error: 400 due to tool use concurrency issues" message. Hooks remain active; the misleading error is suppressed in the chat UI (`chat-container.component.ts`). Remove the filter when the SDK fix ships.
 
 ## UPS API Lessons
 

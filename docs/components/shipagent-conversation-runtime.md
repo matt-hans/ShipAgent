@@ -2,9 +2,14 @@
 
 The Conversation Runtime component owns user-message execution across provider runtimes. `src/services/agent_session_manager.py` tracks process-local `AgentSession` instances with per-session locks, active agents, turn generation guards, mode flags, prewarm/message tasks, and idle reaping. `src/services/conversation_handler.py` is the canonical message path used by HTTP routes and the CLI runner: it resolves current data-source context, starts decision audit runs, rebuilds agents when context changes, streams model/tool events, persists assistant text and artifacts, and completes audit state.
 
-`src/services/conversation_agent.py` selects a provider behind the `ConversationAgent` protocol. OpenAI/Gemini/fake providers use `src/services/conversation_runtime/runtime_session.py`; Claude-style models use `src/orchestrator/agent/client.py`. The neutral runtime loops over provider stream events, builds a `WorkflowToolCatalog`, dispatches local tools through `LocalToolDispatcher`, and projects safe tool results back to the provider. The Claude adapter mounts in-process orchestrator tools through the Claude Agent SDK, hooks from `src/orchestrator/agent/hooks.py`, and optional UPS MCP access for compatibility.
+`src/services/conversation_agent.py` selects a protocol adapter behind the
+`ConversationAgent` boundary. Anthropic/OpenAI/Gemini/fake providers all use
+`src/services/conversation_runtime/runtime_session.py`. The runtime owns the
+loop, catalog, neutral policy and local deterministic dispatch. No SDK client or
+hook compatibility path remains. See [configuration and migration](../runtime/sdk-free-runtime.md).
 
-Evidence: `tests/services/test_conversation_agent.py`, `tests/services/test_conversation_handler.py`, `tests/services/test_conversation_handler_resume.py`, `tests/services/test_agent_session_manager.py`, `tests/services/conversation_runtime/test_runtime_session.py`, `tests/services/conversation_runtime/test_dispatcher.py`, `tests/orchestrator/agent/test_client.py`, and API conversation tests.
+
+Evidence: `tests/services/test_conversation_agent.py`, `tests/services/test_conversation_handler.py`, `tests/services/test_conversation_handler_resume.py`, `tests/services/test_agent_session_manager.py`, `tests/services/conversation_runtime/test_runtime_session.py`, `tests/services/conversation_runtime/test_dispatcher.py`, `tests/packaging/test_sdk_free_runtime.py`, and API conversation tests.
 
 ## Read Variables
 
@@ -26,7 +31,7 @@ Evidence: `tests/services/test_conversation_agent.py`, `tests/services/test_conv
 ## Conditional Loops
 
 - `ensure_agent()` rebuilds an agent when source hash, interactive mode, or prompt contacts change; otherwise it reuses the existing runtime.
-- Runtime selection branches to fake, OpenAI, Gemini, Claude SDK, mismatch errors, or unavailable-agent responses based on `SHIPAGENT_AGENT_RUNTIME` and model prefixes.
+- Runtime selection branches to fake, OpenAI, Gemini, Anthropic, mismatch errors, or unavailable-agent responses based on `SHIPAGENT_AGENT_RUNTIME` and model prefixes.
 - `process_message()` serializes each session with an async lock, cancels inactive turn generations, switches interactive sessions to batch mode when needed, and hides transient chat text when artifacts are emitted.
 - `ConversationRuntimeSession` loops up to `max_turns`, streaming provider text, collecting provider output items and tool calls, de-duplicating tool call IDs, executing local tools, appending tool result messages, and stopping when no tool calls remain.
 - Interrupt handling marks active generations interrupted and calls provider cancellation when supported.
@@ -39,8 +44,7 @@ flowchart TD
     Manager -->|lock and turn guard| Handler[conversation_handler.process_message]
     Handler -->|read source/settings/contacts| Prompt[System prompt context]
     Handler -->|select or rebuild| AgentFactory[create_conversation_agent]
-    AgentFactory -->|OpenAI/Gemini/fake| Neutral[ConversationRuntimeSession]
-    AgentFactory -->|Claude model| Claude[OrchestrationAgent]
+    AgentFactory -->|Anthropic/OpenAI/Gemini/fake| Neutral[ConversationRuntimeSession]
     Neutral -->|read provider events| Provider[ModelProviderClient]
     Neutral -->|write tool calls| Dispatcher[LocalToolDispatcher]
     Dispatcher -->|write frontend artifacts| Bridge[EventEmitterBridge]
