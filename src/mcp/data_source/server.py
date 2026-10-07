@@ -40,10 +40,9 @@ async def lifespan(app: Any):
     # Create in-memory DuckDB connection
     conn = duckdb.connect(":memory:")
 
-    # Install extensions for database connectivity
-    # These are loaded lazily when first used
-    conn.execute("INSTALL postgres; INSTALL mysql;")
-    conn.execute("LOAD postgres; LOAD mysql;")
+    # DuckDB autoloads postgres/mysql when DatabaseAdapter explicitly ATTACHes
+    # that database type. Local file workflows must start without downloading
+    # unrelated extensions or contacting remote services.
 
     yield {
         "db": conn,
