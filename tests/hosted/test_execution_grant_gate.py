@@ -430,16 +430,30 @@ async def test_concurrent_calls_produce_exactly_one_effect(context):
     tool = await bound_execute(handler, authority)
 
     tasks = [asyncio.ensure_future(tool.run(EXECUTE_ARGS)) for _ in range(3)]
-    while sum(task.done() for task in tasks) < 2:
-        await asyncio.sleep(0)
-    gate.set()
-    outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+    try:
+        async with asyncio.timeout(2):
+            while sum(task.done() for task in tasks) < 2:
+                await asyncio.sleep(0)
+        gate.set()
+        done, pending = await asyncio.wait(tasks, timeout=2)
+        assert not pending, "concurrent grant calls did not settle"
+        outcomes = [task.exception() or task.result() for task in done]
 
-    denied = [o for o in outcomes if isinstance(o, ToolAuthorizationError)]
-    assert len(denied) == 2
-    assert {d.code for d in denied} == {ExecutionGrantDenial.GRANT_IN_USE}
-    assert len(handler.calls) == 1
-    assert authority.events == ["reserve", "consume"]
+        denied = [o for o in outcomes if isinstance(o, ToolAuthorizationError)]
+        assert len(denied) == 2
+        assert {d.code for d in denied} == {ExecutionGrantDenial.GRANT_IN_USE}
+        assert len(handler.calls) == 1
+        assert authority.events == ["reserve", "consume"]
+    finally:
+        gate.set()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        done, pending = await asyncio.wait(tasks, timeout=2)
+        for task in done:
+            if not task.cancelled():
+                task.exception()
+        assert not pending, "concurrent grant test left unfinished tasks"
 
 
 async def test_consume_failure_after_acceptance_holds_and_still_reports(
