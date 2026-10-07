@@ -6,13 +6,7 @@ find_locations, get_service_center_facilities.
 
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac as hmac_mod
-import json
 import logging
-import os
-import time
 from typing import Any
 
 from src.orchestrator.agent.tools.core import (
@@ -27,225 +21,76 @@ from src.services.errors import UPSServiceError
 logger = logging.getLogger(__name__)
 _ON_CALL_PICKUP_TYPE = "oncall"
 
-# HMAC confirmation token infrastructure (H-2, CWE-347).
-# Mirrors the filter token pattern in hooks.py.
-_PICKUP_TOKEN_TTL_SECONDS = 600  # 10 minutes
-_PICKUP_TOKEN_SECRET: str | None = None
-
-
-def _get_pickup_token_secret() -> str:
-    """Return the pickup confirmation token secret.
-
-    Uses FILTER_TOKEN_SECRET env var (shared with filter enforcement).
-    Falls back to a process-unique random secret.
-    """
-    global _PICKUP_TOKEN_SECRET
-    if _PICKUP_TOKEN_SECRET is None:
-        _PICKUP_TOKEN_SECRET = os.environ.get(
-            "FILTER_TOKEN_SECRET", ""
-        ) or hashlib.sha256(os.urandom(32)).hexdigest()
-    return _PICKUP_TOKEN_SECRET
-
-
-def _issue_pickup_token(action: str, details_hash: str) -> str:
-    """Issue an HMAC-signed confirmation token for a pickup action.
-
-    Args:
-        action: The action being confirmed ("schedule" or "cancel").
-        details_hash: SHA-256 hash of the operation details.
-
-    Returns:
-        Base64-encoded signed token string.
-    """
-    secret = _get_pickup_token_secret()
-    payload = {
-        "action": action,
-        "details_hash": details_hash,
-        "expires_at": time.time() + _PICKUP_TOKEN_TTL_SECONDS,
-    }
-    payload_json = json.dumps(payload, sort_keys=True)
-    signature = hmac_mod.new(
-        secret.encode(), payload_json.encode(), hashlib.sha256
-    ).hexdigest()
-    payload["signature"] = signature
-    return base64.b64encode(json.dumps(payload).encode()).decode()
-
-
-def _validate_pickup_token(token: str, action: str, details_hash: str) -> str | None:
-    """Validate an HMAC-signed pickup confirmation token.
-
-    Args:
-        token: Base64-encoded signed token.
-        action: Expected action ("schedule" or "cancel").
-        details_hash: Expected SHA-256 hash of operation details.
-
-    Returns:
-        None if valid, error message string if invalid.
-    """
-    secret = _get_pickup_token_secret()
-    try:
-        decoded = json.loads(base64.b64decode(token))
-    except Exception:
-        return "Confirmation token is malformed."
-
-    if time.time() > decoded.get("expires_at", 0):
-        return "Confirmation token has expired. Re-run the preview/rate step."
-
-    signature = decoded.pop("signature", None)
-    if signature is None:
-        return "Confirmation token missing signature."
-
-    payload_json = json.dumps(decoded, sort_keys=True)
-    expected_sig = hmac_mod.new(
-        secret.encode(), payload_json.encode(), hashlib.sha256
-    ).hexdigest()
-    if not hmac_mod.compare_digest(signature, expected_sig):
-        return "Confirmation token signature is invalid (tampered)."
-
-    if decoded.get("action") != action:
-        return f"Token action mismatch: expected '{action}', got '{decoded.get('action')}'."
-
-    if decoded.get("details_hash") != details_hash:
-        return "Confirmation token details do not match the current request."
-
-    return None
-
-
-def _hash_pickup_details(details: dict[str, Any]) -> str:
-    """Compute a stable SHA-256 hash of pickup operation details.
-
-    Args:
-        details: Dict of pickup parameters to hash.
-
-    Returns:
-        Hex digest string.
-    """
-    canonical = json.dumps(details, sort_keys=True, default=str)
-    return hashlib.sha256(canonical.encode()).hexdigest()
-
-
 async def schedule_pickup_tool(
     args: dict[str, Any],
     bridge: EventEmitterBridge | None = None,
 ) -> dict[str, Any]:
-    """Schedule a UPS pickup and emit enriched pickup_result event.
-
-    Requires ``confirmed=True`` in args as a safety gate — scheduling a
-    pickup is a financial commitment.  The agent must first present
-    pickup details to the user via rate_pickup and obtain explicit
-    confirmation before calling this tool with ``confirmed=True``.
-
-    Args:
-        args: Dict with pickup_date, ready_time, close_time, address fields,
-              contact_name, phone_number, confirmed flag, and optional kwargs.
-        bridge: Event bridge for SSE emission.
-
-    Returns:
-        Tool response with PRN on success, or error envelope.
-    """
-    # Capture input details for enriched completion event
-    input_details = {
-        "address_line": args.get("address_line", ""),
-        "city": args.get("city", ""),
-        "state": args.get("state", ""),
-        "postal_code": args.get("postal_code", ""),
-        "country_code": args.get("country_code", "US"),
-        "pickup_date": args.get("pickup_date", ""),
-        "ready_time": args.get("ready_time", ""),
-        "close_time": args.get("close_time", ""),
-        "contact_name": args.get("contact_name", ""),
-        "phone_number": args.get("phone_number", ""),
-    }
-
-    # Safety gate: validate HMAC confirmation token (H-2, CWE-347).
-    # The token proves that rate_pickup was called and the user saw the preview.
-    # Falls back to boolean confirmed=True for backward compatibility with
-    # existing agent prompts, but token is preferred.
-    confirmation_token = args.pop("confirmation_token", None)
-    if confirmation_token:
-        details_hash = _hash_pickup_details(input_details)
-        token_error = _validate_pickup_token(confirmation_token, "schedule", details_hash)
-        if token_error:
-            return _err(f"Safety gate: {token_error}")
-    elif not args.pop("confirmed", False):
-        return _err(
-            "Safety gate: schedule_pickup requires explicit user confirmation. "
-            "Present pickup details to the user first via rate_pickup, then call "
-            "again with the confirmation_token from the rate response."
-        )
-
-    try:
-        client = await _get_ups_client()
-        result = await client.schedule_pickup(**args)
-        prn = result.get("prn", "unknown")
-        payload = {
-            "action": "scheduled",
-            "success": True,
-            "prn": prn,
-            **input_details,
-        }
-        _emit_event("pickup_result", payload, bridge=bridge)
-        return _ok(f"Pickup scheduled successfully. PRN: {prn}")
-    except UPSServiceError as e:
-        return _err(f"[{e.code}] {e.message}")
-    except Exception as e:
-        logger.warning(
-            "Unexpected error in schedule_pickup_tool exception_type=%s",
-            type(e).__name__,
-        )
-        return _err(f"Unexpected error: {e}")
+    """Reject model execution; the preview card owns the confirmation action."""
+    return _err(
+        "Safety gate: pickups are scheduled only when the user presses Confirm "
+        "on a priced pickup preview. Call rate_pickup to prepare that preview."
+    )
 
 
 async def cancel_pickup_tool(
     args: dict[str, Any],
     bridge: EventEmitterBridge | None = None,
 ) -> dict[str, Any]:
-    """Cancel a previously scheduled pickup and emit pickup_result event.
-
-    Requires ``confirmed=True`` in args as a safety gate — cancelling a
-    pickup is irreversible.
-
-    Args:
-        args: Dict with cancel_by ("prn" or "account"), optional prn,
-              and confirmed flag.
-        bridge: Event bridge for SSE emission.
-
-    Returns:
-        Tool response with cancellation status, or error envelope.
-    """
-    # Safety gate: validate HMAC confirmation token (H-2, CWE-347).
-    cancel_details = {
-        "cancel_by": args.get("cancel_by", "prn"),
-        "prn": args.get("prn", ""),
-    }
-    confirmation_token = args.pop("confirmation_token", None)
-    if confirmation_token:
-        details_hash = _hash_pickup_details(cancel_details)
-        token_error = _validate_pickup_token(confirmation_token, "cancel", details_hash)
-        if token_error:
-            return _err(f"Safety gate: {token_error}")
-    elif not args.pop("confirmed", False):
-        return _err(
-            "Safety gate: cancel_pickup requires explicit user confirmation. "
-            "Present cancellation details to the user first, then call again "
-            "with a confirmation_token."
-        )
-
+    """Prepare cancellation; a model call can never cancel the pickup."""
+    if bridge is None or not bridge.session_id:
+        return _err("A conversation is required to confirm a pickup cancellation.")
+    bridge.workflow_actions.invalidate("cancel_pickup")
+    cancel_by = args.get("cancel_by", "prn")
+    prn = args.get("prn", "")
+    if cancel_by not in {"prn", "account"} or not isinstance(prn, str):
+        return _err("Specify a valid pickup request number (PRN) to cancel.")
+    prn = prn.strip()
+    if cancel_by == "prn" and not prn:
+        return _err("Specify the pickup request number (PRN) to preview cancellation.")
     try:
         client = await _get_ups_client()
-        cancel_by = args.get("cancel_by", "prn")
-        prn = args.get("prn", "")
-        result = await client.cancel_pickup(cancel_by=cancel_by, prn=prn)
-        payload = {"action": "cancelled", "success": True, **result}
-        _emit_event("pickup_result", payload, bridge=bridge)
-        return _ok("Pickup cancelled successfully.")
-    except UPSServiceError as e:
-        return _err(f"[{e.code}] {e.message}")
-    except Exception as e:
+        if cancel_by == "account":
+            result = await client.get_pickup_status(
+                pickup_type=_ON_CALL_PICKUP_TYPE, account_number=""
+            )
+            pickups = result.get("pickups", [])
+            # Never bind authority to a moving 'latest pickup' target. Resolve
+            # a single pending PRN now or ask the user to choose explicitly.
+            if (
+                result.get("success") is not True
+                or not isinstance(pickups, list)
+                or len(pickups) != 1
+            ):
+                return _err(
+                    "Choose a specific PRN from pickup status before cancelling."
+                )
+            prn = pickups[0].get("prn")
+            if not isinstance(prn, str) or not prn.strip():
+                return _err("No specific pickup PRN was returned. Check pickup status.")
+            prn = prn.strip()
+    except Exception as exc:
         logger.warning(
-            "Unexpected error in cancel_pickup_tool exception_type=%s", type(e).__name__
+            "Pickup cancellation preparation failed exception_type=%s",
+            type(exc).__name__,
         )
-        return _err(f"Unexpected error: {e}")
+        return _err(
+            "Pickup cancellation preview failed. Check pickup status and try again."
+        )
+    details = {"cancel_by": "prn", "prn": prn}
+    token = bridge.workflow_actions.prepare("cancel_pickup", details, client)
+    _emit_event(
+        "pickup_preview",
+        {
+            "action": "cancel",
+            **details,
+            "confirmation_token": token,
+            "session_id": bridge.session_id,
+        },
+        bridge=bridge,
+    )
+    return _ok(
+        "Pickup cancellation preview displayed. Waiting for the user to confirm or cancel."
+    )
 
 
 async def rate_pickup_tool(
@@ -266,51 +111,51 @@ async def rate_pickup_tool(
     Returns:
         Tool response with rate estimate, or error envelope.
     """
+    from pydantic import ValidationError
+
+    from src.services.workflow_confirmation import PickupDetails, valid_pickup_quote
+
+    if bridge is None or not bridge.session_id:
+        return _err("A conversation is required to confirm a pickup.")
+    # Re-preview intent revokes old authority even if validation or pricing fails.
+    bridge.workflow_actions.invalidate("schedule_pickup")
+    try:
+        details = PickupDetails.model_validate(
+            {key: value for key, value in args.items() if key != "pickup_type"}
+        ).model_dump()
+    except ValidationError:
+        return _err(
+            "Invalid pickup details. Provide an address, contact, phone, YYYYMMDD date and valid ready/close times."
+        )
     try:
         client = await _get_ups_client()
-        # Extract input details before passing to client
-        input_details = {
-            "pickup_type": _ON_CALL_PICKUP_TYPE,
-            "address_line": args.get("address_line", ""),
-            "city": args.get("city", ""),
-            "state": args.get("state", ""),
-            "postal_code": args.get("postal_code", ""),
-            "country_code": args.get("country_code", "US"),
-            "pickup_date": args.get("pickup_date", ""),
-            "ready_time": args.get("ready_time", ""),
-            "close_time": args.get("close_time", ""),
-            "contact_name": args.get("contact_name", ""),
-            "phone_number": args.get("phone_number", ""),
-        }
-        rate_args = {
-            **args,
-            "pickup_type": _ON_CALL_PICKUP_TYPE,
-        }
-        result = await client.rate_pickup(**rate_args)
-        # Issue HMAC-signed confirmation token (H-2, CWE-347)
-        details_hash = _hash_pickup_details(input_details)
-        confirmation_token = _issue_pickup_token("schedule", details_hash)
-
-        # Emit pickup_preview with all details + rate + token
-        payload = {
-            **input_details,
-            "charges": result.get("charges", []),
-            "grand_total": result.get("grandTotal", "0"),
-            "confirmation_token": confirmation_token,
-        }
-        _emit_event("pickup_preview", payload, bridge=bridge)
+        result = await client.rate_pickup(**details, pickup_type=_ON_CALL_PICKUP_TYPE)
+        if not valid_pickup_quote(result):
+            return _err(
+                "No valid pickup rate was returned. Request a new quote before scheduling."
+            )
+        token = bridge.workflow_actions.prepare("schedule_pickup", details, client)
+        _emit_event(
+            "pickup_preview",
+            {
+                **details,
+                "pickup_type": _ON_CALL_PICKUP_TYPE,
+                "charges": result.get("charges", []),
+                "grand_total": str(result["grandTotal"]),
+                "confirmation_token": token,
+                "session_id": bridge.session_id,
+                "action": "schedule",
+            },
+            bridge=bridge,
+        )
         return _ok(
-            "Pickup rate estimate displayed. Waiting for user to confirm or cancel "
-            "via the preview card. Do NOT call schedule_pickup until the user confirms. "
-            f"Pass confirmation_token={confirmation_token!r} when calling schedule_pickup."
+            "Pickup rate estimate displayed. Waiting for the user to confirm or cancel via the preview card."
         )
-    except UPSServiceError as e:
-        return _err(f"[{e.code}] {e.message}")
-    except Exception as e:
-        logger.warning(
-            "Unexpected error in rate_pickup_tool exception_type=%s", type(e).__name__
-        )
-        return _err(f"Unexpected error: {e}")
+    except UPSServiceError as exc:
+        return _err(f"[{exc.code}] Pickup pricing failed. Request a new quote.")
+    except Exception as exc:
+        logger.warning("Pickup pricing failed exception_type=%s", type(exc).__name__)
+        return _err("Pickup pricing failed. Request a new quote.")
 
 
 async def get_pickup_status_tool(

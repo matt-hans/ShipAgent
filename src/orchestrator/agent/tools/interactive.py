@@ -6,6 +6,7 @@ address normalization, and account masking.
 
 import json
 import logging
+import math
 import os
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -306,7 +307,7 @@ async def preview_interactive_shipment_tool(
     # Validate weight
     try:
         weight = float(raw_weight)
-        if weight <= 0:
+        if isinstance(raw_weight, bool) or not math.isfinite(weight) or weight <= 0:
             return _err("Weight must be a positive number.")
     except (ValueError, TypeError):
         return _err(

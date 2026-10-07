@@ -1001,47 +1001,47 @@ async def test_shutdown_cached_ups_client_is_noop():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_schedule_pickup_tool_success():
-    """schedule_pickup_tool returns _ok envelope and emits pickup_result event."""
-    mock_ups = AsyncMock()
-    mock_ups.schedule_pickup.return_value = {"success": True, "prn": "ABC123"}
+async def _confirm_priced_pickup(mock_ups, details):
+    """Exercise pricing then the same trusted decision service used by the UI."""
+    from src.orchestrator.agent.tools.pickup import rate_pickup_tool
+    from src.services.workflow_confirmation import decide_action
 
     bridge = EventEmitterBridge()
-    captured: list[tuple[str, dict]] = []
-    bridge.callback = lambda event_type, data: captured.append((event_type, data))
-
-    with patch(
-        "src.orchestrator.agent.tools.pickup._get_ups_client",
-        return_value=mock_ups,
+    bridge.session_id = "pickup-test"
+    previews = []
+    bridge.callback = lambda kind, data: previews.append((kind, data))
+    mock_ups.rate_pickup.return_value = {
+        "success": True,
+        "grandTotal": "7.50",
+        "charges": [],
+    }
+    with (
+        patch(
+            "src.orchestrator.agent.tools.pickup._get_ups_client", return_value=mock_ups
+        ),
+        patch("src.services.gateway_provider.get_ups_gateway", return_value=mock_ups),
     ):
-        from src.orchestrator.agent.tools.pickup import schedule_pickup_tool
-
-        result = await schedule_pickup_tool(
-            {
-                "pickup_date": "20260220",
-                "ready_time": "0900",
-                "close_time": "1700",
-                "address_line": "123 Main",
-                "city": "Austin",
-                "state": "TX",
-                "postal_code": "78701",
-                "country_code": "US",
-                "contact_name": "John",
-                "phone_number": "5125551234",
-                "confirmed": True,
-            },
-            bridge=bridge,
+        result = await rate_pickup_tool(details, bridge)
+        assert result["isError"] is False
+        mock_ups.schedule_pickup.assert_not_awaited()
+        return await decide_action(
+            bridge.workflow_actions, previews[-1][1]["confirmation_token"], "confirm"
         )
 
-    assert result["isError"] is False
-    text = json.loads(result["content"][0]["text"])
-    assert "ABC123" in text  # Minimal summary contains PRN
 
-    assert len(captured) == 1
-    assert captured[0][0] == "pickup_result"
-    assert captured[0][1]["action"] == "scheduled"
-    assert captured[0][1]["prn"] == "ABC123"
+@pytest.mark.asyncio
+async def test_schedule_pickup_tool_success():
+    """A priced pickup retains its full result after the user confirmation."""
+    from tests.services.test_auxiliary_workflow_acceptance import PICKUP
+
+    mock_ups = AsyncMock()
+    mock_ups.schedule_pickup.return_value = {"success": True, "prn": "CONFIRMED-PRN"}
+    event, payload = await _confirm_priced_pickup(mock_ups, PICKUP)
+    assert event == "pickup_result"
+    assert payload["prn"] == "CONFIRMED-PRN"
+    assert payload["action"] == "scheduled"
+    assert all(payload[key] == value for key, value in PICKUP.items())
+    mock_ups.schedule_pickup.assert_awaited_once_with(**PICKUP)
 
 
 @pytest.mark.asyncio
@@ -1060,129 +1060,73 @@ async def test_schedule_pickup_tool_safety_gate():
 
 @pytest.mark.asyncio
 async def test_schedule_pickup_tool_error():
-    """schedule_pickup_tool returns _err envelope on UPSServiceError."""
-    from src.services.errors import UPSServiceError
+    """A confirmed carrier failure is ambiguous and never returns success."""
+    from src.services.workflow_confirmation import WorkflowExecutionError
+    from tests.services.test_auxiliary_workflow_acceptance import PICKUP
 
     mock_ups = AsyncMock()
-    mock_ups.schedule_pickup.side_effect = UPSServiceError(
-        code="E-3007", message="timing error"
-    )
-
-    with patch(
-        "src.orchestrator.agent.tools.pickup._get_ups_client",
-        return_value=mock_ups,
-    ):
-        from src.orchestrator.agent.tools.pickup import schedule_pickup_tool
-
-        result = await schedule_pickup_tool(
-            {
-                "pickup_date": "20260220",
-                "ready_time": "0900",
-                "close_time": "1700",
-                "address_line": "123 Main",
-                "city": "Austin",
-                "state": "TX",
-                "postal_code": "78701",
-                "country_code": "US",
-                "contact_name": "John",
-                "phone_number": "5125551234",
-                "confirmed": True,
-            },
-        )
-
-    assert result["isError"] is True
-    assert "E-3007" in result["content"][0]["text"]
+    mock_ups.schedule_pickup.side_effect = TimeoutError("synthetic")
+    with pytest.raises(WorkflowExecutionError, match="unconfirmed"):
+        await _confirm_priced_pickup(mock_ups, PICKUP)
+    assert mock_ups.schedule_pickup.await_count == 1
 
 
 @pytest.mark.asyncio
 async def test_schedule_pickup_tool_handles_malformed_args():
-    """schedule_pickup_tool returns _err for TypeError from bad model args."""
-    mock_ups = AsyncMock()
-    mock_ups.schedule_pickup.side_effect = TypeError("missing required arg")
+    """Model flags never reach scheduling, regardless of malformed details."""
+    from src.orchestrator.agent.tools.pickup import schedule_pickup_tool
 
-    with patch(
-        "src.orchestrator.agent.tools.pickup._get_ups_client",
-        return_value=mock_ups,
-    ):
-        from src.orchestrator.agent.tools.pickup import schedule_pickup_tool
-
+    gateway = AsyncMock()
+    with patch("src.orchestrator.agent.tools.pickup._get_ups_client", gateway):
         result = await schedule_pickup_tool({"confirmed": True})
-
     assert result["isError"] is True
-    assert "Unexpected error" in result["content"][0]["text"]
+    gateway.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_schedule_pickup_tool_emits_enriched_result():
-    """schedule_pickup_tool includes address/contact in pickup_result event."""
+    """A priced pickup retains its full result after the user confirmation."""
+    from tests.services.test_auxiliary_workflow_acceptance import PICKUP
+
     mock_ups = AsyncMock()
-    mock_ups.schedule_pickup.return_value = {"success": True, "prn": "2929602E9CP"}
-
-    bridge = EventEmitterBridge()
-    captured: list[tuple[str, dict]] = []
-    bridge.callback = lambda event_type, data: captured.append((event_type, data))
-
-    with patch(
-        "src.orchestrator.agent.tools.pickup._get_ups_client",
-        return_value=mock_ups,
-    ):
-        from src.orchestrator.agent.tools.pickup import schedule_pickup_tool
-
-        result = await schedule_pickup_tool(
-            {
-                "pickup_date": "20260217",
-                "ready_time": "0900",
-                "close_time": "1700",
-                "address_line": "123 Main St",
-                "city": "Dallas",
-                "state": "TX",
-                "postal_code": "75201",
-                "country_code": "US",
-                "contact_name": "John Smith",
-                "phone_number": "214-555-1234",
-                "confirmed": True,
-            },
-            bridge=bridge,
-        )
-
-    assert result["isError"] is False
-    assert len(captured) == 1
-    payload = captured[0][1]
-    assert payload["prn"] == "2929602E9CP"
-    assert payload["address_line"] == "123 Main St"
-    assert payload["city"] == "Dallas"
-    assert payload["contact_name"] == "John Smith"
-    assert payload["pickup_date"] == "20260217"
+    mock_ups.schedule_pickup.return_value = {"success": True, "prn": "CONFIRMED-PRN"}
+    event, payload = await _confirm_priced_pickup(mock_ups, PICKUP)
+    assert event == "pickup_result"
+    assert payload["prn"] == "CONFIRMED-PRN"
+    assert payload["action"] == "scheduled"
+    assert all(payload[key] == value for key, value in PICKUP.items())
+    mock_ups.schedule_pickup.assert_awaited_once_with(**PICKUP)
 
 
 @pytest.mark.asyncio
 async def test_cancel_pickup_tool_success():
-    """cancel_pickup_tool returns _ok envelope and emits pickup_result event."""
-    mock_ups = AsyncMock()
-    mock_ups.cancel_pickup.return_value = {"success": True, "status": "cancelled"}
+    """Cancellation prepares a preview and executes only its user decision."""
+    from src.orchestrator.agent.tools.pickup import cancel_pickup_tool
+    from src.services.workflow_confirmation import decide_action
 
+    gateway = AsyncMock()
+    gateway.cancel_pickup.return_value = {"success": True}
     bridge = EventEmitterBridge()
-    captured: list[tuple[str, dict]] = []
-    bridge.callback = lambda event_type, data: captured.append((event_type, data))
-
-    with patch(
-        "src.orchestrator.agent.tools.pickup._get_ups_client",
-        return_value=mock_ups,
+    bridge.session_id = "cancel-test"
+    previews = []
+    bridge.callback = lambda kind, data: previews.append((kind, data))
+    with (
+        patch(
+            "src.orchestrator.agent.tools.pickup._get_ups_client", return_value=gateway
+        ),
+        patch("src.services.gateway_provider.get_ups_gateway", return_value=gateway),
     ):
-        from src.orchestrator.agent.tools.pickup import cancel_pickup_tool
-
         result = await cancel_pickup_tool(
-            {"cancel_by": "prn", "prn": "ABC123", "confirmed": True},
-            bridge=bridge,
+            {"cancel_by": "prn", "prn": "ABC123", "confirmed": True}, bridge
         )
-
-    assert result["isError"] is False
-    text = json.loads(result["content"][0]["text"])
-    assert "cancelled" in text.lower()
-
-    assert len(captured) == 1
-    assert captured[0][0] == "pickup_result"
-    assert captured[0][1]["action"] == "cancelled"
+        assert result["isError"] is False
+        gateway.cancel_pickup.assert_not_awaited()
+        assert previews[-1][0] == "pickup_preview"
+        event, payload = await decide_action(
+            bridge.workflow_actions, previews[-1][1]["confirmation_token"], "confirm"
+        )
+    assert event == "pickup_result" and payload["action"] == "cancelled"
+    gateway.cancel_pickup.assert_awaited_once_with(cancel_by="prn", prn="ABC123")
 
 
 @pytest.mark.asyncio
@@ -1192,7 +1136,7 @@ async def test_cancel_pickup_tool_safety_gate():
 
     result = await cancel_pickup_tool({"cancel_by": "prn", "prn": "ABC123"})
     assert result["isError"] is True
-    assert "Safety gate" in result["content"][0]["text"]
+    assert "conversation" in result["content"][0]["text"]
 
 
 @pytest.mark.asyncio
@@ -1206,6 +1150,7 @@ async def test_rate_pickup_tool_success():
     }
 
     bridge = EventEmitterBridge()
+    bridge.session_id = "fixture-session"
     captured: list[tuple[str, dict]] = []
     bridge.callback = lambda event_type, data: captured.append((event_type, data))
 
@@ -1225,6 +1170,8 @@ async def test_rate_pickup_tool_success():
                 "pickup_date": "20260220",
                 "ready_time": "0900",
                 "close_time": "1700",
+                "contact_name": "Synthetic",
+                "phone_number": "5550100",
             },
             bridge=bridge,
         )
@@ -1251,6 +1198,7 @@ async def test_rate_pickup_tool_emits_pickup_preview_event():
     }
 
     bridge = EventEmitterBridge()
+    bridge.session_id = "fixture-session"
     captured: list[tuple[str, dict]] = []
     bridge.callback = lambda event_type, data: captured.append((event_type, data))
 
@@ -1511,6 +1459,7 @@ async def test_upload_paperless_document_tool_emits_event():
     }
 
     bridge = EventEmitterBridge()
+    bridge.session_id = "fixture-session"
     captured: list[tuple[str, dict]] = []
     bridge.callback = lambda event_type, data: captured.append((event_type, data))
 
@@ -1521,20 +1470,25 @@ async def test_upload_paperless_document_tool_emits_event():
         from src.orchestrator.agent.tools.documents import (
             upload_paperless_document_tool,
         )
+        from src.services.attachment_store import stage
 
-        result = await upload_paperless_document_tool(
+        attachment_id = stage(
+            bridge.session_id,
             {
                 "file_content_base64": "dGVzdA==",
                 "file_name": "invoice.pdf",
                 "file_format": "pdf",
                 "document_type": "002",
             },
-            bridge=bridge,
+            gateway=mock_ups,
+        )
+        result = await upload_paperless_document_tool(
+            {"attachment_id": attachment_id}, bridge
         )
 
     assert result["isError"] is False
     text = json.loads(result["content"][0]["text"])
-    assert "DOC-123" in text
+    assert text["document_handle"].startswith("doc_")
 
     assert len(captured) == 1
     assert captured[0][0] == "paperless_result"
@@ -1562,6 +1516,7 @@ async def test_push_document_to_shipment_tool_success():
     mock_ups.push_document.return_value = {"success": True}
 
     bridge = EventEmitterBridge()
+    bridge.session_id = "fixture-session"
     captured: list[tuple[str, dict]] = []
     bridge.callback = lambda event_type, data: captured.append((event_type, data))
 
@@ -1583,11 +1538,12 @@ async def test_push_document_to_shipment_tool_success():
 
     assert result["isError"] is False
     text = json.loads(result["content"][0]["text"])
-    assert "attached" in text.lower() or "shipment" in text.lower()
+    assert "preview" in text.lower()
+    mock_ups.push_document.assert_not_awaited()
 
     assert len(captured) == 1
     assert captured[0][0] == "paperless_result"
-    assert captured[0][1]["action"] == "pushed"
+    assert captured[0][1]["action"] == "push_preview"
 
 
 @pytest.mark.asyncio
@@ -1597,6 +1553,7 @@ async def test_delete_paperless_document_tool_success():
     mock_ups.delete_document.return_value = {"success": True}
 
     bridge = EventEmitterBridge()
+    bridge.session_id = "fixture-session"
     captured: list[tuple[str, dict]] = []
     bridge.callback = lambda event_type, data: captured.append((event_type, data))
 
@@ -1615,37 +1572,24 @@ async def test_delete_paperless_document_tool_success():
 
     assert result["isError"] is False
     text = json.loads(result["content"][0]["text"])
-    assert "deleted" in text.lower()
+    assert "preview" in text.lower()
+    mock_ups.delete_document.assert_not_awaited()
 
     assert len(captured) == 1
     assert captured[0][0] == "paperless_result"
-    assert captured[0][1]["action"] == "deleted"
+    assert captured[0][1]["action"] == "delete_preview"
 
 
 @pytest.mark.asyncio
 async def test_delete_paperless_document_tool_error():
-    """delete_paperless_document_tool returns _err on UPSServiceError."""
-    from src.services.errors import UPSServiceError
+    """A missing conversation cannot create authority for document deletion."""
+    from src.orchestrator.agent.tools.documents import delete_paperless_document_tool
 
-    mock_ups = AsyncMock()
-    mock_ups.delete_document.side_effect = UPSServiceError(
-        code="E-3006", message="document not found"
-    )
-
-    with patch(
-        "src.orchestrator.agent.tools.documents._get_ups_client",
-        return_value=mock_ups,
-    ):
-        from src.orchestrator.agent.tools.documents import (
-            delete_paperless_document_tool,
-        )
-
-        result = await delete_paperless_document_tool(
-            {"document_id": "DOC-GONE"},
-        )
-
+    gateway = AsyncMock()
+    with patch("src.orchestrator.agent.tools.documents._get_ups_client", gateway):
+        result = await delete_paperless_document_tool({"document_id": "DOC-GONE"})
     assert result["isError"] is True
-    assert "E-3006" in result["content"][0]["text"]
+    gateway.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -1900,39 +1844,17 @@ def test_v2_tools_available_in_interactive_mode():
 
 @pytest.mark.asyncio
 async def test_e2e_pickup_flow_tool_to_event():
-    """End-to-end: schedule_pickup_tool → pickup_result event with correct payload."""
+    """A priced pickup retains its full result after the user confirmation."""
+    from tests.services.test_auxiliary_workflow_acceptance import PICKUP
+
     mock_ups = AsyncMock()
-    mock_ups.schedule_pickup.return_value = {"success": True, "prn": "E2E-PRN-123"}
-
-    bridge = EventEmitterBridge()
-    captured_events: list[tuple[str, dict]] = []
-    bridge.callback = lambda et, d: captured_events.append((et, d))
-
-    with patch("src.orchestrator.agent.tools.pickup._get_ups_client", return_value=mock_ups):
-        from src.orchestrator.agent.tools.pickup import schedule_pickup_tool
-        tool_result = await schedule_pickup_tool(
-            {
-                "pickup_date": "20260301", "ready_time": "0800", "close_time": "1800",
-                "address_line": "456 Oak Ave", "city": "Dallas", "state": "TX",
-                "postal_code": "75201", "country_code": "US",
-                "contact_name": "Jane Doe", "phone_number": "2145551234",
-                "confirmed": True,
-            },
-            bridge=bridge,
-        )
-
-    # Verify tool returned minimal _ok envelope to LLM
-    assert tool_result["isError"] is False
-    llm_text = json.loads(tool_result["content"][0]["text"])
-    assert "E2E-PRN-123" in llm_text
-
-    # Verify SSE event emitted with full payload
-    assert len(captured_events) == 1
-    event_type, event_data = captured_events[0]
-    assert event_type == "pickup_result"
-    assert event_data["action"] == "scheduled"
-    assert event_data["prn"] == "E2E-PRN-123"
-    assert event_data["success"] is True
+    mock_ups.schedule_pickup.return_value = {"success": True, "prn": "CONFIRMED-PRN"}
+    event, payload = await _confirm_priced_pickup(mock_ups, PICKUP)
+    assert event == "pickup_result"
+    assert payload["prn"] == "CONFIRMED-PRN"
+    assert payload["action"] == "scheduled"
+    assert all(payload[key] == value for key, value in PICKUP.items())
+    mock_ups.schedule_pickup.assert_awaited_once_with(**PICKUP)
 
 
 @pytest.mark.asyncio

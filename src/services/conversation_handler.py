@@ -502,6 +502,12 @@ async def process_message(
     try:
         async with session.lock:
             _turn_active = _begin_turn_guard(session, turn_generation_callback)
+            from src.services.workflow_confirmation import PendingWorkflowActions
+
+            if isinstance(
+                getattr(session, "workflow_actions", None), PendingWorkflowActions
+            ):
+                session.workflow_actions.clear()
 
             try:
                 gw = await get_data_gateway()
@@ -607,9 +613,16 @@ async def process_message(
             def _persist_artifact_once(event_type: str, data: dict[str, Any]) -> None:
                 if event_type not in _PERSISTABLE_ARTIFACTS:
                     return
-                if event_type in persisted_events:
+                fingerprint = (
+                    event_type
+                    + ":"
+                    + hashlib.sha256(
+                        json.dumps(data, sort_keys=True, default=str).encode()
+                    ).hexdigest()
+                )
+                if fingerprint in persisted_events:
                     return
-                persisted_events.add(event_type)
+                persisted_events.add(fingerprint)
                 _persist_artifact_message(session.session_id, event_type, data)
 
             def _service_emit(event_type: str, data: dict) -> None:
@@ -641,6 +654,12 @@ async def process_message(
                 else:
                     bridge.last_shipping_command = None
                 bridge.confirmed_resolutions = session.confirmed_resolutions
+                from src.services.workflow_confirmation import PendingWorkflowActions
+
+                if isinstance(
+                    getattr(session, "workflow_actions", None), PendingWorkflowActions
+                ):
+                    bridge.workflow_actions = session.workflow_actions
 
             try:
                 async for event in session.agent.process_message_stream(content):
@@ -790,3 +809,82 @@ async def process_message(
             reset_decision_job_id(job_token)
             if run_token is not None:
                 reset_decision_run_id(run_token)
+
+
+async def decide_workflow_action(
+    session: AgentSession,
+    confirmation_token: str,
+    decision: str,
+    emit_callback: Callable[[str, dict], None] | None = None,
+) -> dict[str, str]:
+    """Trusted UI boundary for session-bound auxiliary workflow confirmations."""
+    import asyncio
+
+    from src.services.workflow_confirmation import (
+        WorkflowConfirmationError,
+        decide_action,
+    )
+
+    async with session.lock:
+        if session.terminating:
+            raise WorkflowConfirmationError("Conversation is no longer active.")
+        run_id = DecisionAuditService.start_run(
+            session_id=session.session_id,
+            user_message=f"User chose {decision} on an auxiliary workflow preview.",
+            model=None,
+            interactive_shipping=session.interactive_shipping,
+        )
+        status = AgentDecisionRunStatus.failed
+        _log_decision_event(
+            run_id=run_id,
+            phase="ingress",
+            event_name="workflow.confirmation.received",
+            actor="api",
+            payload={"decision": decision},
+        )
+        try:
+            result = await decide_action(
+                session.workflow_actions, confirmation_token, decision
+            )
+            if result is None:
+                status = AgentDecisionRunStatus.cancelled
+                _log_decision_event(
+                    run_id=run_id,
+                    phase="egress",
+                    event_name="workflow.confirmation.cancelled",
+                    actor="system",
+                )
+                return {"status": "cancelled"}
+            event_type, data = result
+            _persist_artifact_message(session.session_id, event_type, data)
+            if emit_callback and not session.terminating:
+                emit_callback(event_type, data)
+            status = AgentDecisionRunStatus.completed
+            _log_decision_event(
+                run_id=run_id,
+                phase="egress",
+                event_name="workflow.confirmation.completed",
+                actor="system",
+                payload={"action": data.get("action"), "artifact": event_type},
+            )
+            return {"status": "completed"}
+        except asyncio.CancelledError:
+            status = AgentDecisionRunStatus.cancelled
+            _log_decision_event(
+                run_id=run_id,
+                phase="error",
+                event_name="workflow.confirmation.interrupted",
+                actor="system",
+            )
+            raise
+        except Exception as exc:
+            _log_decision_event(
+                run_id=run_id,
+                phase="error",
+                event_name="workflow.confirmation.failed",
+                actor="system",
+                payload={"exception_type": type(exc).__name__},
+            )
+            raise
+        finally:
+            DecisionAuditService.complete_run(run_id, status=status)

@@ -13,6 +13,7 @@ wire (empty for the scripted fake, which records requests itself).
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -108,23 +109,42 @@ class Rendered:
     requests: list[dict[str, Any]]
 
 
-def build_provider(kind: str, turns: list[Turn]) -> Rendered:
+def build_provider(
+    kind: str, turns: list[Turn | Callable[[dict[str, Any]], Turn]]
+) -> Rendered:
     if kind == "scripted":
-        return Rendered(FakeProviderClient(script=_scripted(turns)), [])
+        if not any(callable(turn) for turn in turns):
+            return Rendered(FakeProviderClient(script=_scripted(turns)), [])
+
+        class AdaptiveFake(FakeProviderClient):
+            def __init__(self):
+                super().__init__(script=[])
+                self.turns = list(turns)
+
+            def stream_turn(self, **kwargs):
+                turn = self.turns.pop(0)
+                self._script.extend(
+                    _scripted([turn(kwargs) if callable(turn) else turn])
+                )
+                return super().stream_turn(**kwargs)
+
+        return Rendered(AdaptiveFake(), [])
     renderers = {
         "anthropic": (_anthropic_body, _anthropic_client),
         "openai": (_openai_body, _openai_client),
         "gemini": (_gemini_body, _gemini_client),
     }
     render, make_client = renderers[kind]
-    queue = [render(turn) for turn in turns]
+    queue = list(turns)
     requests: list[dict[str, Any]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(json.loads(request.content))
+        body = json.loads(request.content)
+        requests.append(body)
+        turn = queue.pop(0)
         return httpx.Response(
             200,
-            content=queue.pop(0),
+            content=render(turn(body) if callable(turn) else turn),
             headers={"content-type": "text/event-stream"},
         )
 

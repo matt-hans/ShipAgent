@@ -45,6 +45,7 @@ from src.api.schemas_conversations import (
     SessionDetailResponse,
     UpdateTitleRequest,
     UploadDocumentResponse,
+    WorkflowConfirmationRequest,
 )
 from src.db.models import AgentDecisionRunStatus
 from src.services import conversation_handler
@@ -479,6 +480,33 @@ async def send_message(
 _MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
 
 
+@router.post("/{session_id}/workflow-confirmation")
+async def confirm_workflow(
+    session_id: str,
+    request: WorkflowConfirmationRequest,
+) -> dict[str, str]:
+    """Accept a UI decision without routing authority through the model."""
+    from src.services.workflow_confirmation import (
+        WorkflowConfirmationError,
+        WorkflowExecutionError,
+    )
+
+    session = _resolve_session(session_id)
+    try:
+        return await conversation_handler.decide_workflow_action(
+            session,
+            request.confirmation_token,
+            request.decision,
+            emit_callback=lambda event, data: _get_event_queue(session_id).put_nowait(
+                {"event": event, "data": data}
+            ),
+        )
+    except WorkflowConfirmationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    except WorkflowExecutionError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+
+
 @router.post(
     "/{session_id}/upload-document",
     response_model=UploadDocumentResponse,
@@ -511,6 +539,9 @@ async def upload_document(
     from src.services import attachment_store
 
     session = _resolve_session(session_id)
+    upload_request_id = attachment_store.begin_upload(session_id)
+    if document_type not in DOCUMENT_TYPE_LABELS:
+        raise HTTPException(status_code=400, detail="Unsupported document type.")
 
     # Validate file extension
     file_name = file.filename or "document"
@@ -537,21 +568,39 @@ async def upload_document(
     file_content_base64 = base64.b64encode(file_bytes).decode("ascii")
 
     # Stage attachment for the tool handler
-    attachment_store.stage(
-        session_id,
-        {
-            "file_content_base64": file_content_base64,
-            "file_name": file_name,
-            "file_format": normalized_ext,
-            "document_type": document_type,
-            "file_size_bytes": len(file_bytes),
-        },
-    )
+    try:
+        attachment_id = await attachment_store.stage_for_upload(
+            session_id,
+            {
+                "file_content_base64": file_content_base64,
+                "file_name": file_name,
+                "file_format": normalized_ext,
+                "document_type": document_type,
+                "file_size_bytes": len(file_bytes),
+            },
+            request_id=upload_request_id,
+        )
+    except attachment_store.UploadUnavailableError:
+        raise HTTPException(
+            status_code=409, detail="Upload was replaced or the conversation ended."
+        ) from None
+    except Exception as exc:
+        logger.warning(
+            "Document upload connection unavailable exception_type=%s",
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Carrier connection is unavailable. Try the upload form again.",
+        ) from None
+
+    if session.terminating or _session_manager.get_session(session_id) is not session:
+        attachment_store.clear(session_id)
+        raise HTTPException(status_code=409, detail="Conversation is no longer active.")
 
     # Build agent message
-    doc_type_label = DOCUMENT_TYPE_LABELS.get(document_type, f"Type {document_type}")
     notes_suffix = f" Notes: {notes}" if notes.strip() else ""
-    agent_message = f"[DOCUMENT_ATTACHED: {file_name} ({normalized_ext}, {doc_type_label})]{notes_suffix}"
+    agent_message = f"[DOCUMENT_ATTACHED attachment_id={attachment_id} document_type={document_type}]{notes_suffix}"
 
     # Store in conversation history and trigger agent processing
     _session_manager.add_message(session_id, "user", agent_message)
@@ -583,6 +632,7 @@ async def upload_document(
         file_name=file_name,
         file_format=normalized_ext,
         file_size_bytes=len(file_bytes),
+        attachment_id=attachment_id,
     )
 
 

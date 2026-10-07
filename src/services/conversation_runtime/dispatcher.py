@@ -656,6 +656,15 @@ class LocalToolDispatcher:
             "delete_contact",
         }:
             safe_payload = _project_contact_result(payload, call=call)
+        if call.tool_name == "upload_paperless_document":
+            # Only the deterministic upload handler creates these local opaque
+            # references. Document IDs, metadata and bytes remain owner-local.
+            safe_payload = {"success": True}
+            handle = (
+                payload.get("document_handle") if isinstance(payload, dict) else None
+            )
+            if isinstance(handle, str) and re.fullmatch(r"doc_[0-9a-f]{32}", handle):
+                safe_payload["document_handle"] = handle
         if call.tool_name == "track_package":
             # This value was provided in this provider flow, never fetched from
             # local job history. Unknown handler-origin numbers are not echoed.
@@ -1570,6 +1579,7 @@ def _content_for_tool_result(
                 "save_contact",
                 "delete_contact",
                 "track_package",
+                "upload_paperless_document",
             }
         )
         and isinstance(payload, dict)

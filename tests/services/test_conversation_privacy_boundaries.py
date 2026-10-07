@@ -836,7 +836,21 @@ def test_operational_label_before_json_redacts_the_whole_container(prefix):
     [
         ("track_package", {"tracking_number": "1ZUSER123456789012"}),
         ("get_pickup_status", {}),
-        ("rate_pickup", {}),
+        (
+            "rate_pickup",
+            {
+                "pickup_date": "20261008",
+                "ready_time": "0900",
+                "close_time": "1700",
+                "address_line": "12 Synthetic Road",
+                "city": "Oakland",
+                "state": "CA",
+                "postal_code": "94612",
+                "country_code": "US",
+                "contact_name": "Synthetic",
+                "phone_number": "5550100000",
+            },
+        ),
         ("get_service_center_facilities", {}),
         ("find_locations", {"location_type": "ups"}),
         ("get_landed_cost", {}),
