@@ -292,6 +292,15 @@ class InvocationLifecycleStore:
         evidence = TargetAcceptanceEvidence.model_validate_json(
             evidence.model_dump_json()
         )
+        current = await self.get(
+            original.relay_invocation_id,
+            account_id=original.identity.account_id,
+            provider_connection_id=original.identity.provider_connection_id,
+        )
+        if current.evidence == evidence:
+            return current
+        if current != original:
+            return None
         if evidence.outcome == "unknown":
             return original
         if original.evidence is not None and original.evidence != evidence:

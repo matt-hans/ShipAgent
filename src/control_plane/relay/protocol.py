@@ -329,7 +329,7 @@ class InvocationIdentity(RelayProtocolModel):
 
     account_id: str
     provider_connection_id: str
-    execution_target_id: str
+    execution_target_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$")
     approval_request_id: str
     tool_name: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
     arguments_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
@@ -347,7 +347,6 @@ class InvocationIdentity(RelayProtocolModel):
 
         require_account_id(self.account_id)
         require_connection_id(self.provider_connection_id)
-        require_reference(self.execution_target_id, ShipAgentIdFamily.DEVICE)
         require_reference(self.approval_request_id, ShipAgentIdFamily.APPROVAL_REQUEST)
         if self.authorization_expires_at.tzinfo is None:
             raise ValueError("authorization expiry must be timezone aware")
@@ -389,7 +388,7 @@ class TargetAcceptanceEvidence(RelayProtocolModel):
                 or self.proof_id is None
                 or self.accepted_at is None
                 or self.accepted_at.tzinfo is None
-                or self.accepted_at > self.identity.authorization_expires_at
+                or self.accepted_at >= self.identity.authorization_expires_at
                 or self.rejection_fenced
             ):
                 raise ValueError("invalid acceptance evidence")

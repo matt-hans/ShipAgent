@@ -14,7 +14,7 @@ def identity(**updates):
         **{
             "account_id": "11111111-1111-4111-8111-111111111111",
             "provider_connection_id": "22222222-2222-4222-8222-222222222222",
-            "execution_target_id": "sa_device_" + "3" * 32,
+            "execution_target_id": "relay:relay_device_" + "3" * 32,
             "approval_request_id": "sa_approval_request_" + "4" * 32,
             "tool_name": "execute_shipments",
             "arguments_hash": "sha256:" + "a" * 64,
@@ -266,3 +266,44 @@ def test_negative_evidence_requires_positive_durable_rejection_fence():
         TargetAcceptanceEvidence(identity=identity(), outcome="not_accepted")
     unknown = TargetAcceptanceEvidence(identity=identity(), outcome="unknown")
     assert unknown.proof_id is None
+
+
+def test_target_identity_preserves_registry_shape_and_acceptance_excludes_expiry():
+    from pydantic import ValidationError
+
+    from src.control_plane.relay.protocol import TargetAcceptanceEvidence
+
+    bound = identity()
+    assert bound.execution_target_id == "relay:relay_device_" + "3" * 32
+    with pytest.raises(ValidationError, match="invalid acceptance evidence"):
+        TargetAcceptanceEvidence(
+            identity=bound,
+            outcome="accepted",
+            local_job_id="job-1",
+            proof_id="sha256:" + "c" * 64,
+            accepted_at=bound.authorization_expires_at,
+        )
+
+
+async def test_repeated_identical_recovered_evidence_is_idempotent(real_redis):
+    from src.control_plane.relay.lifecycle_store import (
+        InvocationLifecycleStore,
+        InvocationState,
+    )
+    from src.control_plane.relay.protocol import TargetAcceptanceEvidence
+
+    store = InvocationLifecycleStore(real_redis)
+    record, _ = await store.create(identity())
+    sent = await store.transition(record, InvocationState.SENT_TO_TARGET)
+    unknown = await store.transition(sent, InvocationState.DEADLINE_EXCEEDED)
+    proof = TargetAcceptanceEvidence(
+        identity=record.identity,
+        outcome="accepted",
+        local_job_id="original-job",
+        proof_id="sha256:" + "c" * 64,
+        accepted_at=datetime.now(UTC),
+    )
+    recovered = await store.record_evidence(unknown, proof)
+    assert recovered.state == InvocationState.RECOVERED_BY_POLL
+    assert await store.record_evidence(recovered, proof) == recovered
+    assert await store.record_evidence(unknown, proof) == recovered
