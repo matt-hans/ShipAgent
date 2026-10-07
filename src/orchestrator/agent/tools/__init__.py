@@ -667,9 +667,9 @@ def get_all_tool_definitions(
         {
             "name": "resolve_contact",
             "description": (
-                "Resolve an @handle to a contact record with address data. "
-                "Returns order_data with ship_to_* keys ready for UPS payload. "
-                "Also supports prefix search for autocomplete."
+                "Check an @handle against the local address book. "
+                "Returns match status; saved addresses stay local. "
+                "Use ship_to_handle on preview_interactive_shipment to ship to an exact match."
             ),
             "input_schema": {
                 "type": "object",
@@ -881,6 +881,10 @@ def get_all_tool_definitions(
             "input_schema": {
                 "type": "object",
                 "properties": {
+                    "ship_to_handle": {
+                        "type": "string",
+                        "description": "Exact saved-contact handle. Resolves locally; omit explicit ship_to_* address fields when using this option.",
+                    },
                     "ship_to_name": {
                         "type": "string",
                         "description": "Recipient full name.",
@@ -1041,15 +1045,8 @@ def get_all_tool_definitions(
                         ],
                     },
                 },
-                "required": [
-                    "ship_to_name",
-                    "ship_to_address1",
-                    "ship_to_city",
-                    "ship_to_zip",
-                    "service",
-                    "weight",
-                    "command",
-                ],
+                # The handler validates either a local handle or explicit address.
+                "required": ["service", "weight", "command"],
             },
             "handler": _bind_bridge(preview_interactive_shipment_tool, bridge),
         },
