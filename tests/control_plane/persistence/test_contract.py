@@ -150,3 +150,22 @@ def test_state_serializer_rejects_subclasses_before_persisting():
     record = UntrustedState(metadata=metadata(), created_at=now, expires_at=now)
     with pytest.raises(ValueError, match="invalid authorization state"):
         _encode(record)
+
+
+@pytest.mark.parametrize("days", ["30", "90", "365"])
+def test_retention_accepts_documented_integer_environment_values(monkeypatch, days):
+    from src.control_plane.config import ControlPlaneSettings
+
+    monkeypatch.setenv("SHIPAGENT_AUDIT_RETENTION_DAYS", days)
+    assert ControlPlaneSettings().audit_retention_days == int(days)
+
+
+@pytest.mark.parametrize("days", ["29", "366", "true", "90.5", "", "+90", "090"])
+def test_retention_rejects_invalid_environment_values(monkeypatch, days):
+    from pydantic import ValidationError
+
+    from src.control_plane.config import ControlPlaneSettings
+
+    monkeypatch.setenv("SHIPAGENT_AUDIT_RETENTION_DAYS", days)
+    with pytest.raises(ValidationError):
+        ControlPlaneSettings()
