@@ -89,3 +89,14 @@ def test_bundle_smoke_does_not_inherit_operator_settings_or_credentials(tmp_path
     assert environment["PYTHON_DOTENV_DISABLED"] == "1"
     assert environment["SHIPAGENT_KEYRING_DISABLED"] == "1"
     assert not {"ANTHROPIC_API_KEY", "SHIPAGENT_API_KEY", "AGENT_MODEL"} & environment.keys()
+
+
+def test_macos_release_uses_available_architecture_matched_runners():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())
+    matrix = workflow["jobs"]["build-macos"]["strategy"]["matrix"]["include"]
+    # Standard GitHub-hosted labels verified 2026-10-07. macos-13 is retired.
+    # Keep native x86_64 and arm64 builds distinct; do not silently cross-build.
+    assert {entry["target"]: entry["runner"] for entry in matrix} == {
+        "aarch64-apple-darwin": "macos-15",
+        "x86_64-apple-darwin": "macos-15-intel",
+    }
