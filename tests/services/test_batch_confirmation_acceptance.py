@@ -102,6 +102,11 @@ def session_factory(tmp_path: Path) -> Iterator[sessionmaker[Session]]:
 async def source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> AsyncIterator[ImportedCsvSource]:
+    from src.mcp.data_source.tools import import_tools
+
+    monkeypatch.setattr(
+        import_tools, "_ALLOWED_ROOTS", [*import_tools._ALLOWED_ROOTS, tmp_path]
+    )
     csv_path = tmp_path / "orders.csv"
     csv_path.write_text(IMPORTED_ORDERS_CSV)
     gateway = ImportedCsvSource()
