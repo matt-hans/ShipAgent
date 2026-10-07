@@ -1,6 +1,6 @@
 """Behavior-level test for interactive shipping mode.
 
-Asserts observed runtime behavior: hook + mode routing + error translation
+Asserts observed runtime behavior: policy + mode routing + error translation
 working together. Does NOT test prompt text — that's covered by unit tests.
 """
 
@@ -8,28 +8,34 @@ import json
 
 import pytest
 
-from src.orchestrator.agent.hooks import create_shipping_hook
+from src.services.conversation_runtime.models import ProviderToolCall
+from src.services.conversation_runtime.policy import RuntimePolicyEngine
 from src.services.mcp_client import MCPToolError
 from src.services.ups_mcp_client import UPSMCPClient
+
+
+async def _check(policy, data, call_id):
+    return await policy.check_pre_tool(ProviderToolCall(
+        call_id=call_id, tool_name=data["tool_name"], parsed_input=data["tool_input"]
+    ))
 
 
 class TestInteractiveModeEndToEnd:
     """Behavior tests for interactive shipping mode flow."""
 
     @pytest.mark.asyncio
-    async def test_interactive_on_denies_create_shipment_via_hook(self):
-        """With interactive=True: hook denies create_shipment — must use preview tool."""
-        hook = create_shipping_hook(interactive_shipping=True)
-        hook_result = await hook(
+    async def test_interactive_on_denies_create_shipment_via_policy(self):
+        """With interactive=True: policy denies create_shipment — must use preview tool."""
+        hook = RuntimePolicyEngine(interactive_shipping=True)
+        hook_result = await _check(hook,
             {
                 "tool_name": "mcp__ups__create_shipment",
                 "tool_input": {"request_body": {"Shipment": {}}},
             },
             "test-tool-id",
-            None,
         )
-        assert "deny" in str(hook_result)
-        assert "preview_interactive_shipment" in str(hook_result)
+        assert hook_result.allowed is False
+        assert "preview_interactive_shipment" in hook_result.reason
 
     @pytest.mark.asyncio
     async def test_translate_error_still_produces_e2010_for_missing(self):
@@ -52,36 +58,33 @@ class TestInteractiveModeEndToEnd:
 
     @pytest.mark.asyncio
     async def test_interactive_off_denies_create_shipment(self):
-        """With interactive=False: hook denies before error translation runs."""
-        hook = create_shipping_hook(interactive_shipping=False)
-        hook_result = await hook(
+        """With interactive=False: policy denies before error translation runs."""
+        hook = RuntimePolicyEngine(interactive_shipping=False)
+        hook_result = await _check(hook,
             {
                 "tool_name": "mcp__ups__create_shipment",
                 "tool_input": {"request_body": {"Shipment": {}}},
             },
             "test-tool-id",
-            None,
         )
-        assert "deny" in str(hook_result)
-        assert "Interactive shipping is disabled" in str(hook_result)
+        assert hook_result.allowed is False
+        assert "Interactive shipping is disabled" in hook_result.reason
 
     @pytest.mark.asyncio
     async def test_batch_tools_unaffected_by_mode(self):
         """Batch tools (ship_command_pipeline etc.) work regardless of mode."""
-        hook = create_shipping_hook(interactive_shipping=False)
+        hook = RuntimePolicyEngine(interactive_shipping=False)
 
         # rate_shipment is not gated
-        result = await hook(
-            {"tool_name": "mcp__ups__rate_shipment", "tool_input": {}},
+        result = await _check(hook,
+            {"tool_name": "rate_shipment", "tool_input": {}},
             "test-id",
-            None,
         )
-        assert result == {}
+        assert result.allowed is True
 
         # track_package is not gated
-        result = await hook(
-            {"tool_name": "mcp__ups__track_package", "tool_input": {}},
+        result = await _check(hook,
+            {"tool_name": "track_package", "tool_input": {}},
             "test-id",
-            None,
         )
-        assert result == {}
+        assert result.allowed is True

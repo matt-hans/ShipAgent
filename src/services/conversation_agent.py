@@ -106,6 +106,32 @@ class UnavailableConversationAgent:
         return 0
 
 
+def resolve_conversation_model(model: str | None, runtime: str) -> str | None:
+    """Snapshot provider defaults before any asynchronous lifecycle work."""
+    provider = _infer_model_provider(model)
+    if provider == "openai" or (model is None and runtime == "openai"):
+        from src.services.conversation_runtime.openai_provider import (
+            resolve_openai_model,
+        )
+
+        return "openai:" + resolve_openai_model(model)
+    if provider == "gemini" or (model is None and runtime == "gemini"):
+        from src.services.conversation_runtime.gemini_provider import (
+            resolve_gemini_model,
+        )
+
+        return "gemini:" + resolve_gemini_model(model)
+    if model is None and runtime in (
+        {"", "auto"} | _ANTHROPIC_MESSAGES_RUNTIMES | _DEPRECATED_CLAUDE_RUNTIMES
+    ):
+        from src.services.conversation_runtime.anthropic_provider import (
+            resolve_anthropic_model,
+        )
+
+        return "anthropic:" + resolve_anthropic_model(None)
+    return model
+
+
 def create_conversation_agent(
     *,
     system_prompt: str | None = None,

@@ -416,27 +416,9 @@ async def ensure_agent(
         or os.environ.get("ANTHROPIC_MODEL")
     )
     runtime = os.environ.get("SHIPAGENT_AGENT_RUNTIME", "auto").strip().lower()
-    if (model or "").startswith("openai:") or (model is None and runtime == "openai"):
-        from src.services.conversation_runtime.openai_provider import (
-            resolve_openai_model,
-        )
+    from src.services.conversation_agent import resolve_conversation_model
 
-        model = "openai:" + resolve_openai_model(model)
-    elif (model or "").startswith("gemini:") or (model is None and runtime == "gemini"):
-        from src.services.conversation_runtime.gemini_provider import (
-            resolve_gemini_model,
-        )
-
-        model = "gemini:" + resolve_gemini_model(model)
-    elif model is None and runtime in {
-        "", "auto", "anthropic", "anthropic_messages", "anthropic-messages",
-        "claude", "claude_sdk",
-    }:
-        from src.services.conversation_runtime.anthropic_provider import (
-            resolve_anthropic_model,
-        )
-
-        model = "anthropic:" + resolve_anthropic_model(None)
+    model = resolve_conversation_model(model, runtime)
     model_signature = json.dumps(
         [
             model,
@@ -490,18 +472,11 @@ async def ensure_agent(
         current_user_message,
     )
 
-    shared_runtime = runtime in {
-        "fake",
-        "openai",
-        "gemini",
-        "anthropic_messages",
-        "anthropic-messages",
-    } or (runtime in {"", "auto"} and (model or "").startswith(("openai:", "gemini:")))
     system_prompt = build_system_prompt(
         source_info=source_info,
         interactive_shipping=interactive_shipping,
         contacts=contacts,
-        prior_conversation=None if shared_runtime else prior_conversation,
+        prior_conversation=None,
     )
 
     agent = create_conversation_agent(
