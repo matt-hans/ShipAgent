@@ -72,32 +72,30 @@ User → Browser UI (Angular) → FastAPI REST API → Conversation SSE Route
 
 ### Agent Tool Architecture
 
-9 tool modules in `orchestrator/agent/tools/`: `core` (EventEmitterBridge, row cache), `data` (source querying, filtering, platforms), `pipeline` (batch workflow — `ship_command_pipeline` fast path), `interactive` (ad-hoc single shipment), `pickup` (schedule/cancel/rate/status/divisions/facilities), `locator` (Access Points/stores/service centers), `paperless` (upload/push/delete documents), `landed_cost` (duties/taxes), `tracking` (package tracking with mismatch detection).
+Shared tool modules in `orchestrator/agent/tools/`: `core`, `data`, `pipeline`, `interactive`, `pickup`, `documents`, `tracking`, `contacts` and `ups`. Registration is `get_all_tool_definitions()` in `tools/__init__.py`; `WorkflowToolCatalog` applies mode, side-effect and safe-result metadata. Interactive and batch tools share deterministic handlers and gateways, with mode-specific preview/pipeline exposure.
 
-Tool registration: `get_all_tool_definitions()` in `tools/__init__.py`. Interactive mode: only status + `preview_interactive_shipment`. V2 tools (pickup, locator, paperless, landed cost, tracking) available in both modes.
+### Agent Policy & Intelligence
 
-### Agent Hooks & Intelligence
-
-Hooks in `hooks.py`: `create_shipping_hook` blocks direct `create_shipment`, `schedule_pickup_hook`/`cancel_pickup_hook` gate financial ops, `validate_track_package` forces orchestrator wrapper, `log_post_tool` audits all calls, `detect_error_response` flags failures.
+`RuntimePolicyEngine` blocks raw carrier calls, unsafe filter SQL and model-initiated purchase execution. Shared workflow services own trusted preview/confirmation gates. The conversation service owns redacted audit events; neutral policy classifies tool response errors.
 
 System prompt (`system_prompt.py`) built per-message by `build_system_prompt()`: identity, service codes, live schema, mode-aware filter rules. Self-correction: up to 3 Jinja2 mapping retries (`CorrectionResult`).
 
 ### Data Flow
 
-`POST /conversations/` → `POST /conversations/{id}/messages` → `OrchestrationAgent.process_message_stream()` → SSE events (deltas, tool calls) → `PreviewCard` → **mandatory user confirmation** → `confirmJob()` → `BatchEngine` execution → `CompletionArtifact` with labels → write-back tracking numbers. Fast path: `ship_command_pipeline` handles the entire flow in one tool call.
+`POST /conversations/` → `POST /conversations/{id}/messages` → shared `conversation_handler.process_message()` → SSE events (deltas, tool calls) → `PreviewCard` → **mandatory user confirmation** → `confirmJob()` → `BatchEngine` execution → `CompletionArtifact` with labels → write-back tracking numbers. `ship_command_pipeline` prepares the batch and preview; only the trusted confirmation path can execute it.
 
 ### Dual Shipping Modes
 
 | Mode | Toggle | Agent Behavior | Tools Available |
 |------|--------|---------------|-----------------|
 | **Batch** (default) | Off | Data-source-driven — filter rows, preview costs, execute batch | All tools (data, pipeline, status) |
-| **Interactive** | On | Conversational — collect recipient details, preview single shipment | `preview_interactive_shipment`, `get_job_status`, `get_platform_status` only |
+| **Interactive** | On | Conversational — collect recipient details, preview single shipment | Mode-filtered preview, status, contact and auxiliary workflow tools |
 
 Mode switching resets the conversation session (deletes old session, creates new one with opposite flag).
 
 ### Agent Safety Model
 
-Three layers: **Structural** (tool registry filtering by mode, session isolation, gateway singletons), **Behavioral** (hooks block unsafe operations, audit all calls), **Procedural** (mandatory preview before execution, `confirmJob()` is the only execution path, E-XXXX error codes).
+Three layers: **Structural** (tool registry filtering by mode, session isolation, gateway singletons), **Behavioral** (neutral policy blocks unsafe operations; the conversation service audits calls), **Procedural** (mandatory preview before execution, `confirmJob()` is the only execution path, E-XXXX error codes).
 
 ### Canonical Data Models
 
@@ -105,7 +103,7 @@ All constants/enums centralized — no magic numbers. Key modules: `ups_constant
 
 ### MCP Gateway Architecture
 
-Two paths: **Agent MCP** (interactive, SDK-managed per session) and **Programmatic MCP** (batch + data, `gateway_provider.py` singletons). UPS MCP spawned per session or per batch job. Data Source + External Sources MCPs are process-global singletons with `asyncio.Lock`. All clients inherit `MCPClient` with retry + exponential backoff.
+All conversation providers and batch workflows use the established programmatic gateways. `gateway_provider.py` owns process-global data-source, external-source and UPS clients behind async locks; providers never spawn per-session MCP copies. Read-only retries remain bounded; carrier mutations are single-attempt and ambiguous outcomes remain unconfirmed, never silently replayed.
 
 ## Source Structure
 
@@ -196,21 +194,19 @@ src/
     │   ├── elicitation.py      # Elicitation models
     │   └── correction.py       # Self-correction loop tracking (max 3 attempts)
     ├── agent/                  # Shared prompts and deterministic workflow tools
-    │   ├── client.py           # OrchestrationAgent — SDK agent with streaming + MCP coordination
     │   ├── system_prompt.py    # Dynamic system prompt builder (domain knowledge + data schema)
-    │   ├── tools/              # Deterministic SDK tools (split by concern — 9 modules)
+    │   ├── tools/              # Deterministic workflow tools (split by concern — 9 modules)
     │   │   ├── __init__.py     # Tool registry — get_all_tool_definitions()
     │   │   ├── core.py         # EventEmitterBridge, row cache, bridge binding helpers
     │   │   ├── data.py         # Data source + platform tool handlers
     │   │   ├── pipeline.py     # Batch pipeline tool handlers (ship_command_pipeline fast path)
     │   │   ├── interactive.py  # Interactive shipment tool handler (preview_interactive_shipment)
     │   │   ├── pickup.py       # UPS pickup operations (schedule, cancel, rate, status, divisions, facilities)
-    │   │   ├── locator.py      # UPS location search (find_locations_tool)
-    │   │   ├── paperless.py    # Paperless customs (upload, push, delete document tools)
-    │   │   ├── landed_cost.py  # Landed cost estimation (get_landed_cost_tool)
+    │   │   ├── documents.py    # Paperless document workflow tools
+    │   │   ├── ups.py          # UPS rate, address, transit and landed-cost wrappers
+    │   │   ├── contacts.py     # Owner contact-handle workflows
     │   │   └── tracking.py     # UPS package tracking (track_package_tool)
-    │   ├── config.py           # MCP server configuration factory (Data, External, UPS)
-    │   └── hooks.py            # Pre/PostToolUse validation hooks (mode enforcement, audit)
+    │   └── config.py           # Gateway subprocess configuration (Data, External, UPS)
     └── batch/                  # Batch orchestration
         ├── events.py           # BatchEventObserver protocol
         ├── models.py           # Batch state models
@@ -427,7 +423,7 @@ cargo tauri dev
 ### Agent Testing
 
 ```bash
-pytest tests/orchestrator/agent/ -v        # Agent tools + hooks + system prompt
+pytest tests/orchestrator/agent/ -v        # Shared workflow tools + system prompt
 pytest tests/services/test_batch_engine.py -v  # Batch preview + execution
 pytest tests/services/test_ups_mcp_client.py -v  # UPS MCP client
 pytest tests/services/test_ups_payload_builder.py -v  # Payload builder + constants
