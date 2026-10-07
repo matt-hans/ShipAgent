@@ -58,7 +58,7 @@ flowchart LR
 ### Workflow Tool Registry
 
 - Read variables: tool definitions from `src/orchestrator/agent/tools/`, interactive mode, canonical `ToolContract` metadata, provider export targets, bridge callbacks.
-- Write variables: SDK MCP tool definitions, provider declarations, runtime `WorkflowToolDefinition` metadata, generated JSON artifacts, hosted FastMCP tools, provider descriptor output.
+- Write variables: canonical tool definitions, provider declarations, runtime `WorkflowToolDefinition` metadata, generated JSON artifacts, hosted FastMCP tools, provider descriptor output.
 - Conditional loops: batch-only versus interactive-only exposure, side-effect and confirmation classification, export filtering per provider, registry validation of schemas and public side-effect policy, artifact generation loops across OpenAI/Microsoft/Gemini/MCP exports.
 
 ### Data Source Gateways
