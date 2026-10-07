@@ -242,8 +242,7 @@ async def _write_back_database(
     # Double-quote for DuckDB identifier escaping (defense-in-depth).
     safe_table = f'"{table_name}"'
 
-    await ctx.info(f"Updating database table {table_name} row {row_number}")
-
+    # Do not yield before SQL: the caller just verified this source snapshot.
     # Use parameterized query to prevent SQL injection
     # Note: DuckDB uses $1, $2 syntax for parameters
     update_sql = f"""
