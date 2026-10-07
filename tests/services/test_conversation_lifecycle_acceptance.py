@@ -833,3 +833,39 @@ async def test_service_interruption_after_delta_suppresses_text_and_persistence(
     # The service must guard its own suspension even without a transport signal.
     assert [event async for event in stream] == []
     assert svc.get_session_with_messages("lifecycle")["messages"] == []
+
+
+async def test_unset_model_is_snapshotted_before_stopping_old_agent(
+    lifecycle, monkeypatch
+):
+    db, svc = lifecycle
+    session = AgentSession("lifecycle")
+    select_provider(monkeypatch, db, "openai", [[Say("Initial")]])
+    await send(session, svc, "First")
+    old = session.agent
+    stop = old.stop
+    monkeypatch.setattr(
+        "src.services.conversation_handler._resolve_agent_model", lambda: None
+    )
+    monkeypatch.delenv("AGENT_MODEL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+    monkeypatch.setenv("SHIPAGENT_AGENT_RUNTIME", "auto")
+
+    async def change_configuration_while_stopping():
+        monkeypatch.setenv("AGENT_MODEL", "openai:later-model")
+        await stop()
+
+    monkeypatch.setattr(old, "stop", change_configuration_while_stopping)
+    rendered = build_provider("anthropic", [[Say("Default Anthropic")]])
+    selected = []
+
+    def construct(**kwargs):
+        selected.append(kwargs["model"])
+        return rendered.provider
+
+    monkeypatch.setattr(
+        "src.services.conversation_runtime.anthropic_provider.AnthropicProviderClient",
+        construct,
+    )
+    await send(session, svc, "Use the default")
+    assert selected == ["anthropic:claude-haiku-4-5-20251001"]

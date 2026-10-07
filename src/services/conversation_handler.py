@@ -428,6 +428,15 @@ async def ensure_agent(
         )
 
         model = "gemini:" + resolve_gemini_model(model)
+    elif model is None and runtime in {
+        "", "auto", "anthropic", "anthropic_messages", "anthropic-messages",
+        "claude", "claude_sdk",
+    }:
+        from src.services.conversation_runtime.anthropic_provider import (
+            resolve_anthropic_model,
+        )
+
+        model = "anthropic:" + resolve_anthropic_model(None)
     model_signature = json.dumps(
         [
             model,
