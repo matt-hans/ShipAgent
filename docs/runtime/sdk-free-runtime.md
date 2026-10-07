@@ -58,7 +58,9 @@ collects the supported protocol clients without the removed framework.
 The frontend uses local Nx task execution and local caching by default. After
 `npm ci`, `npm exec nx ...` does not require Nx Cloud credentials or a downloaded
 cloud runner. Explicit operator-provided cloud configuration remains an Nx
-choice, rather than a project prerequisite.
+choice, rather than a project prerequisite. Typography uses locally installed
+fonts and the existing system fallback stacks; build and browser no longer
+fetch Google Fonts. Theme tokens, font stacks and layout rules are unchanged.
 
 Local orchestration does not imply offline model inference: the configured
 Anthropic/OpenAI/Gemini endpoints require connectivity and their provider key.
