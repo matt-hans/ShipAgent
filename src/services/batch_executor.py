@@ -106,7 +106,11 @@ def confirm_batch(
             status="running",
             started_at=datetime.now(UTC).isoformat(),
             write_back_enabled=bool(
-                (job.write_back_enabled if write_back_enabled is None else write_back_enabled)
+                (
+                    job.write_back_enabled
+                    if write_back_enabled is None
+                    else write_back_enabled
+                )
                 and not job.is_interactive
             ),
         )

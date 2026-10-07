@@ -47,11 +47,26 @@ def mock_db_session():
     from sqlalchemy.orm import Session
 
     from src.db.models import Base, Job
+
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     with Session(engine) as session:
-        for job_id in ("job-1", "job-ext-1", "job-ext-2", "job-ext-3", "job-amz-1", "job-local-1"):
-            session.add(Job(id=job_id, name="Test", original_command="ship all", status="running"))
+        for job_id in (
+            "job-1",
+            "job-ext-1",
+            "job-ext-2",
+            "job-ext-3",
+            "job-amz-1",
+            "job-local-1",
+        ):
+            session.add(
+                Job(
+                    id=job_id,
+                    name="Test",
+                    original_command="ship all",
+                    status="running",
+                )
+            )
             session.commit()
             bind_job_source(session, job_id, synthetic_source_info())
         yield session
@@ -1030,9 +1045,7 @@ class TestBatchEngineExternalWriteBack:
         rows = [self._make_row(1)]
 
         mock_gw = AsyncMock()
-        mock_gw.get_source_info = AsyncMock(
-            return_value=synthetic_source_info()
-        )
+        mock_gw.get_source_info = AsyncMock(return_value=synthetic_source_info())
         mock_gw.write_back_batch = AsyncMock(
             return_value={"success_count": 1, "failure_count": 0, "errors": []}
         )

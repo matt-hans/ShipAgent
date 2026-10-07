@@ -265,6 +265,7 @@ async def test_confirmed_execution_keeps_source_gateway_offline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The source fixture must outlive the conversation and its background work."""
+
     def forbidden_gateway() -> None:
         raise AssertionError("Acceptance escaped its simulated source gateway")
 
@@ -713,13 +714,16 @@ async def test_denied_execution_attempt_is_audited_without_job_details(
     assert ups.create_calls == []
 
 
-async def test_enabled_writeback_uses_imported_fixture_file(source, ups, api, session_factory):
+async def test_enabled_writeback_uses_imported_fixture_file(
+    source, ups, api, session_factory
+):
     """Enabled writes stay inside the same test-owned CSV source."""
     obs, _ = await _preview_in_conversation("scripted", source, ups)
     job_id = _preview_ready(obs)["job_id"]
     await _confirm(api, job_id, write_back_enabled=True)
     await _drain_batches()
     import csv
+
     info = await source.get_source_info()
     with open(info["path"], newline="") as f:
         written = list(csv.DictReader(f))

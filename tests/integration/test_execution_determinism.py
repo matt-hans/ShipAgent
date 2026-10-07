@@ -359,10 +359,13 @@ class TestWriteBackDurability:
             bind_job_source,
             synthetic_source_info,
         )
+
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
         db = Session(engine)
-        db.add(Job(id="job-wb", name="Test", original_command="ship all", status="running"))
+        db.add(
+            Job(id="job-wb", name="Test", original_command="ship all", status="running")
+        )
         db.commit()
         bind_job_source(db, "job-wb", synthetic_source_info())
         gateway.get_source_info.return_value = synthetic_source_info()
