@@ -20,3 +20,14 @@ def provider_conversation_history(
         and isinstance(message.get("content"), str)
         and message["content"]
     ]
+
+
+# Only trusted workflow code selects these codes. A handler's exception text or
+# a model-supplied origin/error marker never becomes user-visible safe text.
+SAFE_TOOL_ERROR_MESSAGES = {
+    "CONTACT_NOT_FOUND": "Contact not found. Choose a saved contact in the address book or provide an explicit address.",
+    "CONTACT_EXACT_HANDLE_REQUIRED": "Use an exact handle from the address book; a prefix cannot select a shipment recipient.",
+    "CONTACT_ADDRESS_CONFLICT": "Provide either ship_to_handle or an explicit recipient address, not both.",
+    "CONTACT_ROLE_INVALID": "This contact is not enabled as a shipment recipient. Choose another contact in the address book.",
+    "CONTACT_LOOKUP_FAILED": "The saved contact could not be loaded. Check the address book and retry.",
+}

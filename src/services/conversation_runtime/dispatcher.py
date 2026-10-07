@@ -7,6 +7,7 @@ import re
 from collections.abc import Callable
 from typing import Any
 
+from src.services.conversation_privacy import SAFE_TOOL_ERROR_MESSAGES
 from src.services.conversation_runtime.models import (
     ProviderToolCall,
     ProviderToolResult,
@@ -611,7 +612,8 @@ class LocalToolDispatcher:
         payload = _extract_payload(raw_result)
         is_error = _detect_dispatch_error(self.policy, raw_result, payload)
         if is_error:
-            content = _generic_error_content(call.tool_name)
+            safe_code = raw_result.get("error_code") if isinstance(raw_result, dict) else None
+            content = SAFE_TOOL_ERROR_MESSAGES.get(safe_code, _generic_error_content(call.tool_name))
             return ProviderToolResult(
                 call_id=call.call_id,
                 tool_name=call.tool_name,
@@ -622,6 +624,8 @@ class LocalToolDispatcher:
             )
 
         safe_payload = _project_payload(payload, tool_name=call.tool_name)
+        if call.tool_name in {"resolve_contact", "list_contacts", "save_contact", "delete_contact"}:
+            safe_payload = _project_contact_result(payload, call=call)
         structured_payload = _structured_payload(payload, safe_payload)
         summary_payload = safe_payload if isinstance(payload, dict) else None
         content = _content_for_tool_result(
@@ -670,6 +674,31 @@ def _audit(event_name: str, *, tool_name: str, payload: dict[str, Any]) -> None:
             event_name,
             type(exc).__name__,
         )
+
+
+def _project_contact_result(payload: Any, *, call: ProviderToolCall) -> dict[str, Any]:
+    """Local matches stay aggregate-only; echo only already-provider-supplied fields."""
+    if not isinstance(payload, dict):
+        return {}
+    result: dict[str, Any] = {}
+    for key in ("found", "deleted"):
+        if isinstance(payload.get(key), bool):
+            result[key] = payload[key]
+    if payload.get("match_type") in {"exact", "prefix", "none"}:
+        result["match_type"] = payload["match_type"]
+    if payload.get("action") in {"created", "updated", "deleted"}:
+        result["action"] = payload["action"]
+    for key in ("contacts", "candidates"):
+        if isinstance(payload.get(key), list):
+            result["count"] = len(payload[key])
+    # A newly saved user-authored field may echo. Never infer permission from
+    # payload origin flags or from an entire local object matching one field.
+    if call.tool_name == "save_contact":
+        for key in ("handle", "display_name"):
+            value = payload.get(key)
+            if isinstance(value, str) and value == call.parsed_input.get(key):
+                result[key] = value
+    return result
 
 
 def _generic_error_content(tool_name: str) -> str:
@@ -1485,7 +1514,7 @@ def _content_for_tool_result(
 ) -> str:
     if (
         not is_error
-        and tool_name in _ACTIONABLE_UPS_RESULT_TOOLS
+        and tool_name in (_ACTIONABLE_UPS_RESULT_TOOLS | {"resolve_contact", "list_contacts", "save_contact", "delete_contact"})
         and isinstance(payload, dict)
     ):
         return json.dumps(payload, sort_keys=True, default=str)
