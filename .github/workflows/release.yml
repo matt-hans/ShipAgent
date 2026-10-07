@@ -24,7 +24,8 @@ jobs:
       - name: Lint
         run: .venv/bin/ruff check src/ tests/
       - name: Test
-        run: .venv/bin/pytest -k "not stream and not sse and not progress" --timeout=60
+        timeout-minutes: 10
+        run: .venv/bin/pytest
 
       - name: Verify provider artifacts
         run: |
@@ -76,15 +77,8 @@ jobs:
           python -m venv .venv
           .venv/bin/pip install -e '.[dev]'
 
-      - name: Build frontend
-        run: |
-          cd shipagent-frontend
-          npm ci
-          npx nx run-many -t build --all --configuration=production
-
-      - name: Build Python sidecar
-        run: |
-          .venv/bin/python -m PyInstaller shipagent-core.spec --clean --noconfirm
+      - name: Build and smoke Python sidecar
+        run: ./scripts/bundle_backend.sh
 
       - name: Import Apple certificate
         if: env.APPLE_CERTIFICATE != ''

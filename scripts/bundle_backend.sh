@@ -59,13 +59,17 @@ SMOKE_PORT=""
 SMOKE_DATA_DIR="$(mktemp -d)"
 PID=""
 # Also stop the smoke sidecar on any abort (set -e) so it is never orphaned.
-trap '[ -n "$PID" ] && kill "$PID" 2>/dev/null; rm -rf "$SMOKE_DATA_DIR"' EXIT
+trap 'if [ -n "$PID" ]; then kill "$PID" 2>/dev/null || true; wait "$PID" 2>/dev/null || true; fi; rm -rf "$SMOKE_DATA_DIR"' EXIT
+# SMOKE_LAUNCH_BEGIN
+env -i PATH="$PATH" HOME="$SMOKE_DATA_DIR" \
+PYTHON_DOTENV_DISABLED=1 \
 SHIPAGENT_DATA_DIR="$SMOKE_DATA_DIR" \
 SHIPAGENT_KEYRING_DISABLED=1 \
 DATABASE_URL="sqlite:///$SMOKE_DATA_DIR/shipagent.db" \
 FILTER_TOKEN_SECRET="smoke-test-filter-secret-000000000000" \
     "$BINARY" serve --port 0 > "$BINARY_DIR/.smoke_stdout" 2>&1 &
 PID=$!
+# SMOKE_LAUNCH_END
 
 # Wait up to 30 seconds for the SHIPAGENT_PORT= protocol line
 for i in $(seq 1 60); do
@@ -128,6 +132,7 @@ echo "Excel import: PASSED"
 
 kill $PID 2>/dev/null || true
 wait $PID 2>/dev/null || true
+PID=""
 rm -f "$BINARY_DIR/.smoke_stdout"
 
 echo "=== Build complete ==="
