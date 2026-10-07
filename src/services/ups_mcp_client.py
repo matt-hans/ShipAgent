@@ -908,12 +908,13 @@ class UPSMCPClient:
         try:
             return await self._mcp.call_tool(tool_name, arguments, **retry_kwargs)
         except MCPToolError as e:
-            # Keep mutating operations conservative, but allow one bounded
-            # retry for known upstream gateway outages where UPS never
-            # actually processed the request (e.g., "no healthy upstream").
-            if tool_name in self._MUTATING_TOOLS and self._is_safe_mutating_retry_error(
-                e.error_text
-            ):
+            # Preserve the legacy shipment-only fallback until its separate
+            # lifecycle policy is revised. Auxiliary mutations are always
+            # single-attempt: a 503 cannot prove the carrier did not commit.
+            if tool_name in {
+                "create_shipment",
+                "void_shipment",
+            } and self._is_safe_mutating_retry_error(e.error_text):
                 logger.warning(
                     "UPS upstream transient failure during '%s'; retrying once (%s)",
                     tool_name,
@@ -1314,10 +1315,19 @@ class UPSMCPClient:
         Returns:
             Normalised response dict with success and prn.
         """
-        creation = raw.get("PickupCreationResponse", {})
+        creation = (
+            raw.get("PickupCreationResponse", {}) if isinstance(raw, dict) else {}
+        )
+        if not isinstance(creation, dict):
+            return {"success": False, "prn": ""}
         prn = creation.get("PRN", "")
+        has_status = any(
+            key in creation for key in ("Response", "ResponseStatus", "Status")
+        )
         return {
-            "success": True,
+            "success": isinstance(prn, str)
+            and bool(prn.strip())
+            and (not has_status or self._mutation_acknowledged(creation)),
             "prn": prn,
         }
 
@@ -1330,7 +1340,8 @@ class UPSMCPClient:
         Returns:
             Normalised response dict with success, charges (with labels), and grandTotal.
         """
-        rate_result = raw.get("PickupRateResponse", {}).get("RateResult", {})
+        pickup = raw.get("PickupRateResponse", {})
+        rate_result = pickup.get("RateResult", {})
         charge_detail = rate_result.get("ChargeDetail", [])
         if isinstance(charge_detail, dict):
             charge_detail = [charge_detail]
@@ -1346,7 +1357,10 @@ class UPSMCPClient:
             for c in charge_detail
         ]
         return {
-            "success": True,
+            "success": not any(
+                key in pickup for key in ("Response", "ResponseStatus", "Status")
+            )
+            or self._mutation_acknowledged(pickup),
             "charges": charges,
             "grandTotal": grand_total,
         }
@@ -1584,7 +1598,12 @@ class UPSMCPClient:
         doc_ids = self._extract_document_ids(forms_history)
         result: dict[str, Any] = {
             "success": bool(doc_ids)
-            and ("Response" not in upload or self._mutation_acknowledged(upload)),
+            and (
+                not any(
+                    key in upload for key in ("Response", "ResponseStatus", "Status")
+                )
+                or self._mutation_acknowledged(upload)
+            ),
         }
         if doc_ids:
             result["documentIds"] = doc_ids
