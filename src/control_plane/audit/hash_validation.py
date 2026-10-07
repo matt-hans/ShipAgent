@@ -9,11 +9,15 @@ def require_sha256_hex(value: str) -> str:
 
 
 def require_account_id(value: str) -> str:
-    return ControlPlaneAuditService._validate_id_value(value, key="account_id", max_length=36)
+    return ControlPlaneAuditService._validate_id_value(
+        value, key="account_id", max_length=36
+    )
 
 
 def require_connection_id(value: str) -> str:
-    return ControlPlaneAuditService._validate_id_value(value, key="provider_connection_id", max_length=36)
+    return ControlPlaneAuditService._validate_id_value(
+        value, key="provider_connection_id", max_length=36
+    )
 
 
 def require_reference(value: str, family: ShipAgentIdFamily) -> str:
