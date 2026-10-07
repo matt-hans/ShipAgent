@@ -144,6 +144,7 @@ export interface ReconnectRequest {
 
 /** Upload document response. */
 export interface UploadDocumentResponse {
+  attachment_id: string;
   success: boolean;
   file_name: string;
   file_format: string;

@@ -6,24 +6,10 @@
  * Domain color: pickup/purple via card-domain-pickup CSS class.
  */
 
-import {
-  Component,
-  Input,
-  Output,
-  EventEmitter,
-  ChangeDetectionStrategy,
-  inject,
-  signal,
-} from '@angular/core';
-import { firstValueFrom } from 'rxjs';
-import {
-  CheckIconComponent,
-  MapPinIconComponent,
-  UserIconComponent,
-} from '@shipagent/shared-ui';
-import { ApiService } from '@shipagent/shared-api';
-import { ConversationStore } from '@shipagent/shared-state';
+import { Component, Input, ChangeDetectionStrategy } from '@angular/core';
+import { MapPinIconComponent, UserIconComponent } from '@shipagent/shared-ui';
 import type { PickupPreview } from '@shipagent/shared-types';
+import { WorkflowConfirmationComponent } from '../workflow-confirmation.component';
 
 /** Format YYYYMMDD to "Feb 17, 2026" style display. */
 function formatPickupDate(raw: string): string {
@@ -49,7 +35,7 @@ function formatTime(raw: string): string {
   selector: 'app-pickup-preview',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [CheckIconComponent, MapPinIconComponent, UserIconComponent],
+  imports: [MapPinIconComponent, UserIconComponent, WorkflowConfirmationComponent],
   template: `
     <div class="card-premium p-5 animate-scale-in max-w-lg border-l-4 card-domain-pickup">
       <!-- Header -->
@@ -58,6 +44,9 @@ function formatTime(raw: string): string {
         <span class="badge badge-info">READY</span>
       </div>
 
+      @if (data.action === 'cancel') {
+        <p class="text-sm mb-4">Cancel pickup {{ data.prn }}? This action cannot be undone.</p>
+      } @else {
       <!-- Address + Contact grid -->
       <div class="grid grid-cols-2 gap-4 mb-4">
         <div class="bg-slate-800/50 rounded-lg p-3">
@@ -123,79 +112,15 @@ function formatTime(raw: string): string {
         <p class="text-2xl font-bold text-purple-400">\${{ data.grand_total }}</p>
       </div>
 
-      <!-- Actions -->
-      <div class="flex gap-3">
-        <button
-          (click)="cancelled.emit()"
-          [disabled]="isConfirming()"
-          class="btn-secondary flex-1 h-9 text-sm"
-        >
-          Cancel
-        </button>
-        <button
-          (click)="handleConfirm()"
-          [disabled]="isConfirming() || isDone()"
-          class="btn-primary flex-1 h-9 text-sm flex items-center justify-center gap-2"
-        >
-          @if (isConfirming()) {
-            <span class="animate-spin h-3.5 w-3.5 border-2 border-white/20 border-t-white rounded-full"></span>
-            <span>Scheduling...</span>
-          } @else if (isDone()) {
-            <sa-icon-check class="w-3.5 h-3.5" />
-            <span>Request Sent</span>
-          } @else {
-            <sa-icon-check class="w-3.5 h-3.5" />
-            <span>Confirm &amp; Schedule</span>
-          }
-        </button>
-      </div>
+      }
+      <app-workflow-confirmation [data]="data" [confirmLabel]="data.action === 'cancel' ? 'Confirm Cancellation' : 'Confirm & Schedule'" />
     </div>
   `,
 })
 export class PickupPreviewComponent {
   @Input({ required: true }) data!: PickupPreview;
-  @Output() confirmed = new EventEmitter<void>();
-  @Output() cancelled = new EventEmitter<void>();
-
-  private readonly apiService = inject(ApiService);
-  private readonly conversationStore = inject(ConversationStore);
-
-  readonly isConfirming = signal(false);
-  readonly isDone = signal(false);
-
+  @Input() sessionId = '';
+  @Input() cardType = '';
   protected formatDate = formatPickupDate;
   protected formatTime = formatTime;
-
-  /**
-   * Confirm pickup by sending a message to the agent — matches React logic.
-   * React: conv.sendMessage("Confirmed. Schedule the pickup with confirmed=true. confirmation_token=XXX")
-   */
-  async handleConfirm(): Promise<void> {
-    this.isConfirming.set(true);
-    try {
-      const sid = this.conversationStore.sessionId();
-      if (!sid) throw new Error('No active session');
-
-      const tokenClause = this.data.confirmation_token
-        ? ` confirmation_token=${this.data.confirmation_token}`
-        : '';
-      const msg = `Confirmed. Schedule the pickup with confirmed=true.${tokenClause}`;
-
-      // Send to agent silently — don't show the confirmation_token string in chat.
-      this.conversationStore.setStreaming(true);
-      await firstValueFrom(this.apiService.sendMessage(sid, msg));
-      this.isDone.set(true);
-    } catch (err) {
-      console.error('[PickupPreview] Confirm failed:', err);
-      this.conversationStore.appendMessage({
-        id: `err-pickup-${Date.now()}`,
-        role: 'system',
-        content: `Pickup scheduling failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
-        timestamp: new Date().toISOString(),
-        metadata: { type: 'error' },
-      });
-    } finally {
-      this.isConfirming.set(false);
-    }
-  }
 }

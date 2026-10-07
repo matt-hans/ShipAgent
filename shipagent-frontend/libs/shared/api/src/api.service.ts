@@ -35,6 +35,7 @@ import type {
   ChatSessionSummary,
   SessionDetail,
   UploadDocumentResponse,
+  WorkflowConfirmationResponse,
   // Platforms
   ListConnectionsResponse,
   PlatformType,
@@ -219,6 +220,18 @@ export class ApiService {
    */
   getStreamUrl(sessionId: string): string {
     return `${this.baseUrl}/conversations/${sessionId}/stream`;
+  }
+
+  /** Confirm or cancel the exact session-bound action displayed in a preview. */
+  confirmWorkflowAction(
+    sessionId: string,
+    confirmationToken: string,
+    decision: 'confirm' | 'cancel',
+  ): Observable<WorkflowConfirmationResponse> {
+    return this.http.post<WorkflowConfirmationResponse>(
+      `${this.baseUrl}/conversations/${sessionId}/workflow-confirmation`,
+      { confirmation_token: confirmationToken, decision },
+    );
   }
 
   /**
