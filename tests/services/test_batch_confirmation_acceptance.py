@@ -17,7 +17,7 @@ import json
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -64,6 +64,7 @@ def _isolated_runtime(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> Iterator[None]:
     monkeypatch.setenv("SHIPAGENT_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("UPS_LABELS_OUTPUT_DIR", str(tmp_path / "labels"))
     monkeypatch.setenv("SHIPAGENT_KEYRING_DISABLED", "1")
     monkeypatch.setenv("AGENT_HIDE_TRANSIENT_CHAT", "false")
     monkeypatch.setenv("AGENT_AUDIT_ENABLED", "false")
@@ -98,12 +99,23 @@ def session_factory(tmp_path: Path) -> Iterator[sessionmaker[Session]]:
 
 
 @pytest.fixture
-async def source(tmp_path: Path) -> ImportedCsvSource:
+async def source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[ImportedCsvSource]:
     csv_path = tmp_path / "orders.csv"
     csv_path.write_text(IMPORTED_ORDERS_CSV)
     gateway = ImportedCsvSource()
     await gateway.import_csv_file(csv_path)
-    return gateway
+    for target in (
+        "src.services.gateway_provider.get_data_gateway",
+        "src.services.batch_engine.get_data_gateway",
+    ):
+        monkeypatch.setattr(target, AsyncMock(return_value=gateway))
+    try:
+        yield gateway
+    finally:
+        await preview_routes.shutdown_batch_runtime(timeout_seconds=5)
+        gateway.close()
 
 
 @pytest.fixture
@@ -236,13 +248,36 @@ async def _drain_batches() -> None:
         if isinstance(t, asyncio.Task) and t.get_loop() is loop
     ]
     if tasks:
-        await asyncio.gather(*tasks)
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=10)
 
 
 async def _progress(api: httpx.AsyncClient, job_id: str) -> dict[str, Any]:
     response = await api.get(f"/api/v1/jobs/{job_id}/progress")
     assert response.status_code == 200
     return response.json()
+
+
+async def test_confirmed_execution_keeps_source_gateway_offline(
+    source: ImportedCsvSource,
+    ups: SimulatedUPS,
+    api: httpx.AsyncClient,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The source fixture must outlive the conversation and its background work."""
+    def forbidden_gateway() -> None:
+        raise AssertionError("Acceptance escaped its simulated source gateway")
+
+    monkeypatch.setattr(
+        "src.services.gateway_provider.DataSourceMCPClient", forbidden_gateway
+    )
+    monkeypatch.setattr("src.services.gateway_provider._data_gateway", None)
+    obs, _ = await _preview_in_conversation("scripted", source, ups)
+    job_id = _preview_ready(obs)["job_id"]
+    assert (await _confirm(api, job_id)).status_code == 200
+    await asyncio.wait_for(_drain_batches(), timeout=5)
+    assert len(ups.create_calls) == 4
+    assert _jobs(session_factory)[0].status == "completed"
 
 
 # ---- preview through the conversation ---------------------------------------
@@ -484,7 +519,7 @@ async def test_repeated_confirm_requests_cannot_duplicate_shipments(
 
     # Three simultaneous confirms while the first purchase is still in flight.
     responses = await asyncio.gather(*[_confirm(api, job_id) for _ in range(3)])
-    await ups.in_create.wait()
+    await asyncio.wait_for(ups.in_create.wait(), timeout=5)
     release.set()
     await _drain_batches()
 
@@ -676,3 +711,19 @@ async def test_denied_execution_attempt_is_audited_without_job_details(
     }
     assert "job-x" not in json.dumps(events, default=str)
     assert ups.create_calls == []
+
+
+async def test_enabled_writeback_uses_imported_fixture_file(source, ups, api, session_factory):
+    """Enabled writes stay inside the same test-owned CSV source."""
+    obs, _ = await _preview_in_conversation("scripted", source, ups)
+    job_id = _preview_ready(obs)["job_id"]
+    await _confirm(api, job_id, write_back_enabled=True)
+    await _drain_batches()
+    import csv
+    info = await source.get_source_info()
+    with open(info["path"], newline="") as f:
+        written = list(csv.DictReader(f))
+    assert len(ups.create_calls) == 4
+    assert [r["tracking_number"] for r in written] == [
+        r.tracking_number for r in _rows(session_factory, job_id)
+    ]

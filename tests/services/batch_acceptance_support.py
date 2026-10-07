@@ -23,7 +23,12 @@ from typing import Any
 
 import duckdb
 
-from src.mcp.data_source.tools import import_tools, query_tools, source_info_tools
+from src.mcp.data_source.tools import (
+    import_tools,
+    query_tools,
+    source_info_tools,
+    writeback_tools,
+)
 from src.services.data_source_mcp_client import DataSourceMCPClient
 from src.services.errors import UPSServiceError
 
@@ -75,6 +80,10 @@ class ImportedCsvSource(DataSourceMCPClient):
     async def import_csv_file(self, path: Path) -> None:
         await import_tools.import_csv(str(path), _Ctx(self._lifespan))
 
+    def close(self) -> None:
+        """Release the test-owned in-memory database."""
+        self._lifespan["db"].close()
+
     async def _call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
         self.tool_calls.append(name)
         ctx = _Ctx(self._lifespan)
@@ -82,6 +91,8 @@ class ImportedCsvSource(DataSourceMCPClient):
             return await source_info_tools.get_source_info(ctx)
         if name == "get_rows_by_filter":
             return await query_tools.get_rows_by_filter(ctx=ctx, **arguments)
+        if name == "write_back":
+            return await writeback_tools.write_back(ctx=ctx, **arguments)
         raise AssertionError(f"unexpected data source tool {name!r}")
 
 
