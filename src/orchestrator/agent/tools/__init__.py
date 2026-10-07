@@ -395,8 +395,8 @@ def get_all_tool_definitions(
         {
             "name": "schedule_pickup",
             "description": (
-                "Schedule a UPS carrier pickup. This is a financial commitment — "
-                "always confirm with the user first, then set confirmed=true."
+                "Direct scheduling is disabled. Use rate_pickup to prepare a priced "
+                "preview; the user schedules it with the Confirm button."
             ),
             "input_schema": {
                 "type": "object",
@@ -426,10 +426,6 @@ def get_all_tool_definitions(
                     "country_code": {"type": "string", "description": "Country code."},
                     "contact_name": {"type": "string", "description": "Contact name."},
                     "phone_number": {"type": "string", "description": "Contact phone."},
-                    "confirmed": {
-                        "type": "boolean",
-                        "description": "Must be true. Set only after the user explicitly confirms.",
-                    },
                 },
                 "required": [
                     "pickup_date",
@@ -442,7 +438,6 @@ def get_all_tool_definitions(
                     "country_code",
                     "contact_name",
                     "phone_number",
-                    "confirmed",
                 ],
             },
             "handler": _bind_bridge(schedule_pickup_tool, bridge),
@@ -450,35 +445,31 @@ def get_all_tool_definitions(
         {
             "name": "cancel_pickup",
             "description": (
-                "Cancel a previously scheduled UPS pickup. This is irreversible — "
-                "confirm with the user first, then set confirmed=true."
+                "Prepare a cancellation preview for a UPS pickup. Only the user can "
+                "execute it with the Confirm button. This tool never cancels directly."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "cancel_by": {
                         "type": "string",
-                        "description": "'prn' to cancel by PRN, 'account' for most recent.",
+                        "description": "'prn' for an exact PRN, 'account' to resolve one pending pickup; multiple pickups require a PRN.",
                         "enum": ["prn", "account"],
                     },
                     "prn": {
                         "type": "string",
                         "description": "Pickup Request Number (required when cancel_by='prn').",
                     },
-                    "confirmed": {
-                        "type": "boolean",
-                        "description": "Must be true. Set only after the user explicitly confirms.",
-                    },
                 },
-                "required": ["cancel_by", "confirmed"],
+                "required": ["cancel_by"],
             },
             "handler": _bind_bridge(cancel_pickup_tool, bridge),
         },
         {
             "name": "rate_pickup",
             "description": (
-                "Rate a UPS pickup and display the preview card. ALWAYS call this BEFORE "
-                "schedule_pickup. Collects address, contact, and schedule details, gets "
+                "Rate a UPS pickup and display its confirmation card. "
+                "Collects address, contact, and schedule details, gets "
                 "the rate estimate, and displays a preview card to the user with Confirm/"
                 "Cancel buttons. Pickup type is always on-call and set automatically. "
                 "Include contact_name and phone_number in the args so they appear in "
@@ -519,6 +510,8 @@ def get_all_tool_definitions(
                     "pickup_date",
                     "ready_time",
                     "close_time",
+                    "contact_name",
+                    "phone_number",
                 ],
             },
             "handler": _bind_bridge(rate_pickup_tool, bridge),
@@ -639,66 +632,61 @@ def get_all_tool_definitions(
         {
             "name": "upload_paperless_document",
             "description": (
-                "Upload a customs/trade document to UPS Forms History "
-                "for paperless customs clearance. If the user attached a file "
-                "via the upload form, file data is automatically available — "
-                "only document_type is required."
+                "Upload the exact file/type approved via the upload form using its "
+                "attachment_id from DOCUMENT_ATTACHED. Returns an opaque document_handle "
+                "for attachment/deletion. Never supply file bytes, paths or a replacement type."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "file_content_base64": {
+                    "attachment_id": {
                         "type": "string",
-                        "description": "Base64-encoded file content. Auto-loaded from upload form when available.",
-                    },
-                    "file_name": {
-                        "type": "string",
-                        "description": "File name (e.g., 'invoice.pdf'). Auto-loaded from upload form when available.",
-                    },
-                    "file_format": {
-                        "type": "string",
-                        "description": "File format (pdf, doc, xls, etc.). Auto-loaded from upload form when available.",
-                    },
-                    "document_type": {
-                        "type": "string",
-                        "description": "UPS document type code ('002'=invoice, '003'=CO, etc.).",
+                        "description": "One-shot ID from the user upload form.",
                     },
                 },
-                "required": ["document_type"],
+                "required": ["attachment_id"],
             },
             "handler": _bind_bridge(upload_paperless_document_tool, bridge),
         },
         {
             "name": "push_document_to_shipment",
-            "description": "Attach a previously uploaded document to a shipment.",
+            "description": "Prepare an attachment preview. Supply document_handle from upload or a user-provided document_id. The user must confirm in the card.",
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "document_id": {
                         "type": "string",
-                        "description": "Document ID from upload_paperless_document.",
+                        "description": "Explicit document ID supplied by the user; alternative to document_handle.",
+                    },
+                    "document_handle": {
+                        "type": "string",
+                        "description": "Opaque current-session handle returned by upload_paperless_document; alternative to document_id.",
                     },
                     "shipment_identifier": {
                         "type": "string",
                         "description": "1Z tracking number from create_shipment.",
                     },
                 },
-                "required": ["document_id", "shipment_identifier"],
+                "required": ["shipment_identifier"],
             },
             "handler": _bind_bridge(push_document_to_shipment_tool, bridge),
         },
         {
             "name": "delete_paperless_document",
-            "description": "Delete a document from UPS Forms History.",
+            "description": "Prepare a document deletion preview using document_handle or an explicit document_id. The user must confirm in the card.",
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "document_id": {
                         "type": "string",
-                        "description": "Document ID from upload_paperless_document.",
+                        "description": "Explicit document ID supplied by the user; alternative to document_handle.",
+                    },
+                    "document_handle": {
+                        "type": "string",
+                        "description": "Opaque current-session handle returned by upload_paperless_document; alternative to document_id.",
                     },
                 },
-                "required": ["document_id"],
+                "required": [],
             },
             "handler": _bind_bridge(delete_paperless_document_tool, bridge),
         },

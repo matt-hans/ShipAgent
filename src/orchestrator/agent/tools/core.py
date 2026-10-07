@@ -60,6 +60,9 @@ class EventEmitterBridge:
         self.last_resolved_filter_command: str | None = None
         self.last_resolved_filter_schema_signature: str | None = None
         self.confirmed_resolutions: dict[str, Any] = {}
+        from src.services.workflow_confirmation import PendingWorkflowActions
+
+        self.workflow_actions = PendingWorkflowActions()
         self._fetched_rows_cache: dict[str, list[dict[str, Any]]] = {}
         self._fetched_rows_order: list[str] = []
 

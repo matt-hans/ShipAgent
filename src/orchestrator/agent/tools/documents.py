@@ -85,19 +85,35 @@ async def upload_paperless_document_tool(
     Returns:
         Tool response with documentId on success, or error envelope.
     """
-    # If base64 missing, read from attachment store (upload card flow)
-    if "file_content_base64" not in args and bridge and bridge.session_id:
-        from src.services.attachment_store import consume
+    # Only the user's form creates an upload grant. Model-provided bytes or
+    # selected types can never authorize or overwrite that immutable attachment.
+    from src.services.attachment_store import consume, has_pending
 
-        attachment = consume(bridge.session_id)
-        if attachment:
-            args = {**args, **attachment}
-
-    if "file_content_base64" not in args:
+    attachment_id = args.get("attachment_id")
+    attachment = None
+    if (
+        bridge
+        and bridge.session_id
+        and isinstance(attachment_id, str)
+        and has_pending(bridge.session_id, attachment_id)
+    ):
+        try:
+            client = await _get_ups_client()
+        except Exception as exc:
+            logger.warning(
+                "Document upload connection failed exception_type=%s",
+                type(exc).__name__,
+            )
+            return _err(
+                "Document upload connection is unavailable. Try the upload form again."
+            )
+        attachment = consume(bridge.session_id, attachment_id, gateway=client)
+    if attachment is None:
         return _err(
-            "No document attached. Use request_document_upload first "
-            "so the user can attach a file via the upload form."
+            "No document attached for this upload. Use request_document_upload "
+            "so the user can approve the exact file and document type."
         )
+    args = attachment
 
     # Capture metadata before passing to MCP (extra keys are filtered below)
     file_name = args.get("file_name", "")
@@ -106,13 +122,16 @@ async def upload_paperless_document_tool(
     file_size_bytes = args.pop("file_size_bytes", None)
 
     try:
-        client = await _get_ups_client()
         result = await client.upload_document(**args)
         document_ids = result.get("documentIds", [])
         doc_id = str(result.get("documentId", "") or "")
         if not doc_id and isinstance(document_ids, list) and document_ids:
             doc_id = str(document_ids[0])
 
+        if result.get("success") is not True or not doc_id:
+            return _err(
+                "Document upload outcome is unconfirmed. Check UPS Forms History before uploading again."
+            )
         payload: dict[str, Any] = {
             "action": "uploaded",
             **result,
@@ -127,9 +146,8 @@ async def upload_paperless_document_tool(
             payload["fileSizeBytes"] = file_size_bytes
 
         _emit_event("paperless_result", payload, bridge=bridge)
-        if doc_id:
-            return _ok(f"Document uploaded. ID: {doc_id}")
-        return _ok("Document uploaded to UPS Forms History.")
+        handle = bridge.workflow_actions.register_document(doc_id, client)
+        return _ok({"success": True, "document_handle": handle})
     except UPSServiceError as e:
         return _err(f"[{e.code}] {e.message}")
     except Exception as e:
@@ -137,63 +155,79 @@ async def upload_paperless_document_tool(
             "Unexpected error in upload_paperless_document_tool exception_type=%s",
             type(e).__name__,
         )
-        return _err(f"Unexpected error: {e}")
+        return _err(
+            "Document upload outcome is unconfirmed. Check UPS Forms History before uploading again."
+        )
 
 
 async def push_document_to_shipment_tool(
     args: dict[str, Any],
     bridge: EventEmitterBridge | None = None,
 ) -> dict[str, Any]:
-    """Attach a document to a shipment and emit paperless_result event.
-
-    Args:
-        args: Dict with document_id, shipment_identifier, and optional
-              shipment_type, shipper_number.
-        bridge: Event bridge for SSE emission.
-
-    Returns:
-        Tool response with success status, or error envelope.
-    """
-    try:
-        client = await _get_ups_client()
-        result = await client.push_document(**args)
-        payload = {"action": "pushed", "success": True, **result}
-        _emit_event("paperless_result", payload, bridge=bridge)
-        return _ok("Document attached to shipment.")
-    except UPSServiceError as e:
-        return _err(f"[{e.code}] {e.message}")
-    except Exception as e:
-        logger.warning(
-            "Unexpected error in push_document_to_shipment_tool exception_type=%s",
-            type(e).__name__,
-        )
-        return _err(f"Unexpected error: {e}")
+    """Prepare a document attachment for explicit confirmation in the UI."""
+    return await _prepare_document_action("push_document", args, bridge)
 
 
 async def delete_paperless_document_tool(
     args: dict[str, Any],
     bridge: EventEmitterBridge | None = None,
 ) -> dict[str, Any]:
-    """Delete a document from UPS Forms History and emit paperless_result event.
+    """Prepare document deletion for explicit confirmation in the UI."""
+    return await _prepare_document_action("delete_document", args, bridge)
 
-    Args:
-        args: Dict with document_id and optional shipper_number.
-        bridge: Event bridge for SSE emission.
 
-    Returns:
-        Tool response with success status, or error envelope.
-    """
+async def _prepare_document_action(
+    operation: str,
+    args: dict[str, Any],
+    bridge: EventEmitterBridge | None,
+) -> dict[str, Any]:
+    if bridge is None or not bridge.session_id:
+        return _err("A conversation is required to confirm a document action.")
+    bridge.workflow_actions.invalidate(operation)
+    handle = args.get("document_handle")
+    document_id = args.get("document_id")
+    shipment = args.get("shipment_identifier")
+    if handle and document_id:
+        return _err("Choose either a document handle or an explicit document ID.")
+    if (
+        not isinstance(handle or document_id, str)
+        or not (handle or document_id).strip()
+    ):
+        return _err("A document handle or document ID is required.")
+    if operation == "push_document" and (
+        not isinstance(shipment, str) or not shipment.strip()
+    ):
+        return _err("A shipment identifier is required.")
     try:
         client = await _get_ups_client()
-        result = await client.delete_document(**args)
-        payload = {"action": "deleted", "success": True, **result}
-        _emit_event("paperless_result", payload, bridge=bridge)
-        return _ok("Document deleted.")
-    except UPSServiceError as e:
-        return _err(f"[{e.code}] {e.message}")
-    except Exception as e:
+        if handle:
+            document_id = bridge.workflow_actions.resolve_document(handle, client)
+    except Exception as exc:
         logger.warning(
-            "Unexpected error in delete_paperless_document_tool exception_type=%s",
-            type(e).__name__,
+            "Document preparation failed exception_type=%s", type(exc).__name__
         )
-        return _err(f"Unexpected error: {e}")
+        return _err(
+            "Document handle or carrier connection is unavailable. Request a new preview."
+        )
+    details = {"document_id": document_id.strip()}
+    if operation == "push_document":
+        details["shipment_identifier"] = shipment.strip()
+    token = bridge.workflow_actions.prepare(operation, details, client)
+    _emit_event(
+        "paperless_result",
+        {
+            "action": "push_preview"
+            if operation == "push_document"
+            else "delete_preview",
+            "status": "pending_confirmation",
+            "success": True,
+            "documentId": details["document_id"],
+            "shipmentIdentifier": details.get("shipment_identifier"),
+            "confirmation_token": token,
+            "session_id": bridge.session_id,
+        },
+        bridge=bridge,
+    )
+    return _ok(
+        "Document action preview displayed. Waiting for the user to confirm or cancel."
+    )

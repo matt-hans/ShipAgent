@@ -58,6 +58,9 @@ class AgentSession:
         self.confirmed_resolutions: dict[
             str, Any
         ] = {}  # token → confirmed ResolvedFilterSpec
+        from src.services.workflow_confirmation import PendingWorkflowActions
+
+        self.workflow_actions = PendingWorkflowActions()
         self.lock = asyncio.Lock()
         self._history_lock = (
             threading.Lock()
@@ -157,6 +160,10 @@ class AgentSessionManager:
         """
         session = self._sessions.pop(session_id, None)
         if session is not None:
+            from src.services.attachment_store import clear
+
+            session.workflow_actions.revoke_all()
+            clear(session_id)
             logger.info("Removed agent session: %s", session_id)
 
     async def stop_session_agent(self, session_id: str) -> None:

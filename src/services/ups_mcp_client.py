@@ -908,12 +908,13 @@ class UPSMCPClient:
         try:
             return await self._mcp.call_tool(tool_name, arguments, **retry_kwargs)
         except MCPToolError as e:
-            # Keep mutating operations conservative, but allow one bounded
-            # retry for known upstream gateway outages where UPS never
-            # actually processed the request (e.g., "no healthy upstream").
-            if tool_name in self._MUTATING_TOOLS and self._is_safe_mutating_retry_error(
-                e.error_text
-            ):
+            # Preserve the legacy shipment-only fallback until its separate
+            # lifecycle policy is revised. Auxiliary mutations are always
+            # single-attempt: a 503 cannot prove the carrier did not commit.
+            if tool_name in {
+                "create_shipment",
+                "void_shipment",
+            } and self._is_safe_mutating_retry_error(e.error_text):
                 logger.warning(
                     "UPS upstream transient failure during '%s'; retrying once (%s)",
                     tool_name,
@@ -1314,10 +1315,19 @@ class UPSMCPClient:
         Returns:
             Normalised response dict with success and prn.
         """
-        creation = raw.get("PickupCreationResponse", {})
+        creation = (
+            raw.get("PickupCreationResponse", {}) if isinstance(raw, dict) else {}
+        )
+        if not isinstance(creation, dict):
+            return {"success": False, "prn": ""}
         prn = creation.get("PRN", "")
+        has_status = any(
+            key in creation for key in ("Response", "ResponseStatus", "Status")
+        )
         return {
-            "success": True,
+            "success": isinstance(prn, str)
+            and bool(prn.strip())
+            and (not has_status or self._mutation_acknowledged(creation)),
             "prn": prn,
         }
 
@@ -1330,11 +1340,12 @@ class UPSMCPClient:
         Returns:
             Normalised response dict with success, charges (with labels), and grandTotal.
         """
-        rate_result = raw.get("PickupRateResponse", {}).get("RateResult", {})
+        pickup = raw.get("PickupRateResponse", {})
+        rate_result = pickup.get("RateResult", {})
         charge_detail = rate_result.get("ChargeDetail", [])
         if isinstance(charge_detail, dict):
             charge_detail = [charge_detail]
-        grand_total = rate_result.get("GrandTotalOfAllCharge", "0")
+        grand_total = rate_result.get("GrandTotalOfAllCharge")
         charges = [
             {
                 "chargeAmount": c.get("ChargeAmount", "0"),
@@ -1346,10 +1357,28 @@ class UPSMCPClient:
             for c in charge_detail
         ]
         return {
-            "success": True,
+            "success": not any(
+                key in pickup for key in ("Response", "ResponseStatus", "Status")
+            )
+            or self._mutation_acknowledged(pickup),
             "charges": charges,
             "grandTotal": grand_total,
         }
+
+    @staticmethod
+    def _mutation_acknowledged(body: Any) -> bool:
+        """Require a recognized UPS success marker; empty bodies prove nothing."""
+        if not isinstance(body, dict):
+            return False
+        response = body.get("Response")
+        status = (
+            (response.get("ResponseStatus") if isinstance(response, dict) else None)
+            or body.get("ResponseStatus")
+            or body.get("Status")
+        )
+        if isinstance(status, dict):
+            return str(status.get("Code", "")).strip() == "1"
+        return isinstance(status, str) and status.strip().lower() == "success"
 
     def _normalize_cancel_pickup_response(self, raw: dict) -> dict[str, Any]:
         """Extract cancellation status from raw UPS pickup cancel response.
@@ -1395,8 +1424,10 @@ class UPSMCPClient:
         )
 
         return {
-            "success": True,
-            "status": "cancelled",
+            "success": self._mutation_acknowledged(cancel_resp),
+            "status": "cancelled"
+            if self._mutation_acknowledged(cancel_resp)
+            else "unconfirmed",
             "raw_status": {
                 "code": str(status_code),
                 "description": str(status_desc),
@@ -1561,12 +1592,18 @@ class UPSMCPClient:
             and response metadata when available.
         """
         upload = raw.get("UploadResponse", {}) if isinstance(raw, dict) else {}
+        if not isinstance(upload, dict):
+            return {"success": False}
         forms_history = upload.get("FormsHistoryDocumentID", {})
-        doc_ids = self._extract_document_ids(
-            forms_history.get("DocumentID", forms_history),
-        )
+        doc_ids = self._extract_document_ids(forms_history)
         result: dict[str, Any] = {
-            "success": True,
+            "success": bool(doc_ids)
+            and (
+                not any(
+                    key in upload for key in ("Response", "ResponseStatus", "Status")
+                )
+                or self._mutation_acknowledged(upload)
+            ),
         }
         if doc_ids:
             result["documentIds"] = doc_ids
@@ -1581,7 +1618,9 @@ class UPSMCPClient:
             if isinstance(raw, dict)
             else {}
         )
-        result: dict[str, Any] = {"success": True}
+        if not isinstance(push, dict):
+            return {"success": False}
+        result: dict[str, Any] = {"success": self._mutation_acknowledged(push)}
 
         forms_group_id = push.get("FormsGroupID")
         if forms_group_id:
@@ -1589,7 +1628,7 @@ class UPSMCPClient:
 
         forms_history = push.get("FormsHistoryDocumentID", {})
         doc_ids = self._extract_document_ids(
-            forms_history.get("DocumentID", forms_history),
+            forms_history,
         )
         if doc_ids:
             result["documentIds"] = doc_ids
@@ -1601,7 +1640,9 @@ class UPSMCPClient:
     def _normalize_delete_document_response(self, raw: dict) -> dict[str, Any]:
         """Extract details from raw UPS delete-document response."""
         delete = raw.get("DeleteResponse", {}) if isinstance(raw, dict) else {}
-        result: dict[str, Any] = {"success": True}
+        if not isinstance(delete, dict):
+            return {"success": False}
+        result: dict[str, Any] = {"success": self._mutation_acknowledged(delete)}
         result.update(self._extract_paperless_response_meta(delete.get("Response", {})))
         return result
 
@@ -1665,13 +1706,8 @@ class UPSMCPClient:
                     value = item.strip()
                     if value:
                         out.append(value)
-                elif item is not None:
-                    value = str(item).strip()
-                    if value:
-                        out.append(value)
             return out
-        value = str(raw_value).strip()
-        return [value] if value else []
+        return []
 
     def _normalize_locations_response(self, raw: dict) -> dict[str, Any]:
         """Extract locations from raw UPS locator response.

@@ -1242,3 +1242,21 @@ class TestClaudeHookProjectionOfNeutralDecisions:
 
         assert hook["hookSpecificOutput"]["permissionDecision"] == "deny"
         assert neutral.allowed is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "name",
+    [
+        "mcp__ups__upload_paperless_document",
+        "mcp__ups__push_document_to_shipment",
+        "mcp__ups__delete_paperless_document",
+    ],
+)
+async def test_legacy_generic_hook_blocks_raw_document_mutations(name):
+    from src.orchestrator.agent.hooks import validate_pre_tool
+
+    result = await validate_pre_tool(
+        {"tool_name": name, "tool_input": {"confirmed": True}}, "call", None
+    )
+    assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
