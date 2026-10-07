@@ -1,4 +1,4 @@
-"""Tests for contact injection into agent system prompt."""
+"""Tests for aggregate-only saved-contact prompt guidance."""
 
 
 from src.orchestrator.agent.system_prompt import (
@@ -15,7 +15,7 @@ def test_build_contacts_section_empty():
 
 
 def test_build_contacts_section_formats_correctly():
-    """Contacts are formatted as @handle — City, ST (roles)."""
+    """Contact availability is usable without exposing local identities."""
     contacts = [
         {"handle": "matt", "city": "San Francisco", "state_province": "CA",
          "use_as_ship_to": True, "use_as_shipper": False},
@@ -23,22 +23,22 @@ def test_build_contacts_section_formats_correctly():
          "use_as_ship_to": True, "use_as_shipper": True},
     ]
     result = _build_contacts_section(contacts)
-    assert "@matt" in result
-    assert "San Francisco, CA" in result
+    assert "@matt" not in result
+    assert "San Francisco" not in result
     assert "ship_to" in result
-    assert "@warehouse" in result
-    assert "shipper" in result
+    assert "@warehouse" not in result
+    assert "resolved locally" in result
 
 
 def test_build_contacts_section_respects_limit():
-    """Only MAX_PROMPT_CONTACTS contacts are included."""
+    """Even long contact lists expose no handles."""
     contacts = [
         {"handle": f"c{i}", "city": "City", "state_province": "ST",
          "use_as_ship_to": True, "use_as_shipper": False}
         for i in range(MAX_PROMPT_CONTACTS + 10)
     ]
     result = _build_contacts_section(contacts)
-    assert f"@c{MAX_PROMPT_CONTACTS - 1}" in result
+    assert f"@c{MAX_PROMPT_CONTACTS - 1}" not in result
     assert f"@c{MAX_PROMPT_CONTACTS}" not in result
 
 
@@ -50,7 +50,7 @@ def test_build_system_prompt_includes_contacts():
              "use_as_ship_to": True, "use_as_shipper": False},
         ],
     )
-    assert "@matt" in prompt
+    assert "@matt" not in prompt
     assert "Saved Contacts" in prompt
     assert "resolve_contact" in prompt
 

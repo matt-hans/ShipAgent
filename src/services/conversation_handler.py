@@ -19,6 +19,7 @@ from src.orchestrator.agent.intent_detection import (
 )
 from src.services.agent_session_manager import AgentSession
 from src.services.conversation_agent import create_conversation_agent
+from src.services.conversation_privacy import provider_conversation_history
 from src.services.decision_audit_context import (
     get_decision_job_id,
     get_decision_run_id,
@@ -121,9 +122,7 @@ def _load_prior_conversation(session_id: str) -> list[dict] | None:
             )
             if result is None or not result["messages"]:
                 return None
-            return [
-                {"role": m["role"], "content": m["content"]} for m in result["messages"]
-            ]
+            return provider_conversation_history(result["messages"])
     except Exception as e:
         logger.warning("Failed to load prior conversation for %s: %s", session_id, e)
         return None
@@ -414,25 +413,15 @@ async def ensure_agent(
             logger.warning("Error stopping old agent: %s", e)
         session.confirmed_resolutions.clear()
 
-    # Fetch column samples for filter grounding (batch mode only)
-    column_samples = None
-    if source_info is not None and not interactive_shipping:
-        try:
-            gw = await get_data_gateway()
-            column_samples = await gw.get_column_samples(max_samples=5)
-        except Exception as e:
-            logger.debug("Could not fetch column samples: %s", e)
-
     # Load prior conversation for resumed sessions
     prior_conversation = _without_current_user_turn(
-        _load_prior_conversation(session.session_id),
+        provider_conversation_history(_load_prior_conversation(session.session_id)),
         current_user_message,
     )
 
     system_prompt = build_system_prompt(
         source_info=source_info,
         interactive_shipping=interactive_shipping,
-        column_samples=column_samples,
         contacts=contacts,
         prior_conversation=prior_conversation,
     )

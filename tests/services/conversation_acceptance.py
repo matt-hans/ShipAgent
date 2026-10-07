@@ -118,6 +118,10 @@ async def run_scenario(
     provider: Any | None = None,
     ups_gateway: Any | None = None,
     data_gateway: Any | None = None,
+    fresh_agent: bool = False,
+    source_info: Any | None = None,
+    contacts: list[dict[str, Any]] | None = None,
+    prior_conversation: list[dict[str, Any]] | None = None,
 ) -> Observation:
     """Run one scripted turn through the shared conversation service.
 
@@ -153,7 +157,7 @@ async def run_scenario(
 
     session = MagicMock()
     session.session_id = session_id
-    session.agent = agent
+    session.agent = None if fresh_agent else agent
     contacts_hash = hashlib.sha256(
         json.dumps([], sort_keys=True, default=str).encode()
     ).hexdigest()[:8]
@@ -209,7 +213,21 @@ async def run_scenario(
             "src.services.conversation_handler.get_data_gateway",
             new_callable=AsyncMock,
         ) as handler_gateway,
-        patch(_CONTACTS_PATCH, return_value=[]),
+        patch(_CONTACTS_PATCH, return_value=contacts or []),
+        patch(
+            "src.services.conversation_handler._load_prior_conversation",
+            return_value=prior_conversation,
+        ),
+        patch(
+            "src.services.conversation_handler.create_conversation_agent",
+            side_effect=lambda **kwargs: ConversationRuntimeSession(
+                provider=provider,
+                **{key: kwargs[key] for key in (
+                    "system_prompt", "interactive_shipping", "session_id",
+                    "prior_conversation",
+                )},
+            ),
+        ),
         patch(
             "src.services.conversation_handler._persist_assistant_message",
             side_effect=lambda sid, text: observation.persisted_messages.append(
@@ -232,7 +250,11 @@ async def run_scenario(
         patch("src.services.gateway_provider.get_ups_gateway", count_ups_gateway),
     ):
         handler_gateway.return_value.get_source_info_typed = AsyncMock(
-            return_value=None
+            return_value=source_info
+        )
+        handler_gateway.return_value.get_column_samples = (
+            data_gateway.get_column_samples if data_gateway is not None
+            else AsyncMock(return_value={})
         )
         async for event in process_message(
             session, user_message, interactive_shipping=interactive
