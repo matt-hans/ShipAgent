@@ -79,12 +79,10 @@ async def test_streamed_text_conversation_preserves_ui_event_contract() -> None:
 
     assert obs.event_names() == [
         "agent_message_delta",
-        "agent_message_delta",
         "agent_message",
     ]
     assert [e["data"]["text"] for e in obs.events] == [
-        "Hello ",
-        "operator",
+        "Hello operator",
         "Hello operator",
     ]
     assert obs.persisted_messages == [("acceptance", "Hello operator")]

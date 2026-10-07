@@ -429,7 +429,7 @@ async def ensure_agent(
 
     # Load prior conversation for resumed sessions
     prior_conversation = _without_current_user_turn(
-        provider_conversation_history(_load_prior_conversation(session.session_id)),
+        provider_conversation_history(_load_prior_conversation(session.session_id)) or None,
         current_user_message,
     )
 
