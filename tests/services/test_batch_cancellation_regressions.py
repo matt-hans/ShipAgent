@@ -129,3 +129,32 @@ async def test_cancel_at_final_progress_preserves_accepted_rows(
     assert len(ups.create_calls) == 4
     assert _jobs(session_factory)[0].status == "cancelled"
     assert [r.status for r in _rows(session_factory, job_id)] == ["completed"] * 4
+
+
+async def test_pause_during_last_accepted_call_finishes_truthfully(
+    source, ups, api, session_factory
+):
+    from tests.services.test_batch_confirmation_acceptance import _state_filter
+
+    obs, _ = await _preview_in_conversation(
+        "scripted",
+        source,
+        ups,
+        args={
+            "command": "Ship TX orders",
+            "filter_spec": await _state_filter(source, "TX"),
+        },
+    )
+    job_id = _preview_ready(obs)["job_id"]
+    release = ups.hold_creates()
+    await _confirm(api, job_id)
+    await asyncio.wait_for(ups.in_create.wait(), 5)
+    assert (
+        await api.patch(f"/api/v1/jobs/{job_id}/status", json={"status": "paused"})
+    ).status_code == 200
+    release.set()
+    await _drain_batches()
+    assert len(ups.create_calls) == 1
+    assert _jobs(session_factory)[0].status == "completed"
+    assert [row.status for row in _rows(session_factory, job_id)] == ["completed"]
+

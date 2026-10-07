@@ -363,12 +363,17 @@ async def execute_batch(
         else:
             final_status = "failed"
 
-        # Flush counters separately from the conditional terminal transition.
-        # Cancellation can land while the last accepted carrier call completes.
+        # A pause received during the last accepted call must not conceal a
+        # fully terminal result. Pending/in-flight rows still exclude this case.
+        terminal_sources = ["running"]
+        if progress.processed_rows == progress.total_rows:
+            terminal_sources.append("paused")
+        # Cancellation can land while the last accepted carrier call completes;
+        # keep it excluded from the persisted-state CAS in every case.
         db_session.flush()
         db_session.execute(
             update(Job)
-            .where(Job.id == job_id, Job.status == "running")
+            .where(Job.id == job_id, Job.status.in_(terminal_sources))
             .values(status=final_status, completed_at=datetime.now(UTC).isoformat())
         )
         db_session.commit()
