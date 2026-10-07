@@ -1048,10 +1048,10 @@ class TestUPSMCPReconnectBehavior:
         mock_mcp_client.connect.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_create_shipment_retries_once_for_no_healthy_upstream(
+    async def test_create_shipment_does_not_retry_no_healthy_upstream(
         self, ups_client, mock_mcp_client
     ):
-        """Mutating call retries once only for strict upstream 503 signatures."""
+        """A proxy outage can follow an accepted shipment; do not replay it."""
         mock_mcp_client._session = object()
         mock_mcp_client.call_tool = AsyncMock(
             side_effect=[
@@ -1070,10 +1070,10 @@ class TestUPSMCPReconnectBehavior:
             ]
         )
 
-        result = await ups_client._call("create_shipment", {"request_body": {"x": 1}})
+        with pytest.raises(MCPToolError):
+            await ups_client._call("create_shipment", {"request_body": {"x": 1}})
 
-        assert result == {"ok": True}
-        assert mock_mcp_client.call_tool.call_count == 2
+        assert mock_mcp_client.call_tool.call_count == 1
         mock_mcp_client.call_tool.assert_any_await(
             "create_shipment",
             {"request_body": {"x": 1}},
@@ -1796,6 +1796,8 @@ async def test_rate_pickup_unknown_charge_code_uses_code_as_label():
 @pytest.mark.parametrize(
     "tool_name",
     [
+        "create_shipment",
+        "void_shipment",
         "schedule_pickup",
         "cancel_pickup",
         "upload_paperless_document",

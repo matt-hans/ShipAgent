@@ -22,3 +22,21 @@ describe('Paperless action preview', () => {
     expect(api.confirmWorkflowAction).toHaveBeenCalledExactlyOnceWith('owner', 'document-action', 'confirm');
   });
 });
+
+describe('Paperless unknown outcomes', () => {
+  it.each(['uploaded', 'pushed', 'deleted'])('renders an interrupted %s without claiming success or offering retry', (action) => {
+    TestBed.configureTestingModule({ imports: [PaperlessCardComponent] });
+    const fixture = TestBed.createComponent(PaperlessCardComponent);
+    fixture.componentRef.setInput('data', { action, success: false, outcome: 'unconfirmed', message: 'Check UPS Forms History before uploading again.' });
+    fixture.detectChanges();
+    const text = fixture.nativeElement.textContent;
+    expect(text).toContain('Unconfirmed');
+    expect(text).toContain('Check UPS Forms History');
+    expect(text).not.toContain('Done');
+    expect(text).not.toContain('Document Uploaded');
+    expect(text).not.toContain('Document Attached');
+    expect(text).not.toContain('Document Deleted');
+    expect(fixture.nativeElement.querySelectorAll('button').length).toBe(0);
+    expect(fixture.nativeElement.querySelector('sa-icon-check')).toBeNull();
+  });
+});

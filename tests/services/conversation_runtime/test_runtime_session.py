@@ -618,13 +618,6 @@ async def test_interrupt_drops_late_events_from_old_generation() -> None:
         script=[
             [
                 ProviderStreamEvent(
-                    type=ProviderStreamEventType.TEXT_DELTA,
-                    text="stale",
-                ),
-                ProviderStreamEvent(type=ProviderStreamEventType.STREAM_COMPLETE),
-            ],
-            [
-                ProviderStreamEvent(
                     type=ProviderStreamEventType.TEXT_BLOCK_COMPLETE,
                     text="fresh",
                 ),

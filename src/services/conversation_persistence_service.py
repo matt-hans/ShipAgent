@@ -104,6 +104,15 @@ class ConversationPersistenceService:
         self._db.commit()
         return session
 
+    def update_session_mode(self, session_id: str, mode: str) -> None:
+        """Persist the effective mode so recreation cannot reverse a transition."""
+        if mode not in {"batch", "interactive"}:
+            raise ValueError("Unsupported conversation mode")
+        session = self._db.get(ConversationSession, session_id)
+        if session is not None:
+            session.mode = mode
+            self._db.flush()
+
     def save_message(
         self,
         session_id: str,
@@ -281,6 +290,25 @@ class ConversationPersistenceService:
                 }
             )
         return results
+
+    def start_conversation_turn(self, session_id: str, turn_id: str) -> None:
+        """Mark one queued ingress started without changing the persisted timeline."""
+        for message in (
+            self._db.query(ConversationMessage)
+            .filter_by(session_id=session_id, role="user")
+            .all()
+        ):
+            metadata = _safe_json_loads(
+                message.metadata_json, "metadata_json", message.id
+            )
+            if (
+                isinstance(metadata, dict)
+                and metadata.get("conversation_turn_id") == turn_id
+            ):
+                metadata["conversation_turn_state"] = "started"
+                message.metadata_json = json.dumps(metadata)
+                self._db.flush()
+                return
 
     def get_session_with_messages(
         self,
