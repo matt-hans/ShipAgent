@@ -16,7 +16,6 @@ import hashlib
 import json
 import logging
 import os
-import traceback
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
@@ -39,6 +38,11 @@ from src.services.international_rules import (
 )
 from src.services.label_storage import LabelStorage, build_label_storage
 from src.services.mcp_client import MCPConnectionError
+from src.services.quote_metadata import (
+    LANE_UNAVAILABLE_WARNING,
+    RATE_TIMEOUT_WARNING,
+    RATE_UNAVAILABLE_WARNING,
+)
 from src.services.ups_constants import DEFAULT_ORIGIN_COUNTRY, UPS_CARRIER_NAME
 from src.services.ups_payload_builder import (
     build_shipment_request,
@@ -232,9 +236,7 @@ class BatchEngine:
             async with semaphore:
                 order_data: dict[str, Any] = {}
                 rate_error: str | None = None
-                safe_rate_error = (
-                    "Rate unavailable. Re-preview before confirming this batch."
-                )
+                safe_rate_error = RATE_UNAVAILABLE_WARNING
                 cost_cents = 0
                 try:
                     order_data = self._parse_order_data(row)
@@ -255,7 +257,7 @@ class BatchEngine:
                     )
 
                     if requirements.not_shippable_reason:
-                        safe_rate_error = "This international shipping lane is not enabled. Review shipping settings."
+                        safe_rate_error = LANE_UNAVAILABLE_WARNING
                         raise ValueError(requirements.not_shippable_reason)
 
                     # Hydrate commodities from cache if needed
@@ -306,9 +308,7 @@ class BatchEngine:
                     amount = rate_result.get("totalCharges", {}).get("monetaryValue")
                     cost_cents = _dollars_to_cents(amount)
                 except TimeoutError:
-                    safe_rate_error = (
-                        "Rate timeout. Re-preview before confirming this batch."
-                    )
+                    safe_rate_error = RATE_TIMEOUT_WARNING
                     rate_error = (
                         f"[E-3006] Preview rate timeout after {rate_timeout_s:.1f}s "
                         "while calling UPS rate service."
@@ -320,21 +320,20 @@ class BatchEngine:
                     )
                 except UPSServiceError as e:
                     logger.warning(
-                        "Rate quote failed for row %s: %s", row.row_number, e
+                        "Rate quote failed for row %s exception_type=%s",
+                        row.row_number,
+                        type(e).__name__,
                     )
                     rate_error = str(e)
                 except Exception as e:
                     # Keep preview resilient: malformed row data or payload
                     # build issues should surface as row warnings, not hard fail.
-                    err_msg = str(e) or f"{type(e).__name__} (no message)"
                     logger.warning(
-                        "Preview row %s degraded to warning (non-fatal): %s [%s]\n%s",
+                        "Preview row %s degraded to warning exception_type=%s",
                         row.row_number,
-                        err_msg,
                         type(e).__name__,
-                        traceback.format_exc(),
                     )
-                    rate_error = err_msg
+                    rate_error = safe_rate_error
                 row_elapsed = (datetime.now(UTC) - row_started).total_seconds()
 
                 row_info: dict[str, Any] = {

@@ -387,13 +387,13 @@ def _gemini_client(http_client: httpx.AsyncClient) -> GeminiProviderClient:
     from google import genai
     from google.genai import types
 
-    # The SDK builds its own httpx client; hand it our transport.
-    transport = http_client._transport  # noqa: SLF001 - test wiring only
     client = genai.Client(
         api_key=SYNTHETIC_KEY,
-        http_options=types.HttpOptions(async_client_args={"transport": transport}),
+        http_options=types.HttpOptions(httpx_async_client=http_client),
     )
-    return GeminiProviderClient(model="gemini:gemini-2.5-flash", client=client)
+    return GeminiProviderClient(
+        model="gemini:gemini-2.5-flash", client=client, http_client=http_client
+    )
 
 
 def _gemini_body(turn: Turn) -> bytes:

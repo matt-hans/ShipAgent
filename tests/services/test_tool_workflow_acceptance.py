@@ -151,7 +151,8 @@ async def test_rate_lookup_runs_through_real_handler_and_gateway_to_final_answer
     assert _visible_events(obs) == ["tool_call", "agent_message"]
     tool_call = obs.events[0]["data"]
     assert tool_call["tool_name"] == "rate_shipment"
-    assert tool_call["tool_input"]["request_body"] == _RATE_REQUEST
+    assert "request_body" not in tool_call["tool_input"]
+    assert tool_call["tool_input"]["requestoption"] == "Rate"
     if kind in ID_PROVIDERS:
         assert tool_call["tool_use_id"] == "call_rate"
     assert obs.persisted_messages == [("acceptance", "Ground is $12.34.")]

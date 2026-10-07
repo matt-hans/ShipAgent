@@ -13,6 +13,7 @@ from src.api.schemas import AuditLogResponse
 from src.db.connection import get_db
 from src.db.models import EventType, LogLevel
 from src.services import AuditService, JobService
+from src.services.audit_service import redact_sensitive
 
 router = APIRouter(prefix="/jobs/{job_id}/logs", tags=["logs"])
 
@@ -54,9 +55,9 @@ def _parse_log_details(log_entry: object) -> dict | None:
     if not log_entry.details:
         return None
     try:
-        return json.loads(log_entry.details)
+        return redact_sensitive(json.loads(log_entry.details))
     except json.JSONDecodeError:
-        return {"raw": log_entry.details}
+        return redact_sensitive({"raw": log_entry.details})
 
 
 @router.get("", response_model=list[AuditLogResponse])
@@ -108,7 +109,7 @@ def get_job_logs(
                 timestamp=log_entry.timestamp,
                 level=log_entry.level,
                 event_type=log_entry.event_type,
-                message=log_entry.message,
+                message=redact_sensitive(log_entry.message),
                 details=_parse_log_details(log_entry),
                 row_number=log_entry.row_number,
             )
@@ -150,7 +151,7 @@ def get_job_errors(
                 timestamp=log_entry.timestamp,
                 level=log_entry.level,
                 event_type=log_entry.event_type,
-                message=log_entry.message,
+                message=redact_sensitive(log_entry.message),
                 details=_parse_log_details(log_entry),
                 row_number=log_entry.row_number,
             )

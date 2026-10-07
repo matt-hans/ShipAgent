@@ -212,6 +212,43 @@ async def preview_interactive_shipment_tool(
             return default
         return str(val).strip()
 
+    # Resolve the local address here, never by sending it through the model.
+    # Copy arguments so provider call/history objects retain provider origin.
+    handle = _str(args.get("ship_to_handle")).lstrip("@")
+    if handle:
+        from src.services.contact_service import ContactService, contact_to_order_data
+        from src.services.conversation_privacy import SAFE_TOOL_ERROR_MESSAGES
+
+        def contact_error(code: str) -> dict[str, Any]:
+            return {**_err(SAFE_TOOL_ERROR_MESSAGES[code]), "error_code": code}
+
+        if any(
+            key.startswith("ship_to_") and key != "ship_to_handle" and value
+            for key, value in args.items()
+        ):
+            return contact_error("CONTACT_ADDRESS_CONFLICT")
+        try:
+            with get_db_context() as db:
+                contacts = ContactService(db)
+                contact = contacts.get_by_handle(handle)
+                if contact is None:
+                    code = (
+                        "CONTACT_EXACT_HANDLE_REQUIRED"
+                        if contacts.search_by_prefix(handle)
+                        else "CONTACT_NOT_FOUND"
+                    )
+                    return contact_error(code)
+                if not contact.use_as_ship_to:
+                    return contact_error("CONTACT_ROLE_INVALID")
+                local_address = contact_to_order_data(contact)
+                local_address["ship_to_zip"] = local_address.pop("ship_to_postal_code")
+                args = {**args, **local_address}
+        except Exception as exc:
+            logger.warning(
+                "Contact preview lookup failed exception_type=%s", type(exc).__name__
+            )
+            return contact_error("CONTACT_LOOKUP_FAILED")
+
     # Required fields
     ship_to_name = _str(args.get("ship_to_name"))
     ship_to_address1 = _str(args.get("ship_to_address1"))
@@ -418,9 +455,9 @@ async def preview_interactive_shipment_tool(
         )
         available_services = _extract_available_services(shop_result)
     except UPSServiceError as e:
-        logger.warning("interactive service discovery failed: %s", e)
+        logger.warning("interactive service discovery failed: %s", type(e).__name__)
     except Exception as e:
-        logger.warning("interactive service discovery error: %s", e)
+        logger.warning("interactive service discovery error: %s", type(e).__name__)
 
     if available_services:
         available_codes = {svc["code"] for svc in available_services}
@@ -459,9 +496,11 @@ async def preview_interactive_shipment_tool(
                     logger.warning(
                         "interactive preview cleanup failed for job %s: %s",
                         job.id,
-                        cleanup_err,
+                        type(cleanup_err).__name__,
                     )
-                logger.error("interactive preview create_rows failed: %s", e)
+                logger.error(
+                    "interactive preview create_rows failed: %s", type(e).__name__
+                )
                 return _err(f"Failed to create shipment row: {e}")
 
             # Rate via BatchEngine preview
@@ -483,7 +522,11 @@ async def preview_interactive_shipment_tool(
                 )
             except Exception as e:
                 job_service.update_status(job.id, JobStatus.failed)
-                logger.error("interactive preview rate failed for job %s: %s", job.id, e)
+                logger.error(
+                    "interactive preview rate failed for job %s: %s",
+                    job.id,
+                    type(e).__name__,
+                )
                 return _err(f"Rating failed for job {job.id}: {e}")
 
             from src.services.batch_preview import save_priced_preview
@@ -493,7 +536,7 @@ async def preview_interactive_shipment_tool(
             job_id = job.id
 
     except Exception as e:
-        logger.error("preview_interactive_shipment failed: %s", e)
+        logger.error("preview_interactive_shipment failed: %s", type(e).__name__)
         return _err(f"Failed to create interactive shipment: {e}")
 
     # Enrich preview rows

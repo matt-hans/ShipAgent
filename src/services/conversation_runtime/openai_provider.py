@@ -28,6 +28,8 @@ except ModuleNotFoundError as exc:
 else:
     _OPENAI_IMPORT_ERROR = None
 
+from src.services.conversation_runtime.stream_cleanup import close_owned_stream
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_OPENAI_MODEL = "gpt-5-mini"
@@ -121,6 +123,7 @@ class OpenAIProviderClient:
         emitted_calls: dict[str, tuple[str, str]] = {}
         completed_response: Any | None = None
 
+        stream = None
         try:
             stream = await self._client.responses.create(
                 model=self._model,
@@ -182,6 +185,9 @@ class OpenAIProviderClient:
                 type(exc).__name__,
             )
             raise
+
+        finally:
+            await close_owned_stream(stream)
 
         if completed_response is not None:
             try:

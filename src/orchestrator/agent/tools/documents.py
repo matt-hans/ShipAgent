@@ -133,7 +133,10 @@ async def upload_paperless_document_tool(
     except UPSServiceError as e:
         return _err(f"[{e.code}] {e.message}")
     except Exception as e:
-        logger.exception("Unexpected error in upload_paperless_document_tool")
+        logger.warning(
+            "Unexpected error in upload_paperless_document_tool exception_type=%s",
+            type(e).__name__,
+        )
         return _err(f"Unexpected error: {e}")
 
 
@@ -160,7 +163,10 @@ async def push_document_to_shipment_tool(
     except UPSServiceError as e:
         return _err(f"[{e.code}] {e.message}")
     except Exception as e:
-        logger.exception("Unexpected error in push_document_to_shipment_tool")
+        logger.warning(
+            "Unexpected error in push_document_to_shipment_tool exception_type=%s",
+            type(e).__name__,
+        )
         return _err(f"Unexpected error: {e}")
 
 
@@ -186,5 +192,8 @@ async def delete_paperless_document_tool(
     except UPSServiceError as e:
         return _err(f"[{e.code}] {e.message}")
     except Exception as e:
-        logger.exception("Unexpected error in delete_paperless_document_tool")
+        logger.warning(
+            "Unexpected error in delete_paperless_document_tool exception_type=%s",
+            type(e).__name__,
+        )
         return _err(f"Unexpected error: {e}")

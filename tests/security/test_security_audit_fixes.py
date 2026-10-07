@@ -131,7 +131,7 @@ class TestContactHandleSanitization:
         # No raw newlines from the handle should create new lines
         # Count lines in the Available contacts section
         contact_lines = [line for line in result.split("\n") if line.startswith("- @")]
-        assert len(contact_lines) == 1  # Only one contact line
+        assert len(contact_lines) == 0  # Local contacts are not model-visible
 
     def test_handle_control_chars_stripped(self):
         """Control characters in contact handles are removed."""
@@ -316,20 +316,17 @@ class TestOraclePaginationValidation:
 
 
 class TestSampleInjectionSurface:
-    """Verify sample value budget limits injection surface."""
+    """Verify local samples are excluded instead of merely truncated."""
 
-    def test_max_schema_samples_reduced(self):
-        """_MAX_SCHEMA_SAMPLES is at most 3 to limit injection surface."""
-        from src.orchestrator.agent.system_prompt import _MAX_SCHEMA_SAMPLES
-
-        assert _MAX_SCHEMA_SAMPLES <= 3
-
-    def test_total_sample_chars_budget_exists(self):
-        """_MAX_TOTAL_SAMPLE_CHARS cap exists to prevent cross-column injection."""
-        from src.orchestrator.agent.system_prompt import _MAX_TOTAL_SAMPLE_CHARS
-
-        assert _MAX_TOTAL_SAMPLE_CHARS > 0
-        assert _MAX_TOTAL_SAMPLE_CHARS <= 1000
+    @pytest.mark.parametrize("value", ["CANARY raw customer", "CANARY" * 1000])
+    def test_source_samples_are_never_included(self, value):
+        """Even short samples are local-only; truncation is not permission."""
+        from src.orchestrator.agent.system_prompt import _build_schema_section
+        from src.services.data_source_mcp_client import DataSourceInfo, SchemaColumnInfo
+        source = DataSourceInfo(source_type="csv", row_count=1, columns=[SchemaColumnInfo("recipient_name")])
+        result = _build_schema_section(source, column_samples={"recipient_name": [value]})
+        assert "CANARY" not in result
+        assert "recipient_name" in result
 
     def test_sample_budget_enforced_in_schema_section(self):
         """Schema section stops embedding samples after budget is exhausted."""
@@ -357,8 +354,8 @@ class TestSampleInjectionSurface:
         result = _build_schema_section(source_info, column_samples=column_samples)
         # Count how many lines have "samples:" in them
         sample_lines = [line for line in result.split("\n") if "samples:" in line]
-        # Should be fewer than 20 (budget should cut it off)
-        assert len(sample_lines) < 20
+        # No sample budget authorizes importing customer values.
+        assert len(sample_lines) == 0
 
 
 # ============================================================================

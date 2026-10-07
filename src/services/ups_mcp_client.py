@@ -915,9 +915,9 @@ class UPSMCPClient:
                 e.error_text
             ):
                 logger.warning(
-                    "UPS upstream transient failure during '%s'; retrying once: %s",
+                    "UPS upstream transient failure during '%s'; retrying once (%s)",
                     tool_name,
-                    str(e)[:200],
+                    type(e).__name__,
                 )
                 await asyncio.sleep(0.5)
                 return await self._mcp.call_tool(tool_name, arguments, **retry_kwargs)
@@ -982,9 +982,8 @@ class UPSMCPClient:
                 return
 
             logger.warning(
-                "UPS MCP transport failure during '%s', reconnecting once: %s [%s]",
+                "UPS MCP transport failure during '%s', reconnecting once: %s",
                 tool_name,
-                error or type(error).__name__,
                 type(error).__name__,
             )
             self._reconnect_count += 1
@@ -992,8 +991,7 @@ class UPSMCPClient:
                 await self._disconnect_unlocked()
             except Exception as disconnect_error:
                 logger.debug(
-                    "UPS MCP disconnect during transport recovery failed (continuing): %s [%s]",
-                    disconnect_error or type(disconnect_error).__name__,
+                    "UPS MCP disconnect during transport recovery failed (continuing): %s",
                     type(disconnect_error).__name__,
                 )
             await self._connect_unlocked()
@@ -1951,15 +1949,15 @@ class UPSMCPClient:
         # Log rare server-side conflict at warning level
         if ups_code == "ELICITATION_INVALID_RESPONSE":
             logger.warning(
-                "Elicitation integration conflict for create_shipment: %s",
-                ups_message[:200],
+                "Elicitation integration conflict for create_shipment (%s)",
+                ups_code,
             )
 
         # Log structural fields required — indicates complex data needed
         if ups_code == "STRUCTURAL_FIELDS_REQUIRED":
             logger.warning(
                 "UPS MCP requires structural data (InternationalForms/Product): %s",
-                ups_message[:200],
+                ups_code,
             )
 
         sa_code, sa_message, remediation = translate_ups_error(

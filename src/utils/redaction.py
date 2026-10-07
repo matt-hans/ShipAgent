@@ -6,7 +6,10 @@ matching for sensitive key detection. Handles nested dicts, lists of dicts,
 and known container keys.
 """
 
+import json
 import re
+from collections.abc import Callable
+from typing import Any
 
 # Substring patterns matched case-insensitively against dict keys
 _DEFAULT_SENSITIVE_PATTERNS = frozenset({
@@ -73,9 +76,12 @@ def redact_for_logging(
 # Handles: key=value, Authorization: Bearer <token>, "key": "value",
 # key = "quoted value", and multi-token lines.
 _SENSITIVE_KEYWORDS = (
-    r"secret|token|password|api_key|client_id|client_secret|"
-    r"access_token|refresh_token|authorization|credential"
+    r"secret|token|password|api[_-]?key|client[_-]?id|client[_-]?secret|"
+    r"access[_-]?token|refresh[_-]?token|authorization|credentials?|"
+    r"(?:ups[_-]?)?account[_-]?number|shipper[_-]?number|"
+    r"label[_-]?(?:bytes|data|image)|graphic[_-]?image|document[_-]?bytes"
 )
+
 _SENSITIVE_VALUE_PATTERNS = re.compile(
     r"(?i)"
     r"(?:"
@@ -112,3 +118,137 @@ def sanitize_error_message(msg: str | None, max_length: int = 2000) -> str | Non
     if len(sanitized) > max_length:
         sanitized = sanitized[:max_length - 3] + "..."
     return sanitized
+
+
+def is_operational_secret_key(key: str) -> bool:
+    """Recognize never-public operational fields independent of key spelling.
+
+    Application confirmation/resolution handles are not carrier credentials.
+    Local label URLs/paths are owner-authorized references, not label bytes.
+    """
+    normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+    if normalized in {"confirmationtoken", "resolutiontoken"}:
+        return False
+    return (
+        any(
+            fragment in normalized
+            for fragment in (
+                "credential",
+                "password",
+                "secret",
+                "apikey",
+                "authorization",
+                "token",
+                "accesstoken",
+                "refreshtoken",
+                "accountnumber",
+                "shippernumber",
+                "clientid",
+                "keyring",
+                "labeldata",
+                "labelbytes",
+                "labelimage",
+                "graphicimage",
+                "documentbytes",
+                "documentdata",
+                "filecontent",
+                "rawresponse",
+                "rawrequest",
+                "requestbody",
+                "responsebody",
+                "requestpayload",
+                "responsepayload",
+                "requestdata",
+                "responsedata",
+                "carrierpayload",
+                "resolvedpayload",
+                "provideroutputitem",
+                "providercontinuation",
+                "encryptedcontent",
+                "thoughtsignature",
+                "rawusageprovider",
+            )
+        )
+        or normalized
+        in {"token", "headers", "label", "labels", "request", "response", "raw"}
+        or (
+            normalized.endswith(("request", "response"))
+            and any(
+                part in normalized for part in ("ups", "raw", "shipment", "carrier")
+            )
+        )
+    )
+
+
+def project_embedded_json(value: str, project: Callable[[Any], Any]) -> str:
+    """Project complete embedded JSON, including prefixed diagnostics.
+
+    Incomplete object/array payloads fail closed. Ordinary bracketed prose
+    such as [E-3001] is preserved. No failed parse is logged.
+    """
+    decoder = json.JSONDecoder()
+    result: list[str] = []
+    position = 0
+    for match in re.finditer(r"[\[{]", value):
+        start = match.start()
+        if start < position:
+            continue
+        prefix = value[position:start]
+        label = re.search(r"([A-Za-z0-9_-]+)\s*[:=]\s*$", prefix)
+        operational_container = bool(label and is_operational_secret_key(label[1]))
+        suffix = value[start + 1 :].lstrip()
+        if not operational_container:
+            if value[start] == "{" and suffix and suffix[0] not in '"}':
+                continue
+            if value[start] == "[" and suffix and suffix[0] not in '{["]':
+                if not re.match(
+                    r"(?:true|false|null|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)(?=[\s,\]]|$)",
+                    suffix,
+                ):
+                    continue
+        result.append(value[position:start])
+        try:
+            parsed, consumed = decoder.raw_decode(value[start:])
+        except (ValueError, RecursionError):
+            result.append(_REDACTED)
+            position = len(value)
+            break
+        result.append(
+            _REDACTED if operational_container else json.dumps(project(parsed))
+        )
+        position = start + consumed
+    result.append(value[position:])
+    return "".join(result)
+
+
+def project_public_artifact(value: Any, *, _depth: int = 0) -> Any:
+    """Copy local UI data without operational secrets; retain recipient detail.
+
+    This is NOT the model-result projection. Provider results remain closed
+    aggregates or origin-checked echoes. Job/label storage is not altered.
+    """
+    if _depth > 30 or isinstance(value, bytes | bytearray):
+        return None
+    if isinstance(value, dict):
+        projected = {}
+        for key, item in value.items():
+            if is_operational_secret_key(key):
+                # Existing owner preview shows an already masked account hint.
+                normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+                if (
+                    normalized == "accountnumber"
+                    and isinstance(item, str)
+                    and re.fullmatch(r"[A-Za-z0-9]{0,2}\*+[A-Za-z0-9]{0,2}", item)
+                ):
+                    projected[key] = item
+                continue
+            projected[key] = project_public_artifact(item, _depth=_depth + 1)
+        return projected
+    if isinstance(value, list):
+        return [project_public_artifact(item, _depth=_depth + 1) for item in value]
+    if isinstance(value, str):
+        value = project_embedded_json(
+            value, lambda parsed: project_public_artifact(parsed, _depth=_depth + 1)
+        )
+        return sanitize_error_message(value, max_length=max(len(value), 1))
+    return value
