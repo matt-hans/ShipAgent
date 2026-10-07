@@ -16,10 +16,14 @@ import asyncio
 import logging
 import os
 import threading
+from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 logger = logging.getLogger(__name__)
+current_conversation_turn: ContextVar[str | None] = ContextVar(
+    "current_conversation_turn", default=None
+)
 
 
 class AgentSession:
@@ -53,6 +57,7 @@ class AgentSession:
         self.last_active = datetime.now(UTC)
         self.agent: Any = None  # ConversationAgent, set by conversations route
         self.agent_source_hash: str | None = None
+        self.agent_model_signature: str | None = None
         self.interactive_shipping: bool = False
         self.terminating: bool = False
         self.confirmed_resolutions: dict[
@@ -70,7 +75,14 @@ class AgentSession:
         self._turn_generation = 0
         self._invalid_turn_generations: set[int] = set()
 
-    def add_message(self, role: str, content: str) -> None:
+    def add_message(
+        self,
+        role: str,
+        content: str,
+        *,
+        turn_id: str | None = None,
+        queued: bool = False,
+    ) -> None:
         """Append a message to the conversation history.
 
         Thread-safe: acquires _history_lock to prevent interleaved
@@ -82,13 +94,24 @@ class AgentSession:
         """
         with self._history_lock:
             self.last_active = datetime.now(UTC)
+            metadata = {}
+            turn_id = turn_id or current_conversation_turn.get()
+            if turn_id:
+                metadata["conversation_turn_id"] = turn_id
+            if queued:
+                metadata["conversation_turn_state"] = "queued"
             self.history.append(
                 {
                     "role": role,
                     "content": content,
+                    **({"metadata": metadata} if metadata else {}),
                     "timestamp": datetime.now(UTC).isoformat(),
                 }
             )
+
+    @property
+    def turn_generation(self) -> int:
+        return self._turn_generation
 
     def begin_turn_generation(self) -> int:
         self._turn_generation += 1
@@ -160,6 +183,8 @@ class AgentSessionManager:
         """
         session = self._sessions.pop(session_id, None)
         if session is not None:
+            session.terminating = True
+            session.invalidate_active_turn_generation()
             from src.services.attachment_store import clear
 
             session.workflow_actions.revoke_all()
@@ -176,7 +201,15 @@ class AgentSessionManager:
             session_id: Session whose agent should be stopped.
         """
         session = self._sessions.get(session_id)
-        if session is None or session.agent is None:
+        if session is None:
+            return
+        session.invalidate_active_turn_generation()
+        session.confirmed_resolutions.clear()
+        session.workflow_actions.revoke_all()
+        from src.services.attachment_store import clear
+
+        clear(session_id)
+        if session.agent is None:
             return
 
         try:
@@ -186,6 +219,7 @@ class AgentSessionManager:
         finally:
             session.agent = None
             session.agent_source_hash = None
+            session.agent_model_signature = None
 
     async def cancel_session_prewarm_task(self, session_id: str) -> None:
         """Cancel and await a session's prewarm task, if active."""

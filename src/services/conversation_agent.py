@@ -112,12 +112,21 @@ def create_conversation_agent(
     max_turns: int = 50,
     permission_mode: str = "acceptEdits",
     model: str | None = None,
+    runtime: str | None = None,
     interactive_shipping: bool = False,
     session_id: str | None = None,
     prior_conversation: list[dict[str, Any]] | None = None,
 ) -> ConversationAgent:
     """Create the configured conversation runtime behind a neutral interface."""
-    runtime = os.environ.get("SHIPAGENT_AGENT_RUNTIME", "auto").strip().lower()
+    runtime = (
+        (
+            runtime
+            if runtime is not None
+            else os.environ.get("SHIPAGENT_AGENT_RUNTIME", "auto")
+        )
+        .strip()
+        .lower()
+    )
     model_provider = _infer_model_provider(model)
     if runtime == "fake":
         from src.services.conversation_runtime.fake_provider import FakeProviderClient

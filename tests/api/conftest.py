@@ -44,6 +44,7 @@ def mock_agent_processing():
         session_id: str,
         content: str,
         run_id: str | None = None,
+        turn_id: str | None = None,
     ) -> None:
         from src.api.routes.conversations import _get_event_queue
 

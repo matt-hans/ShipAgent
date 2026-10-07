@@ -7,6 +7,8 @@
 export interface PickupResult {
   action: 'scheduled' | 'cancelled' | 'rated' | 'status';
   success: boolean;
+  outcome?: 'unconfirmed';
+  message?: string;
   prn?: string;
   // Enriched completion fields (present when action === 'scheduled')
   address_line?: string;
@@ -111,6 +113,8 @@ export interface PaperlessResult {
   confirmation_token?: string;
   session_id?: string;
   success: boolean;
+  outcome?: 'unconfirmed';
+  message?: string;
   documentId?: string;
   documentIds?: string[];
   formsGroupId?: string;

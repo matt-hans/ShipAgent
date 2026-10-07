@@ -56,9 +56,9 @@ function formatFileSize(bytes: number): string {
           <sa-icon-file class="w-4 h-4 text-[var(--color-domain-paperless)]" />
           <h4 class="text-sm font-medium text-foreground">{{ meta.label }}</h4>
         </div>
-        <span class="badge badge-success">
-          <sa-icon-check class="w-3 h-3 mr-1" />
-          {{ isPreview ? 'Awaiting confirmation' : 'Done' }}
+        <span class="badge" [class.badge-success]="!isUnconfirmed" [class.badge-neutral]="isUnconfirmed">
+          @if (!isUnconfirmed) { <sa-icon-check class="w-3 h-3 mr-1" /> }
+          {{ isUnconfirmed ? 'Check status' : isPreview ? 'Awaiting confirmation' : 'Done' }}
         </span>
       </div>
 
@@ -132,7 +132,14 @@ export class PaperlessCardComponent {
     return this.data?.action === 'push_preview' || this.data?.action === 'delete_preview';
   }
 
+  get isUnconfirmed(): boolean {
+    return !this.isPreview && (this.data?.success === false || this.data?.outcome === 'unconfirmed');
+  }
+
   get meta(): ActionMeta {
+    if (this.isUnconfirmed) {
+      return { label: 'Document Outcome Unconfirmed', description: this.data.message || 'Check UPS Forms History before requesting another action. This operation will not be retried automatically.' };
+    }
     return ACTION_META[this.data?.action] ?? ACTION_META.uploaded;
   }
 
