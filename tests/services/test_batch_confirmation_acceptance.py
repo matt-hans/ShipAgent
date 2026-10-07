@@ -444,10 +444,10 @@ async def test_confirmed_batch_executes_once_with_accurate_progress_and_results(
     job_id = ready["job_id"]
     assert ups.create_calls == []
 
-    # The REST preview contract agrees with the conversation artifact on job
-    # and row identity. (Its cost estimate is derived from persisted row costs,
-    # which agent previews do not write before execution, so it is not compared.)
+    # REST preserves the quoted estimate and deterministic row identity.
     rest = (await api.get(f"/api/v1/jobs/{job_id}/preview")).json()
+    assert rest["total_estimated_cost_cents"] == ready["total_estimated_cost_cents"]
+    assert rest["confirmation_ready"] is True
     assert rest["job_id"] == job_id
     assert rest["total_rows"] == ready["total_rows"]
     assert [r["row_number"] for r in rest["preview_rows"]] == [

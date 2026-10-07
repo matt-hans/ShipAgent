@@ -8,6 +8,7 @@ TOCTOU race protection (F-2, CWE-367) and hash collision (F-4, CWE-345).
 import hashlib
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -16,6 +17,22 @@ from src.db.models import Job, JobRow, JobStatus, RowStatus
 # SHA-256 of empty string — used for jobs with no rows that still need
 # a valid preview_hash to pass the H-1 + TOCTOU checks.
 _EMPTY_PREVIEW_HASH = hashlib.sha256(b"").hexdigest()
+
+
+@pytest.fixture(autouse=True)
+def _offline_background_execution(monkeypatch):
+    """These route unit tests stop at task scheduling; acceptance runs execution."""
+    monkeypatch.setattr("src.api.routes.preview._execute_batch_safe", AsyncMock())
+
+
+def _persist_quote(db, job):
+    from src.services.batch_preview import save_priced_preview
+    rows = db.query(JobRow).filter_by(job_id=job.id).order_by(JobRow.row_number).all()
+    save_priced_preview(db, job, rows, {
+        "confirmation_ready": True, "total_rows": len(rows), "additional_rows": 0,
+        "total_estimated_cost_cents": sum(row.cost_cents or 0 for row in rows),
+        "preview_rows": [{"row_number": row.row_number, "estimated_cost_cents": row.cost_cents or 0} for row in rows],
+    })
 
 
 class TestGetPreview:
@@ -323,8 +340,8 @@ class TestConfirmJob:
 class TestPreviewHash:
     """Tests for preview integrity hash (F-5 TOCTOU protection)."""
 
-    def test_preview_sets_hash(self, client: TestClient, test_db: Session):
-        """Preview endpoint stores preview_hash on the job."""
+    def test_preview_get_never_sets_hash(self, client: TestClient, test_db: Session):
+        """A read without a priced quote must not authorize a purchase."""
         job = Job(
             name="Hash Test Job",
             original_command="Test command",
@@ -350,8 +367,8 @@ class TestPreviewHash:
         assert response.status_code == 200
 
         test_db.refresh(job)
-        assert job.preview_hash is not None
-        assert len(job.preview_hash) == 64  # SHA-256 hex digest
+        assert job.preview_hash is None
+        assert response.json()["confirmation_ready"] is False
 
     def test_confirm_succeeds_when_hash_matches(
         self, client: TestClient, test_db: Session
@@ -378,7 +395,8 @@ class TestPreviewHash:
             test_db.add(row)
         test_db.commit()
 
-        # Preview to set hash
+        # Persist the deterministic quote before reading/confirming it.
+        _persist_quote(test_db, job)
         client.get(f"/api/v1/jobs/{job.id}/preview")
 
         # Confirm — should succeed since rows unchanged
@@ -410,7 +428,8 @@ class TestPreviewHash:
             test_db.add(row)
         test_db.commit()
 
-        # Preview to set hash
+        # Persist the deterministic quote before reading/confirming it.
+        _persist_quote(test_db, job)
         client.get(f"/api/v1/jobs/{job.id}/preview")
 
         # Tamper with row checksums after preview
@@ -512,6 +531,7 @@ class TestPreviewHashFormat:
             test_db.add(row)
         test_db.commit()
 
+        _persist_quote(test_db, job)
         response = client.get(f"/api/v1/jobs/{job.id}/preview")
         assert response.status_code == 200
 

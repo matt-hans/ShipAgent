@@ -104,6 +104,12 @@ def get_job_preview(job_id: str, db: Session = Depends(get_db)) -> BatchPreviewR
             detail="Job has no rows for preview. Command may not have been processed yet.",
         )
 
+    from src.services.batch_preview import get_priced_preview
+
+    priced = get_priced_preview(db, job, rows)
+    if priced is not None:
+        return BatchPreviewResponse.model_validate(priced)
+
     # Build preview rows from ALL job rows
     preview_rows: list[PreviewRowResponse] = []
     total_estimated_cost = 0
@@ -176,14 +182,6 @@ def get_job_preview(job_id: str, db: Session = Depends(get_db)) -> BatchPreviewR
             row, "destination_country", None
         ) and row.destination_country not in (DEFAULT_ORIGIN_COUNTRY, "PR"):
             international_count += 1
-
-    # Compute preview integrity hash from all row checksums (TOCTOU protection).
-    # Uses "|" delimiter with row_number prefix to prevent collision (CWE-345):
-    # e.g. ["ab","cd"] vs ["abc","d"] would collide with plain join.
-    checksum_concat = "|".join(f"{r.row_number}:{r.row_checksum}" for r in rows)
-    preview_hash = hashlib.sha256(checksum_concat.encode()).hexdigest()
-    job.preview_hash = preview_hash
-    db.commit()
 
     return BatchPreviewResponse(
         job_id=job_id,

@@ -43,7 +43,7 @@ import { FormsModule } from '@angular/forms';
           <button
             type="button"
             class="btn-primary flex-1 py-2 text-sm font-medium"
-            [disabled]="isConfirming"
+            [disabled]="isConfirming || confirmDisabled"
             (click)="confirm.emit()"
           >
             @if (isConfirming) {
@@ -107,6 +107,7 @@ import { FormsModule } from '@angular/forms';
 })
 export class PreviewActionsComponent {
   @Input() isConfirming = false;
+  @Input() confirmDisabled = false;
 
   @Output() confirm = new EventEmitter<void>();
   @Output() cancel = new EventEmitter<void>();
