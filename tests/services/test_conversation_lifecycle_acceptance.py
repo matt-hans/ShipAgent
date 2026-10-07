@@ -819,3 +819,17 @@ async def test_interrupted_conversation_audit_is_cancelled(
     except asyncio.CancelledError:
         pass
     assert complete.call_args.kwargs["status"] == AgentDecisionRunStatus.cancelled
+
+
+async def test_service_interruption_after_delta_suppresses_text_and_persistence(
+    lifecycle, monkeypatch
+):
+    db, svc = lifecycle
+    session = AgentSession("lifecycle")
+    select_provider(monkeypatch, db, "openai", [[Say("Unpublished completed text")]])
+    stream = process_message(session, "Speak")
+    assert (await anext(stream))["event"] == "agent_message_delta"
+    session.invalidate_active_turn_generation()
+    # The service must guard its own suspension even without a transport signal.
+    assert [event async for event in stream] == []
+    assert svc.get_session_with_messages("lifecycle")["messages"] == []

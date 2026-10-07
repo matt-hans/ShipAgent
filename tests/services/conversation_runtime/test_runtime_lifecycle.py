@@ -355,3 +355,63 @@ async def test_interrupt_retains_completed_authored_text_without_unfinished_tool
     assert all(
         part.tool_call is None for message in messages for part in message.content
     )
+
+
+async def test_interrupt_after_tool_call_publication_prevents_dispatch(monkeypatch):
+    from src.services.conversation_runtime.tool_catalog import (
+        SideEffectClass,
+        ToolMode,
+        WorkflowToolCatalog,
+        WorkflowToolDefinition,
+    )
+    from tests.services.conversation_acceptance import tool_call_turn
+
+    calls = []
+
+    async def handler(args):
+        calls.append(args)
+        return {"content": [{"type": "text", "text": "{}"}]}
+
+    def catalog(cls, **kwargs):
+        return WorkflowToolCatalog(
+            [
+                WorkflowToolDefinition(
+                    name="get_schema",
+                    description="schema",
+                    input_schema={"type": "object"},
+                    handler=handler,
+                    mode=ToolMode.BOTH,
+                    side_effect_class=SideEffectClass.READ_ONLY,
+                )
+            ]
+        )
+
+    monkeypatch.setattr(WorkflowToolCatalog, "for_mode", classmethod(catalog))
+    agent = runtime(
+        FakeProviderClient(script=[tool_call_turn("late", "get_schema", {})])
+    )
+    await agent.start()
+    stream = agent.process_message_stream("Inspect")
+    assert (await anext(stream))["event"] == "tool_call"
+    await agent.interrupt()
+    assert await collect(stream) == []
+    assert calls == []
+
+
+async def test_interrupt_after_text_delta_prevents_completed_text_publication():
+    provider = FakeProviderClient(
+        script=[
+            [
+                ProviderStreamEvent(
+                    type=ProviderStreamEventType.TEXT_DELTA, text="Complete text"
+                ),
+                *text_turn("Complete text"),
+            ]
+        ]
+    )
+    agent = runtime(provider)
+    await agent.start()
+    stream = agent.process_message_stream("Speak")
+    assert (await anext(stream))["event"] == "agent_message_delta"
+    await agent.interrupt()
+    assert await collect(stream) == []

@@ -226,6 +226,8 @@ class ConversationRuntimeSession:
                                     "event": "agent_message_delta",
                                     "data": {"text": text},
                                 }
+                            if self._is_generation_interrupted(generation):
+                                return
                             yield {"event": "agent_message", "data": {"text": text}}
                         elif (
                             event.type == ProviderStreamEventType.PROVIDER_OUTPUT_ITEM
@@ -370,15 +372,25 @@ class ConversationRuntimeSession:
 
                     dispatcher.emit_tool_call(call)
                     for frontend_event in drain_frontend_events():
+                        if self._is_generation_interrupted(generation):
+                            return
                         yield frontend_event
+                        if self._is_generation_interrupted(generation):
+                            return
 
+                    if self._is_generation_interrupted(generation):
+                        return
                     result = await dispatcher.execute(call)
                     if self._is_generation_interrupted(generation):
                         frontend_events.clear()
                         return
 
                     for frontend_event in drain_frontend_events():
+                        if self._is_generation_interrupted(generation):
+                            return
                         yield frontend_event
+                        if self._is_generation_interrupted(generation):
+                            return
 
                     tool_result_message = ProviderInputMessage(
                         role="tool",
