@@ -30,7 +30,7 @@ from src.db.models import (
 )
 from src.services.audit_service import redact_sensitive
 from src.services.decision_audit_context import get_decision_run_id
-from src.utils.redaction import sanitize_error_message
+from src.utils.redaction import project_embedded_json, sanitize_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +80,7 @@ def _redact_text(value: str) -> str:
     redacted = _EMAIL_RE.sub("[REDACTED_EMAIL]", value)
     redacted = _PHONE_RE.sub("[REDACTED_PHONE]", redacted)
     redacted = _TOKEN_RE.sub("[REDACTED_TOKEN]", redacted)
+    redacted = project_embedded_json(redacted, redact_sensitive)
     return sanitize_error_message(redacted, max_length=max(len(redacted), 1)) or ""
 
 

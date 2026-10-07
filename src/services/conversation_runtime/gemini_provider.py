@@ -4,8 +4,11 @@ import json
 import logging
 import os
 from collections.abc import AsyncIterator
+from contextvars import ContextVar
 from itertools import count
 from typing import Any
+
+import httpx
 
 from src.services.conversation_runtime.models import (
     ProviderCapabilities,
@@ -30,6 +33,8 @@ except (ImportError, ModuleNotFoundError) as exc:
     types = None  # type: ignore[assignment]
 else:
     _GENAI_IMPORT_ERROR = None
+
+from src.services.conversation_runtime.stream_cleanup import close_owned_stream
 
 logger = logging.getLogger(__name__)
 
@@ -71,8 +76,12 @@ class GeminiProviderClient:
         model: str | None = None,
         api_key: str | None = None,
         client: Any | None = None,
+        http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self._model = resolve_gemini_model(model)
+        self._request_responses: ContextVar[list[httpx.Response] | None] = ContextVar(
+            "gemini_request_responses", default=None
+        )
         if client is not None:
             self._client = client
         else:
@@ -80,8 +89,17 @@ class GeminiProviderClient:
                 raise RuntimeError(
                     "Gemini runtime is not installed. Install the google-genai package."
                 ) from _GENAI_IMPORT_ERROR
+            http_client = http_client or httpx.AsyncClient()
             self._client = genai.Client(
-                api_key=api_key or os.environ.get("GEMINI_API_KEY") or None
+                api_key=api_key or os.environ.get("GEMINI_API_KEY") or None,
+                http_options=types.HttpOptions(httpx_async_client=http_client),
+            )
+        # Public httpx hooks expose just this request's response for deterministic
+        # cleanup. ContextVar prevents parallel turns from closing each other.
+        # Caller-owned SDK clients may supply their HTTP client; never close it.
+        if http_client is not None:
+            http_client.event_hooks.setdefault("response", []).append(
+                self._capture_response
             )
         # Gemini calls usually carry no id; ShipAgent assigns one per call so
         # results pair and replays dedupe. Unique for the life of this client.
@@ -93,6 +111,11 @@ class GeminiProviderClient:
             supports_parallel_tool_calls=True,
             supports_usage_metadata=True,
         )
+
+    async def _capture_response(self, response: httpx.Response) -> None:
+        responses = self._request_responses.get()
+        if responses is not None:
+            responses.append(response)
 
     @property
     def capabilities(self) -> ProviderCapabilities:
@@ -128,6 +151,9 @@ class GeminiProviderClient:
         native_call_ids: dict[str, tuple[str, str]] = {}
         last_chunk: Any | None = None
 
+        stream = None
+        responses: list[httpx.Response] = []
+        response_token = self._request_responses.set(responses)
         try:
             stream = await self._client.aio.models.generate_content_stream(
                 model=self._model,
@@ -180,6 +206,14 @@ class GeminiProviderClient:
                 "Gemini content stream failed exception_type=%s", type(exc).__name__
             )
             raise
+
+        finally:
+            try:
+                await close_owned_stream(stream)
+                for response in responses:
+                    await close_owned_stream(response)
+            finally:
+                self._request_responses.reset(response_token)
 
         if _needs_private_continuation(raw_parts):
             yield ProviderStreamEvent(

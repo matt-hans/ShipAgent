@@ -189,7 +189,10 @@ async def schedule_pickup_tool(
     except UPSServiceError as e:
         return _err(f"[{e.code}] {e.message}")
     except Exception as e:
-        logger.exception("Unexpected error in schedule_pickup_tool")
+        logger.warning(
+            "Unexpected error in schedule_pickup_tool exception_type=%s",
+            type(e).__name__,
+        )
         return _err(f"Unexpected error: {e}")
 
 
@@ -239,7 +242,9 @@ async def cancel_pickup_tool(
     except UPSServiceError as e:
         return _err(f"[{e.code}] {e.message}")
     except Exception as e:
-        logger.exception("Unexpected error in cancel_pickup_tool")
+        logger.warning(
+            "Unexpected error in cancel_pickup_tool exception_type=%s", type(e).__name__
+        )
         return _err(f"Unexpected error: {e}")
 
 
@@ -302,7 +307,9 @@ async def rate_pickup_tool(
     except UPSServiceError as e:
         return _err(f"[{e.code}] {e.message}")
     except Exception as e:
-        logger.exception("Unexpected error in rate_pickup_tool")
+        logger.warning(
+            "Unexpected error in rate_pickup_tool exception_type=%s", type(e).__name__
+        )
         return _err(f"Unexpected error: {e}")
 
 
@@ -333,7 +340,10 @@ async def get_pickup_status_tool(
     except UPSServiceError as e:
         return _err(f"[{e.code}] {e.message}")
     except Exception as e:
-        logger.exception("Unexpected error in get_pickup_status_tool")
+        logger.warning(
+            "Unexpected error in get_pickup_status_tool exception_type=%s",
+            type(e).__name__,
+        )
         return _err(f"Unexpected error: {e}")
 
 
@@ -412,7 +422,10 @@ async def find_locations_tool(
     except UPSServiceError as e:
         return _err(f"[{e.code}] {e.message}")
     except Exception as e:
-        logger.exception("Unexpected error in find_locations_tool")
+        logger.warning(
+            "Unexpected error in find_locations_tool exception_type=%s",
+            type(e).__name__,
+        )
         return _err(f"Unexpected error: {e}")
 
 
@@ -438,5 +451,8 @@ async def get_service_center_facilities_tool(
     except UPSServiceError as e:
         return _err(f"[{e.code}] {e.message}")
     except Exception as e:
-        logger.exception("Unexpected error in get_service_center_facilities_tool")
+        logger.warning(
+            "Unexpected error in get_service_center_facilities_tool exception_type=%s",
+            type(e).__name__,
+        )
         return _err(f"Unexpected error: {e}")

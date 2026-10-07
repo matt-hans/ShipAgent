@@ -137,5 +137,7 @@ async def track_package_tool(
     except UPSServiceError as e:
         return _err(f"[{e.code}] {e.message}")
     except Exception as e:
-        logger.exception("Unexpected error in track_package_tool")
+        logger.warning(
+            "Unexpected error in track_package_tool exception_type=%s", type(e).__name__
+        )
         return _err(f"Unexpected error: {e}")

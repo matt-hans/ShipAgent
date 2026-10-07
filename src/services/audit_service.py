@@ -27,7 +27,11 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from src.db.models import AuditLog, EventType, LogLevel
-from src.utils.redaction import is_operational_secret_key, sanitize_error_message
+from src.utils.redaction import (
+    is_operational_secret_key,
+    project_embedded_json,
+    sanitize_error_message,
+)
 
 # Re-export enums for convenience
 __all__ = [
@@ -83,8 +87,9 @@ _PHONE_RE = re.compile(r"\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)\d{3}[-.\s]?\d{
 _TOKEN_RE = re.compile(r"\b(?:sk-[A-Za-z0-9_-]{12,}|[A-Fa-f0-9]{24,})\b")
 
 
-def _redact_string(value: str) -> str:
+def _redact_string(value: str, _depth: int = 0) -> str:
     """Redact common secret/PII patterns from raw strings."""
+    value = project_embedded_json(value, lambda obj: redact_sensitive(obj, _depth + 1))
     value = _EMAIL_RE.sub(REDACTED, value)
     value = _PHONE_RE.sub(REDACTED, value)
     value = _TOKEN_RE.sub(REDACTED, value)
@@ -115,7 +120,7 @@ def redact_sensitive(
     if data is None:
         return None
     if isinstance(data, str):
-        return _redact_string(data)
+        return _redact_string(data, _depth)
     if isinstance(data, list):
         return [redact_sensitive(item, _depth + 1) for item in data]
     if isinstance(data, dict):

@@ -8,6 +8,7 @@ and known container keys.
 
 import json
 import re
+from collections.abc import Callable
 from typing import Any
 
 # Substring patterns matched case-insensitively against dict keys
@@ -179,6 +180,47 @@ def is_operational_secret_key(key: str) -> bool:
     )
 
 
+def project_embedded_json(value: str, project: Callable[[Any], Any]) -> str:
+    """Project complete embedded JSON, including prefixed diagnostics.
+
+    Incomplete object/array payloads fail closed. Ordinary bracketed prose
+    such as [E-3001] is preserved. No failed parse is logged.
+    """
+    decoder = json.JSONDecoder()
+    result: list[str] = []
+    position = 0
+    for match in re.finditer(r"[\[{]", value):
+        start = match.start()
+        if start < position:
+            continue
+        prefix = value[position:start]
+        label = re.search(r"([A-Za-z0-9_-]+)\s*[:=]\s*$", prefix)
+        operational_container = bool(label and is_operational_secret_key(label[1]))
+        suffix = value[start + 1 :].lstrip()
+        if not operational_container:
+            if value[start] == "{" and suffix and suffix[0] not in '"}':
+                continue
+            if value[start] == "[" and suffix and suffix[0] not in '{["]':
+                if not re.match(
+                    r"(?:true|false|null|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)(?=[\s,\]]|$)",
+                    suffix,
+                ):
+                    continue
+        result.append(value[position:start])
+        try:
+            parsed, consumed = decoder.raw_decode(value[start:])
+        except (ValueError, RecursionError):
+            result.append(_REDACTED)
+            position = len(value)
+            break
+        result.append(
+            _REDACTED if operational_container else json.dumps(project(parsed))
+        )
+        position = start + consumed
+    result.append(value[position:])
+    return "".join(result)
+
+
 def project_public_artifact(value: Any, *, _depth: int = 0) -> Any:
     """Copy local UI data without operational secrets; retain recipient detail.
 
@@ -205,15 +247,8 @@ def project_public_artifact(value: Any, *, _depth: int = 0) -> Any:
     if isinstance(value, list):
         return [project_public_artifact(item, _depth=_depth + 1) for item in value]
     if isinstance(value, str):
-        # Historical artifact text can itself contain a serialized payload.
-        if value.lstrip().startswith(("{", "[")):
-            try:
-                structured = json.loads(value)
-            except (ValueError, RecursionError):
-                pass
-            else:
-                return json.dumps(
-                    project_public_artifact(structured, _depth=_depth + 1)
-                )
+        value = project_embedded_json(
+            value, lambda parsed: project_public_artifact(parsed, _depth=_depth + 1)
+        )
         return sanitize_error_message(value, max_length=max(len(value), 1))
     return value

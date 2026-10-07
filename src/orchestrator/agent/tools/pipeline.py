@@ -604,7 +604,7 @@ async def get_job_status_tool(args: dict[str, Any]) -> dict[str, Any]:
     except ValueError as e:
         return _err(str(e))
     except Exception as e:
-        logger.error("get_job_status_tool failed: %s", e)
+        logger.error("get_job_status_tool failed: %s", type(e).__name__)
         return _err(f"Failed to get job status: {e}")
 
 
@@ -1031,7 +1031,7 @@ async def ship_command_pipeline_tool(
         except FilterCompilationError as e:
             return _err(f"[{e.code.value}] {e.message}")
         except Exception as e:
-            logger.error("ship_command_pipeline compile failed: %s", e)
+            logger.error("ship_command_pipeline compile failed: %s", type(e).__name__)
             return _err(f"Filter compilation failed: {e}")
 
         where_sql = compiled.where_sql
@@ -1142,7 +1142,7 @@ async def ship_command_pipeline_tool(
                 limit,
             )
     except Exception as e:
-        logger.error("ship_command_pipeline fetch failed: %s", e)
+        logger.error("ship_command_pipeline fetch failed: %s", type(e).__name__)
         return _err(f"Failed to fetch rows: {e}")
 
     if not fetched_rows:
@@ -1226,9 +1226,11 @@ async def ship_command_pipeline_tool(
                     logger.warning(
                         "ship_command_pipeline cleanup failed for job %s: %s",
                         job.id,
-                        cleanup_err,
+                        type(cleanup_err).__name__,
                     )
-                logger.error("ship_command_pipeline create_rows failed: %s", e)
+                logger.error(
+                    "ship_command_pipeline create_rows failed: %s", type(e).__name__
+                )
                 return _err(f"Failed to add rows to job: {e}")
 
             engine = BatchEngine(
@@ -1259,7 +1261,9 @@ async def ship_command_pipeline_tool(
                 save_priced_preview(db, job, db_rows, result)
             except Exception as e:
                 logger.error(
-                    "ship_command_pipeline preview failed for %s: %s", job.id, e
+                    "ship_command_pipeline preview failed for %s: %s",
+                    job.id,
+                    type(e).__name__,
                 )
                 _audit_event(
                     "error",
@@ -1269,7 +1273,7 @@ async def ship_command_pipeline_tool(
                 )
                 return _err(f"Preview failed for job {job.id}: {e}")
     except Exception as e:
-        logger.error("ship_command_pipeline create_job failed: %s", e)
+        logger.error("ship_command_pipeline create_job failed: %s", type(e).__name__)
         return _err(f"Failed to create job: {e}")
 
     preview_rows = result.get("preview_rows", [])
@@ -1368,7 +1372,7 @@ async def batch_execute_tool(args: dict[str, Any]) -> dict[str, Any]:
             )
         return _ok(result)
     except Exception as e:
-        logger.error("batch_execute_tool failed: %s", e)
+        logger.error("batch_execute_tool failed: %s", type(e).__name__)
         return _err(f"Batch execution failed: {e}")
 
 
@@ -1479,5 +1483,8 @@ async def get_landed_cost_tool(
     except UPSServiceError as e:
         return _err(f"[{e.code}] {e.message}")
     except Exception as e:
-        logger.exception("Unexpected error in get_landed_cost_tool")
+        logger.warning(
+            "Unexpected error in get_landed_cost_tool exception_type=%s",
+            type(e).__name__,
+        )
         return _err(f"Unexpected error: {e}")

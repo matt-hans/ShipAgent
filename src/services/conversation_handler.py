@@ -19,7 +19,12 @@ from src.orchestrator.agent.intent_detection import (
 )
 from src.services.agent_session_manager import AgentSession
 from src.services.conversation_agent import create_conversation_agent
-from src.services.conversation_privacy import provider_conversation_history
+from src.services.conversation_privacy import (
+    TEXT_BLOCK_PRIVACY_ERROR,
+    PublicTextBlock,
+    TextBlockPrivacyError,
+    provider_conversation_history,
+)
 from src.services.decision_audit_context import (
     get_decision_job_id,
     get_decision_run_id,
@@ -562,6 +567,7 @@ async def process_message(
             hide_transient_chat = _hide_transient_chat_enabled()
             artifact_emitted = False
             buffered_agent_messages: list[str] = []
+            public_text_block = PublicTextBlock()
             preview_ready_logged = False
             pending_bridge_events: list[dict[str, Any]] = []
 
@@ -658,11 +664,38 @@ async def process_message(
                         _persist_artifact_once(event_type, data)
                         _track_preview_ready(event_type, data)
 
-                    if event_type == "agent_message_delta" and hide_transient_chat:
+                    if event_type == "agent_message_delta":
+                        try:
+                            public_text_block.observe(data.get("text", ""))
+                        except TextBlockPrivacyError:
+                            await session.agent.interrupt()
+                            run_status = AgentDecisionRunStatus.failed
+                            yield {
+                                "event": "error",
+                                "data": {"message": TEXT_BLOCK_PRIVACY_ERROR},
+                            }
+                            return
                         continue
 
                     if event_type == "agent_message":
-                        text = event.get("data", {}).get("text", "")
+                        try:
+                            text, streamed = public_text_block.complete(
+                                data.get("text", "")
+                            )
+                        except TextBlockPrivacyError:
+                            await session.agent.interrupt()
+                            run_status = AgentDecisionRunStatus.failed
+                            yield {
+                                "event": "error",
+                                "data": {"message": TEXT_BLOCK_PRIVACY_ERROR},
+                            }
+                            return
+                        event = {**event, "data": {**data, "text": text}}
+                        if streamed and not hide_transient_chat and text:
+                            yield {
+                                "event": "agent_message_delta",
+                                "data": {"text": text},
+                            }
                         if hide_transient_chat:
                             if text:
                                 buffered_agent_messages.append(text)
@@ -671,9 +704,19 @@ async def process_message(
                             session.add_message("assistant", text)
                             _persist_assistant_message(session.session_id, text)
                     elif event_type == "error":
+                        public_text_block = PublicTextBlock()
                         run_status = AgentDecisionRunStatus.failed
 
                     yield event
+
+                if public_text_block.length:
+                    await session.agent.interrupt()
+                    run_status = AgentDecisionRunStatus.failed
+                    yield {
+                        "event": "error",
+                        "data": {"message": TEXT_BLOCK_PRIVACY_ERROR},
+                    }
+                    return
 
                 for bridge_event in _drain_pending_bridge_events():
                     if not _turn_active():

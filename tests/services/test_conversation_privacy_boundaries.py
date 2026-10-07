@@ -461,3 +461,402 @@ async def test_real_mcp_retry_logs_and_audit_do_not_record_raw_error(
         assert SECRET not in json.dumps(DecisionAuditService.export_events(run_id=run))
     finally:
         reset_decision_run_id(token)
+
+
+@pytest.mark.parametrize("prefix", ["", "Diagnostic: "])
+@pytest.mark.parametrize("container", [lambda obj: obj, lambda obj: [obj]])
+def test_encoded_raw_payloads_are_classified_recursively_at_audit_boundaries(
+    privacy_db, prefix, container
+):
+    from src.db.models import EventType, Job
+    from src.services.audit_service import AuditService
+    from src.services.decision_audit_service import DecisionAuditService
+
+    encoded = prefix + json.dumps(
+        container({"rawResponse": {"arbitrary": SECRET}, "count": 2})
+    )
+    with privacy_db() as db:
+        job = Job(name="Privacy", original_command="quote")
+        db.add(job)
+        db.commit()
+        row = AuditService(db).log_error(
+            job.id, EventType.error, "Quote failed", {"diagnostic": encoded}
+        )
+        assert SECRET not in row.details
+        assert "count" in row.details
+    prepared, _ = DecisionAuditService._prepare_payload({"diagnostic": encoded})
+    assert SECRET not in prepared
+
+
+@pytest.mark.parametrize("split", range(1, 9))
+async def test_secrets_split_across_public_text_deltas_never_escape(privacy_db, split):
+    from src.services.conversation_runtime.models import (
+        ProviderStreamEvent,
+        ProviderStreamEventType,
+    )
+
+    text = f"Safe intro. api_key={SECRET}"
+    prefix = len("Safe intro. ") + split
+    obs = await run_scenario(
+        script=[
+            [
+                ProviderStreamEvent(
+                    type=ProviderStreamEventType.TEXT_DELTA, text=text[:prefix]
+                ),
+                ProviderStreamEvent(
+                    type=ProviderStreamEventType.TEXT_DELTA, text=text[prefix:]
+                ),
+                ProviderStreamEvent(
+                    type=ProviderStreamEventType.TEXT_BLOCK_COMPLETE, text=text
+                ),
+                ProviderStreamEvent(type=ProviderStreamEventType.STREAM_COMPLETE),
+            ]
+        ],
+        fresh_agent=True,
+    )
+    assert SECRET not in json.dumps(obs.events)
+    assert SECRET not in json.dumps(obs.persisted_messages)
+    assert "Safe intro." in json.dumps(obs.events)
+
+
+@pytest.mark.parametrize("prefix", ["", "Settings: "])
+def test_structured_user_credentials_redacted_without_losing_authored_address(prefix):
+    from src.services.conversation_privacy import provider_authored_text
+
+    value = prefix + json.dumps(
+        {"credentials": {"arbitrary": SECRET}, "address": "42 User Road"}
+    )
+    result = provider_authored_text(value)
+    assert SECRET not in result and "42 User Road" in result
+
+
+@pytest.mark.parametrize("terminal", ["incomplete", "provider_error", "oversized"])
+async def test_unfinished_or_oversized_text_never_flushes_partial_content(
+    privacy_db, terminal
+):
+    from src.services.conversation_runtime.models import (
+        ProviderStreamEvent,
+        ProviderStreamEventType,
+    )
+
+    partial = f"api_key={SECRET}"
+    if terminal == "oversized":
+        partial += "x" * 65536
+    events = [
+        ProviderStreamEvent(type=ProviderStreamEventType.TEXT_DELTA, text=partial)
+    ]
+    if terminal == "provider_error":
+        events.append(
+            ProviderStreamEvent(
+                type=ProviderStreamEventType.PROVIDER_ERROR, error_message=SECRET
+            )
+        )
+    events.append(ProviderStreamEvent(type=ProviderStreamEventType.STREAM_COMPLETE))
+    obs = await run_scenario(script=[events], fresh_agent=True)
+    assert SECRET not in json.dumps(obs.events)
+    assert not obs.persisted_messages
+    assert "error" in obs.event_names()
+
+
+async def test_completed_block_keeps_delta_message_order_and_safe_text(privacy_db):
+    from src.services.conversation_runtime.models import (
+        ProviderStreamEvent,
+        ProviderStreamEventType,
+    )
+
+    obs = await run_scenario(
+        script=[
+            [
+                ProviderStreamEvent(
+                    type=ProviderStreamEventType.TEXT_DELTA, text="Hello "
+                ),
+                ProviderStreamEvent(
+                    type=ProviderStreamEventType.TEXT_DELTA, text="there"
+                ),
+                ProviderStreamEvent(
+                    type=ProviderStreamEventType.TEXT_BLOCK_COMPLETE, text="Hello there"
+                ),
+                ProviderStreamEvent(type=ProviderStreamEventType.STREAM_COMPLETE),
+            ]
+        ],
+        fresh_agent=True,
+    )
+    assert obs.events == [
+        {"event": "agent_message_delta", "data": {"text": "Hello there"}},
+        {"event": "agent_message", "data": {"text": "Hello there"}},
+    ]
+
+
+async def test_cancellation_discards_unpublished_text_block(privacy_db):
+    import asyncio
+
+    from src.services.conversation_runtime.fake_provider import FakeProviderClient
+    from src.services.conversation_runtime.models import (
+        ProviderStreamEvent,
+        ProviderStreamEventType,
+    )
+    from src.services.conversation_runtime.runtime_session import (
+        ConversationRuntimeSession,
+    )
+
+    started, release = asyncio.Event(), asyncio.Event()
+
+    class PausedProvider(FakeProviderClient):
+        async def stream_turn(self, **kwargs):
+            yield ProviderStreamEvent(
+                type=ProviderStreamEventType.TEXT_DELTA, text=f"api_key={SECRET}"
+            )
+            started.set()
+            await release.wait()
+            yield ProviderStreamEvent(
+                type=ProviderStreamEventType.TEXT_BLOCK_COMPLETE,
+                text=f"api_key={SECRET}",
+            )
+
+    runtime = ConversationRuntimeSession(
+        provider=PausedProvider(script=[]),
+        system_prompt="system",
+        interactive_shipping=False,
+        session_id="cancel-block",
+    )
+    await runtime.start()
+
+    async def collect():
+        return [event async for event in runtime.process_message_stream("go")]
+
+    task = asyncio.create_task(collect())
+    await asyncio.wait_for(started.wait(), 2)
+    await runtime.interrupt()
+    release.set()
+    assert await asyncio.wait_for(task, 2) == []
+
+
+@pytest.mark.parametrize("prefix", ["", "Diagnostic: "])
+def test_incomplete_structured_secret_has_fixed_safe_fallback(prefix):
+    from src.services.conversation_privacy import provider_authored_text
+
+    result = provider_authored_text(prefix + '{"credentials": {"unknown": "' + SECRET)
+    assert SECRET not in result and "REDACTED" in result
+
+
+def test_user_credential_objects_do_not_enter_decision_run_storage(
+    privacy_db, monkeypatch
+):
+    from src.services.decision_audit_service import DecisionAuditService
+
+    monkeypatch.setenv("AGENT_AUDIT_ENABLED", "true")
+    run = DecisionAuditService.start_run(
+        session_id=None,
+        user_message="Settings: " + json.dumps({"credentials": {"arbitrary": SECRET}}),
+        model="test",
+        interactive_shipping=False,
+    )
+    assert SECRET not in json.dumps(DecisionAuditService.get_run(run))
+
+
+@pytest.mark.parametrize("kind", ["anthropic", "openai", "gemini"])
+@pytest.mark.parametrize("ending", ["normal", "oversized", "error", "cancel"])
+async def test_actual_adapter_transport_closes_owned_request(kind, ending, privacy_db):
+    import asyncio
+
+    import httpx
+
+    from src.services.conversation_runtime.runtime_session import (
+        ConversationRuntimeSession,
+    )
+    from tests.services import provider_scenarios as protocol
+
+    render, make_client = {
+        "anthropic": (protocol._anthropic_body, protocol._anthropic_client),
+        "openai": (protocol._openai_body, protocol._openai_client),
+        "gemini": (protocol._gemini_body, protocol._gemini_client),
+    }[kind]
+    closed, waiting = asyncio.Event(), asyncio.Event()
+    text = "x" * 65537 if ending == "oversized" else "Safe block"
+    body = render([Say(text)])
+
+    class WireStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            if ending in {"error", "cancel"}:
+                parts = body.split(b"\n\n")
+                cut = next(i for i, part in enumerate(parts) if b"Safe block" in part)
+                yield b"\n\n".join(parts[: cut + 1]) + b"\n\n"
+                if ending == "error":
+                    raise httpx.ReadError(SECRET)
+                waiting.set()
+                await asyncio.Event().wait()
+            else:
+                yield body
+
+        async def aclose(self):
+            closed.set()
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200, stream=WireStream(), headers={"content-type": "text/event-stream"}
+            )
+        )
+    )
+    provider = make_client(client)
+    runtime = ConversationRuntimeSession(
+        provider=provider,
+        system_prompt="system",
+        interactive_shipping=False,
+        session_id="stream-close",
+    )
+    await runtime.start()
+    events = []
+
+    async def collect():
+        async for event in runtime.process_message_stream("go"):
+            events.append(event)
+
+    task = asyncio.create_task(collect())
+    if ending == "cancel":
+        await asyncio.wait_for(waiting.wait(), 2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not events
+    else:
+        await asyncio.wait_for(task, 2)
+        assert [e["event"] for e in events] == (
+            ["agent_message_delta", "agent_message"]
+            if ending == "normal"
+            else ["error"]
+        )
+    await asyncio.wait_for(closed.wait(), 1)
+    assert not client.is_closed  # Shared/injected client ownership is preserved.
+    assert SECRET not in json.dumps(events)
+    await client.aclose()
+
+
+async def test_gemini_closing_one_request_does_not_close_concurrent_response(
+    privacy_db,
+):
+    import asyncio
+
+    import httpx
+
+    from src.services.conversation_runtime.runtime_session import (
+        ConversationRuntimeSession,
+    )
+    from tests.services import provider_scenarios as protocol
+
+    normal_waiting, release = asyncio.Event(), asyncio.Event()
+    closed = {"large": asyncio.Event(), "normal": asyncio.Event()}
+
+    class WireStream(httpx.AsyncByteStream):
+        def __init__(self, name):
+            self.name = name
+
+        async def __aiter__(self):
+            if self.name == "normal":
+                normal_waiting.set()
+                await release.wait()
+            else:
+                await normal_waiting.wait()
+            yield protocol._gemini_body(
+                [Say("x" * 65537 if self.name == "large" else "Still usable")]
+            )
+
+        async def aclose(self):
+            closed[self.name].set()
+
+    def handle(request):
+        name = "large" if "large" in request.content.decode() else "normal"
+        return httpx.Response(
+            200, stream=WireStream(name), headers={"content-type": "text/event-stream"}
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    provider = protocol._gemini_client(client)
+
+    async def collect(name):
+        runtime = ConversationRuntimeSession(
+            provider=provider,
+            system_prompt="system",
+            interactive_shipping=False,
+            session_id=name,
+        )
+        await runtime.start()
+        return [event async for event in runtime.process_message_stream(name)]
+
+    normal = asyncio.create_task(collect("normal"))
+    large = asyncio.create_task(collect("large"))
+    large_events = await asyncio.wait_for(large, 2)
+    assert [e["event"] for e in large_events] == ["error"]
+    await asyncio.wait_for(closed["large"].wait(), 1)
+    assert not closed["normal"].is_set() and not client.is_closed
+    release.set()
+    normal_events = await asyncio.wait_for(normal, 2)
+    assert normal_events[-1]["data"]["text"] == "Still usable"
+    await asyncio.wait_for(closed["normal"].wait(), 1)
+    await client.aclose()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[fragile] leave at side door",
+        "[normal] Ground service",
+        "[top] do not stack",
+        "{Building A} receiving",
+        "[1ZUSER123456789012]",
+        "Recipient {Building A}",
+    ],
+)
+def test_authored_shipping_prose_is_not_misclassified_as_json(text):
+    from src.services.conversation_privacy import provider_authored_text
+    from src.utils.redaction import project_public_artifact
+
+    assert provider_authored_text(text) == text
+    assert project_public_artifact({"name": text})["name"] == text
+
+
+@pytest.mark.parametrize("prefix", ["Credentials: ", "Request_body = "])
+def test_operational_label_before_json_redacts_the_whole_container(prefix):
+    from src.services.audit_service import redact_sensitive
+    from src.services.conversation_privacy import provider_authored_text
+
+    value = (
+        "Useful instruction. "
+        + prefix
+        + json.dumps({"arbitrary": SECRET})
+        + " Continue safely."
+    )
+    for projected in (provider_authored_text(value), redact_sensitive(value)):
+        assert SECRET not in projected
+        assert "Useful instruction." in projected and "Continue safely." in projected
+
+
+@pytest.mark.parametrize(
+    "name,args",
+    [
+        ("track_package", {"tracking_number": "1ZUSER123456789012"}),
+        ("get_pickup_status", {}),
+        ("rate_pickup", {}),
+        ("get_service_center_facilities", {}),
+        ("find_locations", {"location_type": "ups"}),
+        ("get_landed_cost", {}),
+    ],
+)
+async def test_auxiliary_gateway_failures_never_log_raw_payloads(
+    name, args, privacy_db, caplog
+):
+    gateway = AsyncMock()
+    getattr(gateway, name).side_effect = RuntimeError(SECRET)
+    rendered = build_provider(
+        "scripted", [[Call("aux", name, args)], [Say("Check settings and retry.")]]
+    )
+    obs = await run_scenario(
+        script=[],
+        provider=rendered.provider,
+        fresh_agent=True,
+        interactive=True,
+        ups_gateway=gateway,
+    )
+    getattr(gateway, name).assert_awaited_once()
+    assert SECRET not in caplog.text
+    assert SECRET not in obs.everything_externally_visible()
