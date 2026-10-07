@@ -1790,3 +1790,93 @@ async def test_rate_pickup_unknown_charge_code_uses_code_as_label():
     client = UPSMCPClient.__new__(UPSMCPClient)
     result = client._normalize_rate_pickup_response(raw)
     assert result["charges"][0]["chargeLabel"] == "Z"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tool_name",
+    [
+        "schedule_pickup",
+        "cancel_pickup",
+        "upload_paperless_document",
+        "push_document_to_shipment",
+        "delete_paperless_document",
+    ],
+)
+async def test_auxiliary_mutations_never_replay_even_for_upstream_503(
+    tool_name,
+    ups_client,
+    mock_mcp_client,
+):
+    """A gateway error cannot prove that a carrier mutation never committed."""
+    mock_mcp_client._session = object()
+    error = MCPToolError(
+        tool_name=tool_name,
+        error_text=json.dumps(
+            {
+                "status_code": 503,
+                "code": "503",
+                "message": "UPS API returned HTTP 503",
+                "details": {"raw": "no healthy upstream"},
+            }
+        ),
+    )
+    mock_mcp_client.call_tool = AsyncMock(side_effect=[error, {"ok": True}])
+    with pytest.raises(MCPToolError):
+        await ups_client._call(tool_name, {"synthetic": "payload"})
+    mock_mcp_client.call_tool.assert_awaited_once_with(
+        tool_name,
+        {"synthetic": "payload"},
+        max_retries=0,
+        base_delay=1.0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_schedule_pickup_honors_negative_acknowledgement_with_prn(
+    ups_client,
+    mock_mcp_client,
+):
+    mock_mcp_client.call_tool.return_value = {
+        "PickupCreationResponse": {
+            "PRN": "SYNTHETIC-PRN",
+            "Response": {"ResponseStatus": {"Code": "0", "Description": "Failure"}},
+        },
+    }
+    result = await ups_client.schedule_pickup(
+        pickup_date="20261008",
+        ready_time="0900",
+        close_time="1700",
+        address_line="12 Synthetic Road",
+        city="Oakland",
+        state="CA",
+        postal_code="94612",
+        country_code="US",
+        contact_name="Synthetic",
+        phone_number="5550100",
+    )
+    assert result["success"] is False
+
+
+def test_pickup_quote_honors_explicit_failure_even_with_a_price(ups_client):
+    result = ups_client._normalize_rate_pickup_response(
+        {
+            "PickupRateResponse": {
+                "Response": {"ResponseStatus": {"Code": "0"}},
+                "RateResult": {"GrandTotalOfAllCharge": "7.50"},
+            }
+        }
+    )
+    assert result["success"] is False
+
+
+def test_upload_honors_direct_negative_status_even_with_document_id(ups_client):
+    result = ups_client._normalize_upload_response(
+        {
+            "UploadResponse": {
+                "ResponseStatus": {"Code": "0"},
+                "FormsHistoryDocumentID": {"DocumentID": "SYNTHETIC-DOC"},
+            }
+        }
+    )
+    assert result["success"] is False

@@ -61,6 +61,14 @@ class SendMessageResponse(BaseModel):
     session_id: str
 
 
+class WorkflowConfirmationRequest(BaseModel):
+    """A user decision references an immutable preview; it never supplies payloads."""
+
+    model_config = {"extra": "forbid"}
+    confirmation_token: str = Field(min_length=1, max_length=128)
+    decision: Literal["confirm", "cancel"]
+
+
 class ConversationHistoryMessage(BaseModel):
     """A single message in conversation history."""
 
@@ -83,6 +91,7 @@ class UploadDocumentResponse(BaseModel):
     file_name: str
     file_format: str
     file_size_bytes: int
+    attachment_id: str
 
 
 # === Chat Session Persistence Schemas ===

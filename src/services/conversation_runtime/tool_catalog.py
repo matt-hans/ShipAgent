@@ -61,7 +61,7 @@ _ARTIFACT_EVENTS: dict[str, tuple[str, ...]] = {
     "ship_command_pipeline": ("preview_partial", "preview_ready"),
     "preview_interactive_shipment": ("preview_partial", "preview_ready"),
     "schedule_pickup": ("pickup_result",),
-    "cancel_pickup": ("pickup_result",),
+    "cancel_pickup": ("pickup_preview", "pickup_result"),
     "rate_pickup": ("pickup_preview",),
     "get_pickup_status": ("pickup_result",),
     "find_locations": ("location_result",),
@@ -81,6 +81,9 @@ _CONFIRMATION_REQUIRED = {
     "batch_execute",
     "schedule_pickup",
     "cancel_pickup",
+    "upload_paperless_document",
+    "push_document_to_shipment",
+    "delete_paperless_document",
 }
 
 _STRIP_ROWS = {

@@ -662,10 +662,9 @@ administrator.
 
 - Pickup type is fixed to on-call. Do NOT ask the user to choose pickup type.
 - WORKFLOW: When user requests a pickup, call `rate_pickup` with ALL details (address, date, times, contact_name, phone_number). This displays a preview card with Confirm/Cancel buttons.
-- After the user confirms via the preview card, call `schedule_pickup` with the SAME details + confirmed=true. The user's confirmation message will include the confirmation_token — pass it as the `confirmation_token` argument to schedule_pickup.
-- Do NOT call schedule_pickup without first calling rate_pickup — the preview card is mandatory.
-- Capture the PRN (Pickup Request Number) from the schedule response — needed for cancellation.
-- Use `cancel_pickup` with the PRN to cancel a scheduled pickup.
+- The user confirms or cancels through the preview card. Its trusted endpoint performs scheduling directly; NEVER call `schedule_pickup`, send confirmation tokens, or treat chat text as execution authority.
+- Use `get_pickup_status` to identify a pending pickup; its PRN appears in the owner-facing result.
+- Use `cancel_pickup` with a user-provided PRN to prepare a cancellation preview. The user confirms cancellation in that card.
 - Use `get_pickup_status` to check pending pickups for the account.
 - After batch execution completes with successful shipments, SUGGEST scheduling a pickup.
 - Use `get_service_center_facilities` to suggest drop-off alternatives when pickup is not suitable.
@@ -690,12 +689,12 @@ administrator.
 - When a user wants to upload a customs document, call `request_document_upload` to show the upload form
 - NEVER ask users for file paths or try to read files yourself
 - After the user attaches a file, you will receive a [DOCUMENT_ATTACHED] message
-- Then call `upload_paperless_document` with the appropriate document_type — file data is auto-loaded from the attachment
+- Then call `upload_paperless_document` with the exact attachment_id in that message. The user-approved file, selected document type and carrier connection are immutable; never provide bytes or overrides.
 - Document type codes: "002" (commercial invoice), "003" (certificate of origin), "006" (packing list), "011" (weight certificate)
-- After upload, capture the DocumentID from the response
-- Use `push_document_to_shipment` to attach a document to a shipment using the tracking number
-- Use `delete_paperless_document` to remove a document from UPS Forms History
-- Chained workflow: request_document_upload → user attaches → upload_paperless_document → create shipment → push_document_to_shipment
+- After upload, use the opaque document_handle returned by the tool. Document IDs and file metadata stay local.
+- Use `push_document_to_shipment` with document_handle and a user-provided tracking number to prepare an attachment preview; the user confirms in its card.
+- Use `delete_paperless_document` with document_handle (or an explicit user-provided document_id) to prepare a deletion preview; the user confirms in its card.
+- Chained workflow: request_document_upload → user approves exact file/type → upload_paperless_document → push_document_to_shipment → user confirms attachment
 
 ## Package Tracking
 

@@ -106,7 +106,10 @@ export interface PaperlessUploadPrompt {
 
 /** Paperless document operation result from SSE stream. */
 export interface PaperlessResult {
-  action: 'uploaded' | 'pushed' | 'deleted';
+  action: 'uploaded' | 'pushed' | 'deleted' | 'push_preview' | 'delete_preview';
+  shipmentIdentifier?: string;
+  confirmation_token?: string;
+  session_id?: string;
   success: boolean;
   documentId?: string;
   documentIds?: string[];
@@ -143,7 +146,19 @@ export interface TrackingResult {
 }
 
 /** Pickup preview data emitted before scheduling for user confirmation. */
-export interface PickupPreview {
+export interface WorkflowConfirmation {
+  confirmation_token?: string;
+  session_id?: string;
+}
+
+export interface WorkflowConfirmationResponse {
+  status: 'completed' | 'cancelled';
+}
+
+export interface PickupPreview extends WorkflowConfirmation {
+  action?: 'schedule' | 'cancel';
+  prn?: string;
+  cancel_by?: string;
   address_line: string;
   city: string;
   state: string;

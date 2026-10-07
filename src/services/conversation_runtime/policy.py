@@ -51,7 +51,7 @@ class RuntimePolicyEngine:
     # Purchases the user starts only by pressing Confirm on a priced preview
     # (the confirm route). Model arguments such as ``approved`` are not proof of
     # that gesture, so the model can never run these directly.
-    _USER_CONFIRMED_EXECUTION_TOOLS = {"batch_execute"}
+    _USER_CONFIRMED_EXECUTION_TOOLS = {"batch_execute", "schedule_pickup"}
     _DIRECT_UPS_DENIAL_REASONS = {
         "mcp__ups__rate_shipment": (
             "Direct mcp__ups__rate_shipment is not allowed. "
@@ -132,8 +132,8 @@ class RuntimePolicyEngine:
 
         return _deny(
             PolicyDenialCode.EXECUTION_REQUIRES_USER_CONFIRMATION,
-            f"{call.tool_name} cannot be called by the assistant. Shipments "
-            "are only purchased when the user presses Confirm on the preview.",
+            f"{call.tool_name} cannot be called by the assistant. Execution "
+            "requires the user to press Confirm on the preview.",
         )
 
     def _deny_raw_sql(self, call: ProviderToolCall) -> PolicyDecision | None:
@@ -206,7 +206,9 @@ class RuntimePolicyEngine:
 
         reason = self._DIRECT_UPS_DENIAL_REASONS.get(call.tool_name)
         if reason is None:
-            return None
+            if not call.tool_name.startswith("mcp__ups__"):
+                return None
+            reason = "Raw carrier calls are not allowed. Use a supported workflow tool."
 
         return _deny(PolicyDenialCode.RAW_CARRIER_CALL_NOT_ALLOWED, reason)
 
