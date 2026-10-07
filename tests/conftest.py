@@ -137,9 +137,9 @@ def integration_db_session(file_based_db: str):
 
 
 @pytest.fixture
-def sample_shipping_csv() -> Generator[str, None, None]:
+def sample_shipping_csv(tmp_path: Path) -> Generator[str, None, None]:
     """Create a sample CSV file with shipping data."""
-    fd, path = tempfile.mkstemp(suffix=".csv")
+    fd, path = tempfile.mkstemp(suffix=".csv", dir=tmp_path)
 
     with os.fdopen(fd, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=[
@@ -174,9 +174,9 @@ def sample_shipping_csv() -> Generator[str, None, None]:
 
 
 @pytest.fixture
-def large_shipping_csv() -> Generator[str, None, None]:
+def large_shipping_csv(tmp_path: Path) -> Generator[str, None, None]:
     """Create a large CSV file with 1000 rows for scale testing."""
-    fd, path = tempfile.mkstemp(suffix=".csv")
+    fd, path = tempfile.mkstemp(suffix=".csv", dir=tmp_path)
 
     with os.fdopen(fd, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=[
@@ -220,10 +220,12 @@ def large_shipping_csv() -> Generator[str, None, None]:
 
 
 @pytest.fixture
-def data_mcp_config() -> dict:
-    """Get Data MCP configuration for testing."""
+def data_mcp_config(tmp_path: Path) -> dict:
+    """Allow the local source server to read only this test's temporary data."""
     from src.orchestrator.agent.config import get_data_mcp_config
-    return get_data_mcp_config()
+    config = get_data_mcp_config()
+    config["env"]["SHIPAGENT_ALLOWED_PATHS"] = str(tmp_path)
+    return config
 
 
 @pytest.fixture

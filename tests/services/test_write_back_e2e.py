@@ -40,9 +40,11 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
 @pytest.fixture
-async def mcp():
-    """Per-test MCP client with real subprocess."""
+async def mcp(tmp_path, monkeypatch):
+    """Per-test MCP client authorized only for its own temporary source files."""
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     client = DataSourceMCPClient()
+    client._mcp._server_params.env["SHIPAGENT_ALLOWED_PATHS"] = str(tmp_path)
     await client.connect()
     yield client
     await client.disconnect_mcp()

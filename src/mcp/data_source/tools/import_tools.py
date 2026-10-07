@@ -127,6 +127,7 @@ async def import_csv(
         >>> print(result["columns"][0])
         {"name": "order_id", "type": "INTEGER", "nullable": false, "warnings": []}
     """
+    file_path = str(_validate_file_path(file_path))
     # Access DuckDB connection from lifespan context
     # CRITICAL: Use ctx.request_context.lifespan_context per FastMCP v2 pattern
     db = ctx.request_context.lifespan_context["db"]
@@ -177,6 +178,7 @@ async def list_sheets(file_path: str, ctx: Context) -> dict:
         >>> print(result["sheets"])
         ["January Orders", "February Orders", "Summary"]
     """
+    file_path = str(_validate_file_path(file_path))
     await ctx.info(f"Listing sheets in {file_path}")
 
     adapter = ExcelAdapter()
@@ -216,6 +218,7 @@ async def import_excel(
         >>> print(result["row_count"])
         250
     """
+    file_path = str(_validate_file_path(file_path))
     # Access DuckDB connection from lifespan context
     db = ctx.request_context.lifespan_context["db"]
 
