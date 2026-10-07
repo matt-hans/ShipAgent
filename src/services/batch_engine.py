@@ -63,7 +63,10 @@ def _dollars_to_cents(amount: str) -> int:
     Returns:
         Integer cents value.
     """
-    return int(Decimal(amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) * 100)
+    value = Decimal(str(amount))
+    if not value.is_finite() or value < 0:
+        raise ValueError("A finite nonnegative monetary amount is required")
+    return int(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) * 100)
 
 
 def _bounded_write_back_count(value: Any, upper_bound: int) -> int:
@@ -290,9 +293,9 @@ class BatchEngine:
                         self._ups.get_rate(request_body=rate_payload),
                         timeout=rate_timeout_s,
                     )
-                    amount = rate_result.get("totalCharges", {}).get(
-                        "monetaryValue", "0"
-                    )
+                    if rate_result.get("success") is False:
+                        raise ValueError("Rate quote was rejected")
+                    amount = rate_result.get("totalCharges", {}).get("monetaryValue")
                     cost_cents = _dollars_to_cents(amount)
                 except TimeoutError:
                     rate_error = (
@@ -332,7 +335,9 @@ class BatchEngine:
                     "estimated_cost_cents": cost_cents,
                 }
                 if rate_error:
-                    row_info["rate_error"] = rate_error
+                    row_info["rate_error"] = (
+                        "Rate unavailable. Re-preview before confirming this batch."
+                    )
                 return row_info, cost_cents, row_elapsed
 
         try:
@@ -418,6 +423,9 @@ class BatchEngine:
             "preview_rows": preview_rows,
             "additional_rows": additional_rows,
             "total_estimated_cost_cents": total_estimated_cost_cents,
+            "confirmation_ready": bool(preview_rows) and not any(
+                row.get("rate_error") for row in preview_rows
+            ),
         }
 
     async def execute(

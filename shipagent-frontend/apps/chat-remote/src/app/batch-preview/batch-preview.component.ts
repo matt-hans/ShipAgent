@@ -307,8 +307,14 @@ const COLLAPSED_ROW_COUNT = 4;
           <span class="badge badge-success text-[10px] font-medium">Completed</span>
         </div>
       } @else {
+        @if (preview.confirmation_ready === false) {
+          <p class="px-4 py-2 text-sm text-warning" role="status">
+            Rates are unavailable. Re-preview or refine the batch before confirming.
+          </p>
+        }
         <app-preview-actions
           [isConfirming]="isConfirming"
+          [confirmDisabled]="preview.confirmation_ready === false"
           (confirm)="confirm.emit()"
           (cancel)="cancel.emit()"
           (refine)="refine.emit($event)"
