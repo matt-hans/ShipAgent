@@ -1,15 +1,21 @@
 """Test EDI MCP tools."""
 
-import tempfile
-from unittest.mock import AsyncMock, MagicMock
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 
+from src.mcp.data_source.tools import edi_tools, import_tools
 from src.mcp.data_source.tools.edi_tools import import_edi
 
 
+@pytest.fixture(autouse=True)
+def allowed_test_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(import_tools, "_ALLOWED_ROOTS", [tmp_path])
+
+
 @pytest.fixture
-def sample_x12_file():
+def sample_x12_file(tmp_path):
     """Create temporary X12 850 file."""
     content = """ISA*00*          *00*          *ZZ*SENDER         *ZZ*RECEIVER       *260126*1200*U*00401*000000001*0*P*>~
 GS*PO*SENDER*RECEIVER*20260126*1200*1*X*004010~
@@ -24,9 +30,9 @@ SE*8*0001~
 GE*1*1~
 IEA*1*000000001~"""
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".edi", delete=False) as f:
-        f.write(content)
-        return f.name
+    path = tmp_path / "synthetic.edi"
+    path.write_text(content)
+    return str(path)
 
 
 @pytest.fixture
@@ -43,7 +49,8 @@ def mock_context():
         "db": conn,
         "current_source": None,
     }
-    return ctx
+    yield ctx
+    conn.close()
 
 
 @pytest.mark.asyncio
@@ -69,21 +76,20 @@ async def test_import_edi_logs_info(sample_x12_file, mock_context):
 
 
 @pytest.mark.asyncio
-async def test_import_edi_file_not_found(mock_context):
+async def test_import_edi_file_not_found(mock_context, tmp_path):
     """Test import_edi with non-existent file."""
     with pytest.raises(FileNotFoundError, match="EDI file not found"):
-        await import_edi("/nonexistent/file.edi", mock_context)
+        await import_edi(str(tmp_path / "nonexistent.edi"), mock_context)
 
 
 @pytest.mark.asyncio
-async def test_import_edi_invalid_format(mock_context):
+async def test_import_edi_invalid_format(mock_context, tmp_path):
     """Test import_edi with invalid EDI content."""
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".edi", delete=False) as f:
-        f.write("This is not valid EDI content")
-        invalid_path = f.name
+    invalid_path = tmp_path / "invalid.edi"
+    invalid_path.write_text("This is not valid EDI content")
 
     with pytest.raises(ValueError, match="Unsupported EDI format"):
-        await import_edi(invalid_path, mock_context)
+        await import_edi(str(invalid_path), mock_context)
 
 
 # --- Regression tests for Bug 3: missing context metadata in import_edi ---
@@ -132,3 +138,31 @@ async def test_import_edi_schema_excludes_source_row_num(sample_x12_file, mock_c
     )
     # Business columns must still be present
     assert "po_number" in col_names
+
+
+@pytest.mark.parametrize("kind", ["outside", "traversal", "symlink", "sensitive_name", "sensitive_dir"])
+@pytest.mark.asyncio
+async def test_direct_edi_denies_forbidden_paths_before_read_or_log(
+    kind, sample_x12_file, mock_context, tmp_path, monkeypatch
+):
+    allowed = tmp_path / "uploads"
+    allowed.mkdir()
+    outside = Path(sample_x12_file)
+    supplied = outside
+    if kind == "traversal":
+        supplied = allowed / ".." / outside.name
+    elif kind == "symlink":
+        supplied = allowed / "escape.edi"
+        supplied.symlink_to(outside)
+    elif kind in {"sensitive_name", "sensitive_dir"}:
+        supplied = allowed / (".env" if kind == "sensitive_name" else ".ssh/orders.edi")
+        supplied.parent.mkdir(parents=True, exist_ok=True)
+        supplied.write_bytes(outside.read_bytes())
+    monkeypatch.setattr(import_tools, "_ALLOWED_ROOTS", [allowed])
+    adapter = Mock(wraps=edi_tools.EDIAdapter)
+    monkeypatch.setattr(edi_tools, "EDIAdapter", adapter)
+    with pytest.raises(PermissionError):
+        await import_edi(str(supplied), mock_context)
+    adapter.assert_not_called()
+    mock_context.info.assert_not_awaited()
+    assert mock_context.request_context.lifespan_context["current_source"] is None

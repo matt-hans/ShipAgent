@@ -7,6 +7,7 @@ Automatically detects format and transaction type.
 from fastmcp import Context
 
 from src.mcp.data_source.adapters.edi_adapter import EDIAdapter
+from src.mcp.data_source.tools.import_tools import _validate_file_path
 
 
 async def import_edi(file_path: str, ctx: Context) -> dict:
@@ -37,6 +38,8 @@ async def import_edi(file_path: str, ctx: Context) -> dict:
         >>> print(result["columns"][0])
         {"name": "po_number", "type": "VARCHAR", "nullable": true, "warnings": []}
     """
+    file_path = str(_validate_file_path(file_path))
+
     # Access DuckDB connection from lifespan context
     # CRITICAL: Use ctx.request_context.lifespan_context per FastMCP v2 pattern
     db = ctx.request_context.lifespan_context["db"]
