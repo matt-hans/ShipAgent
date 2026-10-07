@@ -8,13 +8,21 @@ Evidence: `tests/test_bundle_entry.py`, `tests/test_claude_sdk_optional.py`, `te
 
 The sidecar uses the shared conversation runtime and does not collect or probe
 the Claude Agent SDK. Source entry-point tests do not establish that a new
-frozen desktop build has passed; final clean-install/package validation is #41.
+frozen desktop build has passed. Current Linux sidecar evidence and mandatory
+remaining native/visual gates are recorded in
+[SDK-free release verification](../runtime/sdk-free-release-evidence.md).
 
 The pinned UPS fork's seven OpenAPI YAMLs are bundled as read-only package
 resources. No project-relative cache or placeholder transit contract is required.
 Local CSV/Excel startup does not download database extensions; explicitly
 connecting PostgreSQL/MySQL still uses DuckDB's extension autoload and requires
 its optional extension to be installed or downloadable.
+
+Uploads live in `get_data_dir()/uploads`, outside the application installation.
+Both MCP launch paths receive the same resolved data root. Only its uploads
+subdirectory joins the existing allowed file roots; this adds no authorization
+for the rest of an out-of-tree data directory. Existing sensitive-name and
+symlink-escape checks remain. Direct EDI uses the same path validator.
 
 ## Read Variables
 
