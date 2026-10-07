@@ -56,8 +56,12 @@ function formatTime(raw: string): string {
         <span class="badge {{ meta.badgeClass }}">{{ meta.badge }}</span>
       </div>
 
+      @if (isUnconfirmed) {
+        <p class="text-xs text-muted-foreground">{{ data.message || 'Check pickup status before requesting another action. This operation will not be retried automatically.' }}</p>
+      }
+
       <!-- Scheduled: PRN + details -->
-      @if (data.action === 'scheduled') {
+      @if (!isUnconfirmed && data.action === 'scheduled') {
         @if (data.prn) {
           <div class="flex items-center gap-2 bg-slate-800/50 rounded-lg px-3 py-2">
             <sa-icon-check class="w-4 h-4 text-success flex-shrink-0" />
@@ -97,7 +101,7 @@ function formatTime(raw: string): string {
       }
 
       <!-- Cancelled -->
-      @if (data.action === 'cancelled') {
+      @if (!isUnconfirmed && data.action === 'cancelled') {
         <div class="flex items-center gap-2 text-xs font-mono text-muted-foreground">
           <sa-icon-x class="w-3.5 h-3.5 text-destructive" />
           <span>Pickup cancelled successfully</span>
@@ -105,7 +109,7 @@ function formatTime(raw: string): string {
       }
 
       <!-- Status: show pending pickups -->
-      @if (data.action === 'status' && data.pickups && data.pickups.length > 0) {
+      @if (!isUnconfirmed && data.action === 'status' && data.pickups && data.pickups.length > 0) {
         <div class="space-y-1.5">
           @for (pickup of data.pickups; track $index) {
             <div class="flex items-center justify-between text-xs font-mono px-2 py-1.5 rounded bg-muted">
@@ -117,7 +121,7 @@ function formatTime(raw: string): string {
       }
 
       <!-- Status: no pending pickups -->
-      @if (data.action === 'status' && (!data.pickups || data.pickups.length === 0)) {
+      @if (!isUnconfirmed && data.action === 'status' && (!data.pickups || data.pickups.length === 0)) {
         <p class="text-xs text-muted-foreground">No pending pickups found.</p>
       }
     </div>
@@ -129,7 +133,14 @@ export class PickupCompletionComponent {
   protected formatDate = formatPickupDate;
   protected formatTime = formatTime;
 
+  get isUnconfirmed(): boolean {
+    return this.data?.success === false || this.data?.outcome === 'unconfirmed';
+  }
+
   get meta(): ActionMeta {
+    if (this.isUnconfirmed) {
+      return { label: 'Pickup Outcome Unconfirmed', badge: 'CHECK STATUS', badgeClass: 'badge-neutral' };
+    }
     return ACTION_META[this.data?.action] ?? ACTION_META['status'];
   }
 }

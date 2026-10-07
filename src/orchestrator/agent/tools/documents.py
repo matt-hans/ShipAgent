@@ -6,6 +6,7 @@ push_document_to_shipment, delete_paperless_document.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -121,6 +122,20 @@ async def upload_paperless_document_tool(
     document_type = args.get("document_type", "")
     file_size_bytes = args.pop("file_size_bytes", None)
 
+    def record_unconfirmed() -> None:
+        if bridge is not None:
+            bridge.record_effect(
+                "paperless_result",
+                {
+                    "action": "uploaded",
+                    "success": False,
+                    "outcome": "unconfirmed",
+                    "fileName": file_name,
+                    "documentType": document_type,
+                    "message": "Document upload outcome is unconfirmed. Check UPS Forms History before uploading again.",
+                },
+            )
+
     try:
         result = await client.upload_document(**args)
         document_ids = result.get("documentIds", [])
@@ -129,6 +144,7 @@ async def upload_paperless_document_tool(
             doc_id = str(document_ids[0])
 
         if result.get("success") is not True or not doc_id:
+            record_unconfirmed()
             return _err(
                 "Document upload outcome is unconfirmed. Check UPS Forms History before uploading again."
             )
@@ -145,12 +161,18 @@ async def upload_paperless_document_tool(
         if file_size_bytes is not None:
             payload["fileSizeBytes"] = file_size_bytes
 
+        bridge.record_effect("paperless_result", payload)
         _emit_event("paperless_result", payload, bridge=bridge)
         handle = bridge.workflow_actions.register_document(doc_id, client)
         return _ok({"success": True, "document_handle": handle})
+    except asyncio.CancelledError:
+        record_unconfirmed()
+        raise
     except UPSServiceError as e:
+        record_unconfirmed()
         return _err(f"[{e.code}] {e.message}")
     except Exception as e:
+        record_unconfirmed()
         logger.warning(
             "Unexpected error in upload_paperless_document_tool exception_type=%s",
             type(e).__name__,

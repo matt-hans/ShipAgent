@@ -52,6 +52,8 @@ class EventEmitterBridge:
 
     def __init__(self) -> None:
         self.callback: Callable[[str, dict], None] | None = None
+        # Durable owner outcomes are independent of transient generation output.
+        self.effect_callback: Callable[[str, dict], None] | None = None
         self.session_id: str | None = None
         self.last_user_message: str | None = None
         self.last_shipping_command: str | None = None
@@ -70,6 +72,11 @@ class EventEmitterBridge:
         """Emit a structured event through the registered callback."""
         if self.callback is not None:
             self.callback(event_type, data)
+
+    def record_effect(self, event_type: str, data: dict[str, Any]) -> None:
+        """Account for dispatched mutations even after the user stops a turn."""
+        if self.effect_callback is not None:
+            self.effect_callback(event_type, data)
 
     def store_rows(self, rows: list[dict[str, Any]]) -> str:
         """Store fetched rows and return a fetch_id handle."""

@@ -57,6 +57,9 @@ class InProcessRunner:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Shut down MCP gateways."""
         if self._initialized:
+            for session_id in self._session_manager.list_sessions():
+                await self.delete_session(session_id)
+            self._initialized = False
             from src.services.gateway_provider import shutdown_gateways
             await shutdown_gateways()
 
@@ -379,11 +382,12 @@ class InProcessRunner:
                 status_code=404,
             )
 
-        # Caller-owned history write
-        session.add_message("user", content)
+        # Queue identity keeps concurrent caller ingress out of earlier turns.
+        turn_id = str(uuid4())
+        session.add_message("user", content, turn_id=turn_id, queued=True)
 
         async for event in process_message(
-            session, content, self._interactive_shipping
+            session, content, session.interactive_shipping, turn_id=turn_id
         ):
             data = event.get("data", {})
             yield AgentEvent(

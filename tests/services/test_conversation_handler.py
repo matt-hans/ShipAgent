@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -38,6 +39,25 @@ def _make_test_session_hash(
 
 _CONTACTS_PATCH = "src.services.conversation_handler._get_mru_contacts_for_prompt"
 
+@pytest.fixture(autouse=True)
+def fixed_model(monkeypatch):
+    monkeypatch.setattr(
+        "src.services.conversation_handler._resolve_agent_model", lambda: None
+    )
+    monkeypatch.delenv("AGENT_MODEL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+
+
+def _make_test_model_signature():
+    return json.dumps(
+        [
+            None,
+            os.environ.get("SHIPAGENT_AGENT_RUNTIME", "auto").strip().lower(),
+            os.environ.get("OPENAI_MODEL", ""),
+            os.environ.get("GEMINI_MODEL", ""),
+        ]
+    )
+
 
 class TestComputeSourceHash:
     """Tests for source hash computation."""
@@ -65,8 +85,10 @@ class TestEnsureAgent:
     async def test_creates_agent_when_none_exists(self):
         """Creates and starts a new agent when session has no agent."""
         session = MagicMock()
+        session.interactive_shipping = False
         session.agent = None
         session.agent_source_hash = None
+        session.agent_model_signature = _make_test_model_signature()
         session.session_id = "sess-1"
 
         mock_agent = AsyncMock()
@@ -90,8 +112,10 @@ class TestEnsureAgent:
     async def test_reuses_agent_when_hash_unchanged(self):
         """Reuses existing agent when source hash matches."""
         session = MagicMock()
+        session.interactive_shipping = False
         session.agent = AsyncMock()
         session.agent_source_hash = _make_test_session_hash()
+        session.agent_model_signature = _make_test_model_signature()
 
         with patch(_CONTACTS_PATCH, return_value=[]):
             result = await ensure_agent(session, source_info=None)
@@ -125,8 +149,10 @@ class TestEnsureAgent:
             ).encode()
         ).hexdigest()[:8]
         session = MagicMock()
+        session.interactive_shipping = False
         session.agent = AsyncMock()
         session.agent_source_hash = f"none|interactive=False|contacts={contacts_hash}"
+        session.agent_model_signature = _make_test_model_signature()
 
         with patch(_CONTACTS_PATCH, return_value=list(reversed(contacts))):
             result = await ensure_agent(session, source_info=None)
@@ -138,8 +164,10 @@ class TestEnsureAgent:
         """Stops old agent and creates new one when source changes."""
         old_agent = AsyncMock()
         session = MagicMock()
+        session.interactive_shipping = False
         session.agent = old_agent
         session.agent_source_hash = "old_hash|interactive=False"
+        session.agent_model_signature = _make_test_model_signature()
         session.session_id = "sess-1"
 
         new_agent = AsyncMock()
@@ -164,8 +192,10 @@ class TestEnsureAgent:
     async def test_does_not_fetch_column_samples_in_batch_mode(self):
         """Source samples stay local even when constructing a batch prompt."""
         session = MagicMock()
+        session.interactive_shipping = False
         session.agent = None
         session.agent_source_hash = None
+        session.agent_model_signature = _make_test_model_signature()
         session.session_id = "sess-1"
 
         mock_source = MagicMock()
@@ -203,8 +233,10 @@ class TestEnsureAgent:
     async def test_skips_column_samples_in_interactive_mode(self):
         """Skips column samples fetch in interactive mode."""
         session = MagicMock()
+        session.interactive_shipping = False
         session.agent = None
         session.agent_source_hash = None
+        session.agent_model_signature = _make_test_model_signature()
         session.session_id = "sess-1"
 
         mock_source = MagicMock()
@@ -268,6 +300,7 @@ class TestProcessMessage:
             ]
         )
         session = MagicMock()
+        session.interactive_shipping = False
         session.session_id = "handler-fake"
         session.agent = ConversationRuntimeSession(
             provider=provider,
@@ -277,6 +310,7 @@ class TestProcessMessage:
         )
         await session.agent.start()
         session.agent_source_hash = _make_test_session_hash()
+        session.agent_model_signature = _make_test_model_signature()
         session.lock = asyncio.Lock()
         session.confirmed_resolutions = {}
         session.interactive_shipping = False
@@ -322,9 +356,11 @@ class TestProcessMessage:
                 }
 
         session = MagicMock()
+        session.interactive_shipping = False
         session.session_id = "artifact-once"
         session.agent = FakeAgent()
         session.agent_source_hash = _make_test_session_hash()
+        session.agent_model_signature = _make_test_model_signature()
         session.lock = asyncio.Lock()
         session.confirmed_resolutions = {}
         session.interactive_shipping = False
@@ -382,9 +418,11 @@ class TestProcessMessage:
                 yield {"event": "agent_message", "data": {"text": "final"}}
 
         session = MagicMock()
+        session.interactive_shipping = False
         session.agent = FakeAgent()
         session.session_id = "svc-suppress"
         session.agent_source_hash = _make_test_session_hash()
+        session.agent_model_signature = _make_test_model_signature()
         session.lock = asyncio.Lock()
 
         emitted_events = []
@@ -457,9 +495,11 @@ class TestProcessMessage:
                 yield {"event": "agent_message", "data": {"text": "final"}}
 
         session = MagicMock()
+        session.interactive_shipping = False
         session.agent = FakeAgent()
         session.session_id = "svc-suppress-delta"
         session.agent_source_hash = _make_test_session_hash()
+        session.agent_model_signature = _make_test_model_signature()
         session.lock = asyncio.Lock()
 
         emitted_events = []
@@ -520,9 +560,11 @@ class TestProcessMessage:
                     yield {}
 
         session = MagicMock()
+        session.interactive_shipping = False
         session.agent = FakeAgent()
         session.session_id = "svc-bridge-artifact"
         session.agent_source_hash = _make_test_session_hash()
+        session.agent_model_signature = _make_test_model_signature()
         session.lock = asyncio.Lock()
 
         with (
@@ -575,9 +617,11 @@ class TestProcessMessage:
                 yield {"event": "agent_message", "data": {"text": "final answer"}}
 
         session = MagicMock()
+        session.interactive_shipping = False
         session.agent = FakeAgent()
         session.session_id = "svc-final-buffer"
         session.agent_source_hash = _make_test_session_hash()
+        session.agent_model_signature = _make_test_model_signature()
         session.lock = asyncio.Lock()
 
         with (
@@ -609,9 +653,11 @@ class TestProcessMessage:
         monkeypatch.setenv("AGENT_HIDE_TRANSIENT_CHAT", "false")
 
         session = MagicMock()
+        session.interactive_shipping = False
         session.agent = MagicMock()
         session.session_id = "sess-test-001"
         session.agent_source_hash = _make_test_session_hash()
+        session.agent_model_signature = _make_test_model_signature()
         session.lock = asyncio.Lock()
 
         # Mock agent stream
@@ -642,9 +688,11 @@ class TestProcessMessage:
     async def test_stores_assistant_history(self):
         """Stores assistant text in session history."""
         session = MagicMock()
+        session.interactive_shipping = False
         session.agent = MagicMock()
         session.session_id = "sess-test-001"
         session.agent_source_hash = _make_test_session_hash()
+        session.agent_model_signature = _make_test_model_signature()
         session.lock = asyncio.Lock()
 
         async def fake_stream(content):
@@ -670,9 +718,11 @@ class TestProcessMessage:
     async def test_does_not_store_user_message(self):
         """Does NOT store user message — caller owns that."""
         session = MagicMock()
+        session.interactive_shipping = False
         session.agent = MagicMock()
         session.session_id = "sess-test-001"
         session.agent_source_hash = _make_test_session_hash()
+        session.agent_model_signature = _make_test_model_signature()
         session.lock = asyncio.Lock()
 
         async def fake_stream(content):
@@ -701,9 +751,11 @@ class TestProcessMessage:
     async def test_sets_and_clears_emitter_callback(self):
         """Sets emitter bridge callback before processing and clears after."""
         session = MagicMock()
+        session.interactive_shipping = False
         session.agent = MagicMock()
         session.session_id = "sess-test-001"
         session.agent_source_hash = _make_test_session_hash()
+        session.agent_model_signature = _make_test_model_signature()
         session.lock = asyncio.Lock()
         bridge = MagicMock()
         session.agent.emitter_bridge = bridge
