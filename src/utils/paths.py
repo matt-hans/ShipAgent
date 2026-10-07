@@ -36,6 +36,11 @@ def get_data_dir() -> Path:
     return Path(__file__).resolve().parent.parent.parent
 
 
+def get_uploads_dir() -> Path:
+    """Return writable upload storage, separate from a frozen installation."""
+    return (get_data_dir() / "uploads").resolve()
+
+
 def get_labels_dir() -> Path:
     """Return the directory for label PDF storage."""
     data = get_data_dir()

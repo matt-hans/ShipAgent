@@ -24,6 +24,7 @@ from src.api.schemas import (
 )
 from src.mcp.data_source.tools.import_tools import EXTENSION_MAP
 from src.services.gateway_provider import get_data_gateway
+from src.utils.paths import get_uploads_dir
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +52,8 @@ _MAX_UPLOAD_SIZE_BYTES = 50 * 1024 * 1024
 
 router = APIRouter(prefix="/data-sources", tags=["data-sources"])
 
-# Directory for uploaded files — resolved relative to project root
-UPLOAD_DIR = Path(__file__).resolve().parents[3] / "uploads"
+# User-writable storage; packaged installations may be signed/read-only.
+UPLOAD_DIR = get_uploads_dir()
 
 
 @router.post("/import", response_model=DataSourceImportResponse)

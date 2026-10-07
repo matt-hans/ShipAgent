@@ -15,19 +15,29 @@ maps issues #31–#41 to the sequential foundation, four parallel workflow lanes
 SDK cutover and final verification. Native GitHub blocking links define which
 tickets can start.
 
-## Current runtime cutover
+## Current runtime and release qualification
 
-The integrated baseline is `4f42d827` (PR #61 / issue #38). Issues #36, #37,
-#38 and #39 are merged; the parent-verified post-merge smoke passed 317 tests.
-Issue #40 switches the default/legacy Claude selectors to the shared Anthropic
-adapter and removes SDK client/hooks/dependency/probe/collection coupling.
+The SDK cutover is integrated at `aa138ddd4eb8e95c3a30fbffc05327ad80c834d1`
+([PR #62](https://github.com/matt-hans/ShipAgent/pull/62), issue #40). Anthropic,
+OpenAI and Gemini use the ShipAgent-owned shared runtime. Default/legacy Claude
+selectors are adapter aliases; production SDK client/hooks, dependency,
+startup-probe and packaging coupling are removed. Issues #36–#40 are integrated.
 See [runtime setup and migration](runtime/sdk-free-runtime.md) and the
-[exhaustive coverage migration](runtime/sdk-removal-coverage.md).
+[coverage migration](runtime/sdk-removal-coverage.md).
 
-The cutover remains a review candidate until its PR is merged. Issue #41 still
-owns clean lockfile installation, complete SDK-free release validation and
-frozen desktop startup. No cloud connector completion, live shipment or offline
-model inference is implied. Issue #51 remains independently deferred.
+[Draft PR #63](https://github.com/matt-hans/ShipAgent/pull/63) records issue #41's
+current verification and package repairs. Runtime/artifact-tested source is
+`15422b911a3018ed1625d20dc341598651bc715e`: a genuine clean SDK-free installation,
+384 shared/adapter acceptance tests, 4,986 full-backend passes (29 accounted
+skips), 160 frontend tests, all seven production targets, and actual read-only
+Linux frozen-sidecar startup/CSV+Excel uploads/owned-process shutdown. See the
+[exact evidence, artifact hashes and reproduction notes](runtime/sdk-free-release-evidence.md).
+
+**Issue #41 remains open.** Native macOS Tauri startup and actual rendered
+shell/chat/settings fallback-font layout are mandatory unverified gates. Linux
+sidecar evidence, source tests and successful builds do not establish those
+results. No desktop release, cloud connector completion, live shipment or
+offline model inference is implied. Issue #51 remains independently deferred.
 
 ## Historical baseline evidence
 
@@ -101,29 +111,34 @@ is `273 passed`; `ruff check` clean. Claude SDK removal remains issue #40.
 
 Earlier statements about commit `a4a4bd1` are superseded by this baseline.
 
+## Current capability summary
+
 | Capability | Evidence-backed state | Remaining work |
 | --- | --- | --- |
-| Desktop shipping application | Existing FastAPI services, Angular frontend, Tauri packaging, deterministic shipping workflows | Preserve behavior through migration and validate integration |
-| Shared conversation runtime | Implemented normalized messages/events, tool catalog, dispatch, policy, interruption and conversation ownership | Complete Claude cutover and remove provider-shaped core contracts |
+| Desktop shipping application | API/CLI workflows and Linux frozen sidecar verified at `15422b9`; configured Tauri targets remain macOS | Native wrapper startup and rendered layout under #41 |
+| Shared conversation runtime | Anthropic/OpenAI/Gemini share orchestration, policy, history, lifecycle and deterministic tools; SDK cutover merged in PR #62 | Finish the explicit native/visual release gates |
 | OpenAI and Gemini adapters | Implemented on main; runtime milestone merged in PR #25 | Maintain common behavior and adapter contract coverage |
-| Anthropic adapter | Direct Messages adapter has a plan but is not implemented | Implement, switch Claude selection to the shared runtime, remove Claude Agent SDK |
-| Provider contracts and control plane | Foundation and Auth0 authorization merged in PRs #26 and #27 | Reconcile findings and finish production workflow wiring |
+| Anthropic adapter | Direct Messages translation, shared default selection and SDK removal implemented and tested | Preserve adapter conformance as providers evolve |
+| Provider contracts and control plane | Foundation and Auth0 authorization merged, with reconciliation integrated | Finish production workflow wiring and separate connector foundations |
 | Relay walking skeleton | Plan 1 merged through PR #28 with subsequent hardening | Durable lifecycle/recovery, compatibility, full workflow dispatch |
 | Hosted provider shipping | Descriptors and plans exist; production target handler map currently wires only status | Implement prepare/approve/execute, continuation and artifact delivery |
 | Provider interfaces | Connector designs and widget plans exist | Complete reviewed approval profiles and real integration; descriptors alone are not readiness |
 
-Earlier checks on this main baseline passed 155 targeted runtime/provider/artifact
+Earlier historical baseline checks passed 155 targeted runtime/provider/artifact
 tests and 309 targeted control-plane/hosted/projection/portability tests. These
 are baseline evidence, not full-suite, frontend, live-carrier or marketplace
 release certification.
 
 ## Milestone 1: Reconcile and integrate existing findings
 
-The branch `codex/provider-contracts-control-plane-foundation-findings` is in a
-separate local worktree. Its inspected head is `ad86359`; GitHub's branch head
-is `bde0e0b`. It has 73 unpublished commits and diverges from main by 76 branch
-commits versus 56 main commits. Its common ancestor is `ab77b2f`. The branch
-contains extensive contract/privacy, browser authentication, migration,
+The reconciled baseline is integrated; the historical planning snapshot and
+sequence below explain how it was established, not an outstanding merge task.
+
+At planning time, the branch `codex/provider-contracts-control-plane-foundation-findings` was in a
+separate local worktree. Its inspected head was `ad86359`; GitHub's branch head
+was `bde0e0b`. It had 73 unpublished commits and diverged from main by 76 branch
+commits versus 56 main commits. Its common ancestor was `ab77b2f`. The branch
+contained extensive contract/privacy, browser authentication, migration,
 terminal diagnostic, recovery and progress fixes, not the completed connector.
 
 Execution order:
@@ -144,13 +159,16 @@ Execution order:
 Exit: findings are integrated or explicitly deferred with reasons, current main
 is the validated baseline, and valuable local work is preserved.
 
-References: the findings worktree's July 23 reconciliation plan, July 24 hardening
-plans, and final review fixes report. These remain in that worktree until
-integration; they are not all present in main.
+Historical references: the findings worktree's July 23 reconciliation plan,
+July 24 hardening plans and final review fixes report. Current integrated
+status and evidence are recorded above.
 
 ## Milestone 2: Finish provider-neutral orchestration
 
-Implement the [runtime convergence spec](superpowers/specs/2026-10-01-provider-neutral-runtime-convergence.md)
+Implementation through the SDK cutover is integrated. Issue #41's native and
+visual release qualification remains open as described above.
+
+The implementation follows the [runtime convergence spec](superpowers/specs/2026-10-01-provider-neutral-runtime-convergence.md)
 from the reconciled baseline. ShipAgent owns the model/tool loop, history,
 streaming, policy, lifecycle, cancellation, audit and artifact behavior. OpenAI,
 Gemini and Anthropic all implement the same model-provider boundary.
