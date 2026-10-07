@@ -96,8 +96,8 @@ def test_prompt_includes_source_schema():
     assert "csv" in prompt.lower()
 
 
-def test_prompt_truncates_long_column_samples(monkeypatch):
-    """Long sample values should be truncated to control token usage."""
+def test_prompt_excludes_column_samples(monkeypatch):
+    """Samples are excluded regardless of the legacy truncation setting."""
     monkeypatch.setenv("SYSTEM_PROMPT_SAMPLE_MAX_CHARS", "30")
     source = _make_source_info()
     prompt = build_system_prompt(
@@ -108,8 +108,7 @@ def test_prompt_truncates_long_column_samples(monkeypatch):
             ],
         },
     )
-    assert "..." in prompt
-    assert "A" * 80 not in prompt
+    assert "A" * 10 not in prompt
 
 
 def test_prompt_without_source_shows_no_connection():
@@ -476,8 +475,8 @@ class TestPromptInjectionPrevention:
         prompt = build_system_prompt(source_info=source)
         # The full malicious string should be truncated at 64 chars
         assert malicious_col not in prompt
-        # But a truncated version should be present
-        assert _sanitize_for_prompt(malicious_col) in prompt
+        # Truncation cannot authorize local data as schema metadata
+        assert _sanitize_for_prompt(malicious_col) not in prompt
 
     def test_prompt_injection_in_samples_sanitized(self):
         """Sample values containing injection attempts are sanitized."""

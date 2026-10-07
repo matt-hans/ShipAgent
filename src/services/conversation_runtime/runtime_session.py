@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from src.orchestrator.agent.tools.core import EventEmitterBridge
+from src.services.conversation_privacy import provider_conversation_history
 from src.services.conversation_runtime.dispatcher import LocalToolDispatcher
 from src.services.conversation_runtime.models import (
     ModelProviderClient,
@@ -384,7 +385,7 @@ def _build_provider_history(
         return []
 
     history: list[ProviderInputMessage] = []
-    for message in prior_conversation:
+    for message in provider_conversation_history(prior_conversation):
         role = message.get("role")
         content = message.get("content")
         if role not in _HISTORY_ROLES or not isinstance(content, str) or not content:

@@ -161,8 +161,8 @@ class TestEnsureAgent:
         assert session.agent is new_agent
 
     @pytest.mark.asyncio
-    async def test_fetches_column_samples_in_batch_mode(self):
-        """Fetches column samples when source_info present and batch mode."""
+    async def test_does_not_fetch_column_samples_in_batch_mode(self):
+        """Source samples stay local even when constructing a batch prompt."""
         session = MagicMock()
         session.agent = None
         session.agent_source_hash = None
@@ -194,10 +194,10 @@ class TestEnsureAgent:
             )
 
         assert result is True
-        mock_gw.get_column_samples.assert_called_once_with(max_samples=5)
+        mock_gw.get_column_samples.assert_not_called()
         # Verify column_samples was passed to build_system_prompt
         _, kwargs = mock_build.call_args
-        assert kwargs["column_samples"] == {"city": ["NYC", "LA"]}
+        assert "column_samples" not in kwargs
 
     @pytest.mark.asyncio
     async def test_skips_column_samples_in_interactive_mode(self):
@@ -228,7 +228,7 @@ class TestEnsureAgent:
         assert result is True
         # Verify column_samples is None in interactive mode
         _, kwargs = mock_build.call_args
-        assert kwargs["column_samples"] is None
+        assert "column_samples" not in kwargs
 
 
 class TestProcessMessage:

@@ -457,8 +457,12 @@ _SAFE_SCHEMA_TECHNICAL_IDENTIFIERS = {
     "quantity",
     "servicelevel",
     "sku",
+    "declaredvalue", "createdat", "updatedat", "total", "subtotal", "tags",
 }
 _SCHEMA_TECHNICAL_CAMEL_TOKENS = {
+    "recipient", "total", "created", "updated", "at", "declared", "value",
+    "display", "fulfillment", "fulfilment", "subtotal", "price", "invoice",
+    "monetary", "tag", "tags",
     "address",
     "amount",
     "billing",
@@ -822,7 +826,7 @@ def _project_payload(value: Any, *, tool_name: str | None = None) -> Any:
 
             if isinstance(item, list):
                 if normalized_key in _SAFE_NORMALIZED_SCHEMA_LIST_KEYS:
-                    projected_columns = _project_schema_columns(item)
+                    projected_columns = project_schema_columns(item)
                     if projected_columns is not None:
                         projected[key] = projected_columns
                     continue
@@ -1120,7 +1124,8 @@ def _is_safe_filter_literal_value(value: Any) -> bool:
     return _is_safe_filter_text(value)
 
 
-def _project_schema_columns(value: Any) -> list[dict[str, Any]] | None:
+def project_schema_columns(value: Any) -> list[dict[str, Any]] | None:
+    """Share the closed provider-safe schema projection with prompt construction."""
     if not isinstance(value, list):
         return None
 
