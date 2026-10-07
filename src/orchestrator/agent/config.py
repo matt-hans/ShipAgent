@@ -81,7 +81,10 @@ def get_data_mcp_config() -> MCPServerConfig:
         return MCPServerConfig(
             command=sys.executable,
             args=["mcp-data"],
-            env={"PATH": os.environ.get("PATH", "")},
+            env={
+                "SHIPAGENT_DATA_DIR": str(get_data_dir().resolve()),
+                "PATH": os.environ.get("PATH", ""),
+            },
         )
 
     return MCPServerConfig(
