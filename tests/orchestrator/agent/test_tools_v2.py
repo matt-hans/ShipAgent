@@ -173,6 +173,8 @@ async def test_ship_command_pipeline_success_with_all_rows():
     """Pipeline fetches all rows when all_rows=true is provided."""
     fetched_rows = [{"order_id": "1", "service_code": "03"}]
     preview_result = {
+        "additional_rows": 0,
+        "confirmation_ready": True,
         "job_id": "job-1",
         "total_rows": 1,
         "preview_rows": [{"row_number": 1, "estimated_cost_cents": 1000}],
@@ -232,6 +234,8 @@ async def test_ship_command_pipeline_threads_schema_fingerprint_to_build_job_row
     """Pipeline passes source signature to row normalization/build path."""
     fetched_rows = [{"order_id": "1", "service_code": "03"}]
     preview_result = {
+        "additional_rows": 0,
+        "confirmation_ready": True,
         "job_id": "job-fp",
         "total_rows": 1,
         "preview_rows": [{"row_number": 1, "estimated_cost_cents": 1000}],
@@ -301,6 +305,8 @@ async def test_ship_command_pipeline_enriches_preview_from_persisted_job_rows():
     """Preview row enrichment should use persisted order_data, not fetched_rows re-normalization."""
     fetched_rows = [{"order_id": "1", "service_code": "01"}]
     preview_result = {
+        "additional_rows": 0,
+        "confirmation_ready": True,
         "job_id": "job-row-map",
         "total_rows": 1,
         "preview_rows": [{"row_number": 1, "estimated_cost_cents": 1000}],
@@ -360,6 +366,8 @@ async def test_ship_command_pipeline_applies_explicit_service_override_to_rows()
         {"order_id": "2", "service_code": "12"},
     ]
     preview_result = {
+        "additional_rows": 0,
+        "confirmation_ready": True,
         "job_id": "job-override",
         "total_rows": 2,
         "preview_rows": [{"row_number": 1, "estimated_cost_cents": 1000}],
@@ -432,6 +440,8 @@ async def test_ship_command_pipeline_always_applies_service_code():
         {"order_id": "2", "service_code": "12"},
     ]
     preview_result = {
+        "additional_rows": 0,
+        "confirmation_ready": True,
         "job_id": "job-live-service",
         "total_rows": 2,
         "preview_rows": [{"row_number": 1, "estimated_cost_cents": 1000}],
@@ -657,6 +667,8 @@ async def test_ship_command_pipeline_uses_emit_preview_ready_helper():
     """ship_command_pipeline_tool delegates final payload to _emit_preview_ready."""
     fetched_rows = [{"order_id": "1", "service_code": "03"}]
     preview_result = {
+        "additional_rows": 0,
+        "confirmation_ready": True,
         "job_id": "job-1",
         "total_rows": 1,
         "preview_rows": [{"row_number": 1, "estimated_cost_cents": 1000}],
@@ -721,6 +733,8 @@ async def test_ship_command_pipeline_sets_preview_hash():
 
     fetched_rows = [{"order_id": "1", "service_code": "03"}]
     preview_result = {
+        "additional_rows": 0,
+        "confirmation_ready": True,
         "job_id": "job-hash",
         "total_rows": 1,
         "preview_rows": [{"row_number": 1, "estimated_cost_cents": 1000}],

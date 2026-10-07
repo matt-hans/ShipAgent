@@ -20,8 +20,10 @@ from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import duckdb
+import pytest
 
 from src.mcp.data_source.tools import (
     import_tools,
@@ -188,3 +190,41 @@ class SimulatedUPS:
 def hard_rejection() -> UPSServiceError:
     """A carrier rejection that proves no shipment was created."""
     return UPSServiceError(code="E-3003", message="Invalid address")
+
+
+def synthetic_source_info() -> dict[str, Any]:
+    """Metadata-only source fixture using the production identity projection."""
+    from src.services.source_identity import source_binding_digest
+    info = {
+        "active": True, "source_type": "csv", "path": "/synthetic/orders.csv",
+        "signature": "schema-v1", "source_instance": "import-test",
+        "row_key_columns": ["_source_row_num"],
+    }
+    info["binding_digest"] = source_binding_digest(info)
+    return info
+
+
+def bind_job_source(db: Any, job_id: str, info: dict[str, Any]) -> None:
+    """Persist the same safe source metadata used by production job creation."""
+    from src.services.audit_service import AuditService, EventType
+    AuditService(db).log_info(
+        job_id=job_id, event_type=EventType.row_event, message="job_source_signature",
+        details={"source_signature": {
+            "source_type": info["source_type"], "source_ref": info.get("path", ""),
+            "schema_fingerprint": info.get("signature", ""),
+            "binding_digest": info["binding_digest"],
+        }},
+    )
+
+
+# Legacy engine unit tests exercise row processing without a connected source.
+# Explicit write-back tests replace this seam with their bound source fixture.
+
+
+
+@pytest.fixture(autouse=True)
+def offline_batch_gateways(monkeypatch, tmp_path):
+    gateway = AsyncMock()
+    gateway.get_source_info.return_value = None
+    monkeypatch.setattr("src.services.batch_engine.get_data_gateway", AsyncMock(return_value=gateway))
+    monkeypatch.setenv("UPS_LABELS_OUTPUT_DIR", str(tmp_path / "labels"))
