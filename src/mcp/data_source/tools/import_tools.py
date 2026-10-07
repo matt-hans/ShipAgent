@@ -24,6 +24,7 @@ from fastmcp import Context
 from src.mcp.data_source.adapters.csv_adapter import CSVAdapter
 from src.mcp.data_source.adapters.db_adapter import DatabaseAdapter
 from src.mcp.data_source.adapters.excel_adapter import ExcelAdapter
+from src.utils.paths import get_uploads_dir
 
 # --- Path security -----------------------------------------------------------
 
@@ -33,7 +34,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[4]
 # Allowed directories for file operations.
 # Extend via SHIPAGENT_ALLOWED_PATHS env var (colon-separated paths).
 _ALLOWED_ROOTS: list[Path] = [
-    _PROJECT_ROOT / "uploads",
+    get_uploads_dir(),
     _PROJECT_ROOT,
 ]
 _extra = os.environ.get("SHIPAGENT_ALLOWED_PATHS", "").strip()

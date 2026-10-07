@@ -127,9 +127,8 @@ ws.append(["Alice Example", "Springfield"])
 ws.append(["Bob Example", "Shelbyville"])
 wb.save(sys.argv[1])
 PY
-IMPORT_BODY=$(curl -s -X POST "$BASE_URL/api/v1/data-sources/import" \
-    -H 'Content-Type: application/json' \
-    -d "{\"type\":\"excel\",\"file_path\":\"$SMOKE_XLSX\"}" || true)
+IMPORT_BODY=$(curl -s -X POST "$BASE_URL/api/v1/data-sources/upload" \
+    -F "file=@$SMOKE_XLSX" || true)
 echo "$IMPORT_BODY" | grep -Eq '"row_count": *2[^0-9]' || smoke_fail "Excel import ($IMPORT_BODY)"
 echo "Excel import: PASSED"
 
