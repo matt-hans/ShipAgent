@@ -27,6 +27,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from src.db.models import AuditLog, EventType, LogLevel
+from src.utils.redaction import is_operational_secret_key, sanitize_error_message
 
 # Re-export enums for convenience
 __all__ = [
@@ -87,7 +88,7 @@ def _redact_string(value: str) -> str:
     value = _EMAIL_RE.sub(REDACTED, value)
     value = _PHONE_RE.sub(REDACTED, value)
     value = _TOKEN_RE.sub(REDACTED, value)
-    return value
+    return sanitize_error_message(value, max_length=max(len(value), 1)) or ""
 
 
 def redact_sensitive(
@@ -120,8 +121,24 @@ def redact_sensitive(
     if isinstance(data, dict):
         result = {}
         for key, value in data.items():
-            key_lower = key.lower().replace("-", "_")
-            if any(field in key_lower for field in REDACT_FIELDS):
+            normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            if (
+                is_operational_secret_key(key)
+                or normalized
+                in {
+                    "rows",
+                    "samplerows",
+                    "rawrows",
+                    "previewrows",
+                    "orderdata",
+                    "contact",
+                    "contacts",
+                }
+                or any(
+                    re.sub(r"[^a-z0-9]", "", field) in normalized
+                    for field in REDACT_FIELDS
+                )
+            ):
                 result[key] = REDACTED
             else:
                 result[key] = redact_sensitive(value, _depth + 1)
@@ -190,7 +207,7 @@ class AuditService:
             timestamp=_utc_now_iso(),
             level=level.value,
             event_type=event_type.value,
-            message=message,
+            message=_redact_string(message),
             details=details_json,
             row_number=row_number,
         )
@@ -465,21 +482,21 @@ class AuditService:
             row_prefix = f"[Row {log_entry.row_number}] " if log_entry.row_number else ""
             line = (
                 f"[{log_entry.timestamp}] [{log_entry.level}] "
-                f"[{log_entry.event_type}] {row_prefix}{log_entry.message}"
+                f"[{log_entry.event_type}] {row_prefix}{_redact_string(log_entry.message)}"
             )
             lines.append(line)
 
             # Add details if present
             if log_entry.details:
                 try:
-                    details_dict = json.loads(log_entry.details)
+                    details_dict = redact_sensitive(json.loads(log_entry.details))
                     details_formatted = json.dumps(details_dict, indent=4)
                     # Indent each line of the details
                     for detail_line in details_formatted.split("\n"):
                         lines.append(f"    {detail_line}")
                 except json.JSONDecodeError:
-                    # If details aren't valid JSON, include as-is
-                    lines.append(f"    {log_entry.details}")
+                    # Do not expose an unstructured legacy payload.
+                    lines.append(f"    {REDACTED}")
 
         return "\n".join(lines)
 

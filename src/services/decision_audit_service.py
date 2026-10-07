@@ -30,6 +30,7 @@ from src.db.models import (
 )
 from src.services.audit_service import redact_sensitive
 from src.services.decision_audit_context import get_decision_run_id
+from src.utils.redaction import sanitize_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +80,7 @@ def _redact_text(value: str) -> str:
     redacted = _EMAIL_RE.sub("[REDACTED_EMAIL]", value)
     redacted = _PHONE_RE.sub("[REDACTED_PHONE]", redacted)
     redacted = _TOKEN_RE.sub("[REDACTED_TOKEN]", redacted)
-    return redacted
+    return sanitize_error_message(redacted, max_length=max(len(redacted), 1)) or ""
 
 
 def _parse_int_env(name: str, default_value: int) -> int:
@@ -122,7 +123,9 @@ class _JSONLMirrorWriter:
                         fh.write(line)
                         fh.write("\n")
             except Exception as exc:
-                logger.warning("Failed writing decision JSONL mirror: %s", exc)
+                logger.warning(
+                    "Failed writing decision JSONL mirror: %s", type(exc).__name__
+                )
 
 
 _writers: dict[str, _JSONLMirrorWriter] = {}
@@ -171,7 +174,9 @@ class DecisionAuditService:
             try:
                 cls.cleanup_retention()
             except Exception as exc:
-                logger.warning("Decision audit retention cleanup failed: %s", exc)
+                logger.warning(
+                    "Decision audit retention cleanup failed: %s", type(exc).__name__
+                )
             _last_cleanup_at = time.monotonic()
 
     @classmethod
@@ -181,7 +186,9 @@ class DecisionAuditService:
         try:
             _jsonl_writer(cls.jsonl_path()).append(payload)
         except Exception as exc:
-            logger.warning("Failed queueing decision mirror write: %s", exc)
+            logger.warning(
+                "Failed queueing decision mirror write: %s", type(exc).__name__
+            )
 
     @classmethod
     def _prepare_payload(
@@ -248,10 +255,14 @@ class DecisionAuditService:
                     db.flush()
                     run_id = run.id
                 except Exception as exc:
-                    logger.warning("Decision audit start_run failed: %s", exc)
+                    logger.warning(
+                        "Decision audit start_run failed: %s", type(exc).__name__
+                    )
                     return None
         except Exception as exc:
-            logger.warning("Decision audit start_run failed before write: %s", exc)
+            logger.warning(
+                "Decision audit start_run failed before write: %s", type(exc).__name__
+            )
             return None
 
         cls._mirror_append(
@@ -288,7 +299,10 @@ class DecisionAuditService:
                     return
                 run.source_signature = signature_json
             except Exception as exc:
-                logger.warning("Decision audit update_run_source_signature failed: %s", exc)
+                logger.warning(
+                    "Decision audit update_run_source_signature failed: %s",
+                    type(exc).__name__,
+                )
 
     @classmethod
     def set_run_job_id(cls, run_id: str | None, job_id: str | None) -> None:
@@ -301,7 +315,9 @@ class DecisionAuditService:
                     return
                 run.job_id = job_id
             except Exception as exc:
-                logger.warning("Decision audit set_run_job_id failed: %s", exc)
+                logger.warning(
+                    "Decision audit set_run_job_id failed: %s", type(exc).__name__
+                )
 
     @classmethod
     def complete_run(
@@ -325,7 +341,9 @@ class DecisionAuditService:
                 if job_id:
                     run.job_id = job_id
             except Exception as exc:
-                logger.warning("Decision audit complete_run failed: %s", exc)
+                logger.warning(
+                    "Decision audit complete_run failed: %s", type(exc).__name__
+                )
                 return
         cls._mirror_append(
             {
@@ -402,7 +420,9 @@ class DecisionAuditService:
                 db.flush()
                 event_id = event.id
             except Exception as exc:
-                logger.warning("Decision audit log_event failed: %s", exc)
+                logger.warning(
+                    "Decision audit log_event failed: %s", type(exc).__name__
+                )
                 return None
 
         cls._mirror_append(
@@ -565,7 +585,9 @@ class DecisionAuditService:
                 )
                 return run.id if run else None
         except Exception as exc:
-            logger.warning("Decision audit resolve_run_id_for_job failed: %s", exc)
+            logger.warning(
+                "Decision audit resolve_run_id_for_job failed: %s", type(exc).__name__
+            )
             return None
 
     @classmethod
@@ -670,7 +692,9 @@ class DecisionAuditService:
                 fh.writelines(kept)
             os.replace(tmp_path, path)
         except Exception as exc:
-            logger.warning("Failed pruning decision JSONL mirror: %s", exc)
+            logger.warning(
+                "Failed pruning decision JSONL mirror: %s", type(exc).__name__
+            )
             return 0
         return removed
 
@@ -687,8 +711,8 @@ class DecisionAuditService:
             "session_id": run.session_id,
             "job_id": run.job_id,
             "user_message_hash": run.user_message_hash,
-            "user_message_redacted": run.user_message_redacted,
-            "source_signature": source_signature,
+            "user_message_redacted": _redact_text(run.user_message_redacted),
+            "source_signature": redact_sensitive(source_signature),
             "status": run.status,
             "model": run.model,
             "interactive_shipping": run.interactive_shipping,
@@ -713,7 +737,7 @@ class DecisionAuditService:
             "event_name": event.event_name,
             "actor": event.actor,
             "tool_name": event.tool_name,
-            "payload_redacted": payload,
+            "payload_redacted": redact_sensitive(payload),
             "payload_hash": event.payload_hash,
             "latency_ms": event.latency_ms,
             "prev_event_hash": event.prev_event_hash,

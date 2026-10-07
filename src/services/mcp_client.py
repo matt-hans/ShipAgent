@@ -362,7 +362,7 @@ class MCPClient:
                 payload={
                     "attempt": attempt + 1,
                     "retry_count": attempt,
-                    "error_text": error_text[:500],
+                    "error_type": "tool_error",
                 },
                 latency_ms=int((time.perf_counter() - attempt_started) * 1000),
             )
@@ -372,12 +372,11 @@ class MCPClient:
                 delay = delay_base * (2**attempt)
                 logger.warning(
                     "MCP tool '%s' returned retryable error (attempt %d/%d), "
-                    "retrying in %.1fs: %s",
+                    "retrying in %.1fs",
                     name,
                     attempt + 1,
                     retries + 1,
                     delay,
-                    error_text[:200],
                 )
                 self._retry_attempts_total += 1
                 DecisionAuditService.log_event_from_context(
@@ -403,7 +402,7 @@ class MCPClient:
             tool_name=name,
             payload={
                 "retry_count": retries,
-                "error_text": last_error[:500],
+                "error_type": "tool_error",
                 "total_duration_ms": int((time.perf_counter() - call_started) * 1000),
             },
         )

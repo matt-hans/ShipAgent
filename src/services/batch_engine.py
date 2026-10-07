@@ -16,7 +16,6 @@ import hashlib
 import json
 import logging
 import os
-import traceback
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
@@ -320,21 +319,20 @@ class BatchEngine:
                     )
                 except UPSServiceError as e:
                     logger.warning(
-                        "Rate quote failed for row %s: %s", row.row_number, e
+                        "Rate quote failed for row %s exception_type=%s",
+                        row.row_number,
+                        type(e).__name__,
                     )
                     rate_error = str(e)
                 except Exception as e:
                     # Keep preview resilient: malformed row data or payload
                     # build issues should surface as row warnings, not hard fail.
-                    err_msg = str(e) or f"{type(e).__name__} (no message)"
                     logger.warning(
-                        "Preview row %s degraded to warning (non-fatal): %s [%s]\n%s",
+                        "Preview row %s degraded to warning exception_type=%s",
                         row.row_number,
-                        err_msg,
                         type(e).__name__,
-                        traceback.format_exc(),
                     )
-                    rate_error = err_msg
+                    rate_error = safe_rate_error
                 row_elapsed = (datetime.now(UTC) - row_started).total_seconds()
 
                 row_info: dict[str, Any] = {

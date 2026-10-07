@@ -7,13 +7,20 @@ available to deterministic handlers and the owner-facing UI.
 
 from typing import Any
 
+from src.utils.redaction import sanitize_error_message
+
+
+def provider_authored_text(value: str) -> str:
+    """Keep permitted authored addresses, excluding explicitly labeled secrets."""
+    return sanitize_error_message(value, max_length=max(len(value), 1)) or ""
+
 
 def provider_conversation_history(
     messages: list[dict[str, Any]] | None,
 ) -> list[dict[str, str]]:
     """Project only authored conversation text, never artifact/private metadata."""
     return [
-        {"role": message["role"], "content": message["content"]}
+        {"role": message["role"], "content": provider_authored_text(message["content"])}
         for message in messages or []
         if message.get("role") in {"user", "assistant"}
         and message.get("message_type", "text") == "text"

@@ -5,6 +5,7 @@ import logging
 import math
 import re
 from collections.abc import Callable
+from copy import deepcopy
 from typing import Any
 
 from src.services.conversation_privacy import SAFE_TOOL_ERROR_MESSAGES
@@ -458,12 +459,30 @@ _SAFE_SCHEMA_TECHNICAL_IDENTIFIERS = {
     "quantity",
     "servicelevel",
     "sku",
-    "declaredvalue", "createdat", "updatedat", "total", "subtotal", "tags",
+    "declaredvalue",
+    "createdat",
+    "updatedat",
+    "total",
+    "subtotal",
+    "tags",
 }
 _SCHEMA_TECHNICAL_CAMEL_TOKENS = {
-    "recipient", "total", "created", "updated", "at", "declared", "value",
-    "display", "fulfillment", "fulfilment", "subtotal", "price", "invoice",
-    "monetary", "tag", "tags",
+    "recipient",
+    "total",
+    "created",
+    "updated",
+    "at",
+    "declared",
+    "value",
+    "display",
+    "fulfillment",
+    "fulfilment",
+    "subtotal",
+    "price",
+    "invoice",
+    "monetary",
+    "tag",
+    "tags",
     "address",
     "amount",
     "billing",
@@ -591,7 +610,7 @@ class LocalToolDispatcher:
 
         tool = self.catalog.get(call.tool_name)
         try:
-            raw_result = await tool.handler(call.parsed_input)
+            raw_result = await tool.handler(deepcopy(call.parsed_input))
         except Exception as exc:
             logger.warning(
                 "Conversation runtime tool handler failed for tool=%s "
@@ -612,8 +631,14 @@ class LocalToolDispatcher:
         payload = _extract_payload(raw_result)
         is_error = _detect_dispatch_error(self.policy, raw_result, payload)
         if is_error:
-            safe_code = raw_result.get("error_code") if isinstance(raw_result, dict) else None
-            content = SAFE_TOOL_ERROR_MESSAGES.get(safe_code, _generic_error_content(call.tool_name))
+            safe_code = (
+                raw_result.get("error_code") if isinstance(raw_result, dict) else None
+            )
+            content = (
+                SAFE_TOOL_ERROR_MESSAGES.get(safe_code)
+                if isinstance(safe_code, str)
+                else None
+            ) or _generic_error_content(call.tool_name)
             return ProviderToolResult(
                 call_id=call.call_id,
                 tool_name=call.tool_name,
@@ -624,10 +649,32 @@ class LocalToolDispatcher:
             )
 
         safe_payload = _project_payload(payload, tool_name=call.tool_name)
-        if call.tool_name in {"resolve_contact", "list_contacts", "save_contact", "delete_contact"}:
+        if call.tool_name in {
+            "resolve_contact",
+            "list_contacts",
+            "save_contact",
+            "delete_contact",
+        }:
             safe_payload = _project_contact_result(payload, call=call)
-        structured_payload = _structured_payload(payload, safe_payload)
-        summary_payload = safe_payload if isinstance(payload, dict) else None
+        if call.tool_name == "track_package":
+            # This value was provided in this provider flow, never fetched from
+            # local job history. Unknown handler-origin numbers are not echoed.
+            tracking = call.parsed_input.get("tracking_number")
+            safe_payload = {"status": "displayed"}
+            if isinstance(tracking, str) and re.fullmatch(
+                r"[A-Za-z0-9]{8,35}", tracking
+            ):
+                safe_payload["tracking_number"] = tracking
+        structured_payload = (
+            _structured_payload(payload, safe_payload)
+            if call.tool_name != "track_package"
+            else safe_payload
+        )
+        summary_payload = (
+            safe_payload
+            if isinstance(payload, dict) or call.tool_name == "track_package"
+            else None
+        )
         content = _content_for_tool_result(
             call.tool_name,
             summary_payload,
@@ -1514,7 +1561,17 @@ def _content_for_tool_result(
 ) -> str:
     if (
         not is_error
-        and tool_name in (_ACTIONABLE_UPS_RESULT_TOOLS | {"resolve_contact", "list_contacts", "save_contact", "delete_contact"})
+        and tool_name
+        in (
+            _ACTIONABLE_UPS_RESULT_TOOLS
+            | {
+                "resolve_contact",
+                "list_contacts",
+                "save_contact",
+                "delete_contact",
+                "track_package",
+            }
+        )
         and isinstance(payload, dict)
     ):
         return json.dumps(payload, sort_keys=True, default=str)

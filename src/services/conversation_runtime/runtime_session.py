@@ -7,7 +7,10 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from src.orchestrator.agent.tools.core import EventEmitterBridge
-from src.services.conversation_privacy import provider_conversation_history
+from src.services.conversation_privacy import (
+    provider_authored_text,
+    provider_conversation_history,
+)
 from src.services.conversation_runtime.dispatcher import LocalToolDispatcher
 from src.services.conversation_runtime.models import (
     ModelProviderClient,
@@ -132,7 +135,7 @@ class ConversationRuntimeSession:
         self.emitter_bridge.callback = capture_frontend_event
         user_message = ProviderInputMessage(
             role="user",
-            content=[ProviderContentPart(text=user_input)],
+            content=[ProviderContentPart(text=provider_authored_text(user_input))],
         )
         messages: list[ProviderInputMessage] = [*self._history, user_message]
         catalog = WorkflowToolCatalog.for_mode(

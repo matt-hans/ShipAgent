@@ -30,6 +30,7 @@ from src.services.decision_audit_context import (
 )
 from src.services.decision_audit_service import DecisionAuditService
 from src.services.gateway_provider import get_data_gateway
+from src.utils.redaction import project_public_artifact
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +80,7 @@ def _get_mru_contacts_for_prompt() -> list[dict]:
                 for c in contacts
             ]
     except Exception as e:
-        logger.warning("Failed to fetch MRU contacts for prompt: %s", e)
+        logger.warning("Failed to fetch MRU contacts for prompt: %s", type(e).__name__)
         return []
 
 
@@ -124,7 +125,9 @@ def _load_prior_conversation(session_id: str) -> list[dict] | None:
                 return None
             return provider_conversation_history(result["messages"])
     except Exception as e:
-        logger.warning("Failed to load prior conversation for %s: %s", session_id, e)
+        logger.warning(
+            "Failed to load prior conversation for %s: %s", session_id, type(e).__name__
+        )
         return None
 
 
@@ -250,7 +253,11 @@ def _persist_session_context(session_id: str, source_info: Any | None) -> None:
             svc = ConversationPersistenceService(db)
             svc.update_session_context(session_id, context_data)
     except Exception as exc:
-        logger.error("Failed to persist session context for %s: %s", session_id, exc)
+        logger.error(
+            "Failed to persist session context for %s: %s",
+            session_id,
+            type(exc).__name__,
+        )
 
 
 _LIVE_ARTIFACT_EVENTS: set[str] = {
@@ -305,13 +312,15 @@ def _persist_assistant_message(session_id: str, text: str) -> None:
             svc = ConversationPersistenceService(db)
             svc.save_message(session_id, "assistant", text)
     except Exception as exc:
-        logger.error("Failed to persist assistant msg for %s: %s", session_id, exc)
+        logger.error(
+            "Failed to persist assistant msg for %s: %s", session_id, type(exc).__name__
+        )
 
 
 def _persist_artifact_message(session_id: str, event_type: str, data: dict) -> None:
     """Persist a tool artifact event as a replayable system artifact message."""
     meta_key = _ARTIFACT_METADATA_KEY.get(event_type, event_type)
-    metadata = {"action": event_type, meta_key: data}
+    metadata = {"action": event_type, meta_key: project_public_artifact(data)}
     try:
         from src.db.connection import get_db_context
         from src.services.conversation_persistence_service import (
@@ -332,7 +341,7 @@ def _persist_artifact_message(session_id: str, event_type: str, data: dict) -> N
             "Failed to persist artifact %s for %s: %s",
             event_type,
             session_id,
-            exc,
+            type(exc).__name__,
         )
 
 
@@ -360,7 +369,7 @@ def _log_decision_event(
             "Decision audit log_event failed for %s/%s: %s",
             run_id,
             event_name,
-            exc,
+            type(exc).__name__,
         )
 
 
@@ -410,7 +419,7 @@ async def ensure_agent(
         try:
             await session.agent.stop()
         except Exception as e:
-            logger.warning("Error stopping old agent: %s", e)
+            logger.warning("Error stopping old agent: %s", type(e).__name__)
         session.confirmed_resolutions.clear()
 
     # Load prior conversation for resumed sessions
@@ -494,7 +503,9 @@ async def process_message(
                 source_info = await gw.get_source_info_typed()
             except Exception as exc:
                 logger.warning(
-                    "Failed to resolve data source for %s: %s", session.session_id, exc
+                    "Failed to resolve data source for %s exception_type=%s",
+                    session.session_id,
+                    type(exc).__name__,
                 )
                 source_info = None
             if not _turn_active():
@@ -514,7 +525,7 @@ async def process_message(
                 logger.warning(
                     "Decision audit source signature update failed for %s: %s",
                     active_run_id,
-                    exc,
+                    type(exc).__name__,
                 )
             _log_decision_event(
                 run_id=active_run_id,
@@ -572,7 +583,7 @@ async def process_message(
                         logger.warning(
                             "Decision audit set_run_job_id failed for %s: %s",
                             active_run_id,
-                            exc,
+                            type(exc).__name__,
                         )
                     if not preview_ready_logged:
                         preview_ready_logged = True
@@ -599,7 +610,7 @@ async def process_message(
                 nonlocal artifact_emitted
                 if not _turn_active():
                     return
-                event_data = data or {}
+                event_data = project_public_artifact(data or {})
                 if hide_transient_chat and event_type in _LIVE_ARTIFACT_EVENTS:
                     artifact_emitted = True
                 if isinstance(event_type, str):
@@ -638,6 +649,8 @@ async def process_message(
                     data = event.get("data", {})
                     if not isinstance(data, dict):
                         data = {}
+                    data = project_public_artifact(data)
+                    event = {**event, "data": data}
 
                     if isinstance(event_type, str):
                         if hide_transient_chat and event_type in _LIVE_ARTIFACT_EVENTS:
@@ -696,7 +709,7 @@ async def process_message(
             phase="error",
             event_name="conversation.processing.failed",
             actor="system",
-            payload={"error": str(exc)},
+            payload={"exception_type": type(exc).__name__},
         )
         raise
     finally:
@@ -728,7 +741,7 @@ async def process_message(
                     logger.warning(
                         "Decision audit complete_run failed for %s: %s",
                         active_run_id,
-                        exc,
+                        type(exc).__name__,
                     )
         finally:
             reset_decision_job_id(job_token)
