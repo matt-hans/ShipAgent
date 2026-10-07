@@ -24,6 +24,8 @@ lupa_runtime = ['lupa.lua51']
 # fakeredis opens <pkg>/model/../commands.json; that path only resolves when
 # the model/ directory exists on disk, so ship the package sources as data too.
 fakeredis_data = collect_data_files('fakeredis', include_py_files=True)
+# The pinned fork's complete read-only contract includes real TimeInTransit.
+ups_spec_data = collect_data_files('ups_mcp', includes=['specs/*.yaml'])
 project_root = Path(SPECPATH)
 
 a = Analysis(
@@ -42,7 +44,7 @@ a = Analysis(
             ),
             'shipagent-frontend/dist/apps/shell/browser',
         ),
-    ] + package_metadata + fakeredis_data,
+    ] + package_metadata + fakeredis_data + ups_spec_data,
     hiddenimports=rich_unicode_data + lupa_runtime + [
         # FastAPI + Uvicorn (the ASGI app is imported by string at runtime)
         'src.api.main',
