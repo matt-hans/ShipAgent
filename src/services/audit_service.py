@@ -27,6 +27,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from src.db.models import AuditLog, EventType, LogLevel
+from src.services.quote_metadata import project_quote_estimates
 from src.utils.redaction import (
     is_operational_secret_key,
     project_embedded_json,
@@ -127,6 +128,10 @@ def redact_sensitive(
         result = {}
         for key, value in data.items():
             normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            if normalized == "previewrows":
+                estimates = project_quote_estimates(value)
+                result[key] = estimates if estimates is not None else REDACTED
+                continue
             if (
                 is_operational_secret_key(key)
                 or normalized

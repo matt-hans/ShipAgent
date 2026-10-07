@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from src.db.models import AuditLog, Job, JobRow
 from src.services.audit_service import AuditService, EventType
+from src.services.quote_metadata import project_quote_estimates
 from src.services.ups_service_codes import SERVICE_CODE_NAMES, ServiceCode
 
 _PREVIEW_RECORD = "batch_priced_preview"
@@ -27,8 +28,6 @@ def save_priced_preview(
     db: Session, job: Job, rows: list[Any], result: dict[str, Any]
 ) -> None:
     """Persist the quote outcome and arm only an explicitly successful quote."""
-    ready = result.get("confirmation_ready") is True
-    job.preview_hash = preview_checksum(rows) if ready else None
     estimates = [
         {
             "row_number": item["row_number"],
@@ -37,6 +36,10 @@ def save_priced_preview(
         }
         for item in result.get("preview_rows", [])
     ]
+    estimates = project_quote_estimates(estimates)
+    ready = result.get("confirmation_ready") is True and estimates is not None
+    job.preview_hash = preview_checksum(rows) if ready else None
+    estimates = estimates if estimates is not None else []
     AuditService(db).log_info(
         job_id=job.id,
         event_type=EventType.row_event,
@@ -65,6 +68,10 @@ def get_priced_preview(
     if record is None or not record.details:
         return None
     result = json.loads(record.details)
+    estimates = project_quote_estimates(result.get("preview_rows"))
+    if estimates is None:
+        return None
+    result["preview_rows"] = estimates
     result["job_id"] = job.id
     result["confirmation_ready"] = (
         result.get("confirmation_ready") is True

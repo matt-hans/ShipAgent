@@ -860,3 +860,68 @@ async def test_auxiliary_gateway_failures_never_log_raw_payloads(
     getattr(gateway, name).assert_awaited_once()
     assert SECRET not in caplog.text
     assert SECRET not in obs.everything_externally_visible()
+
+
+def test_audit_retains_only_typed_quote_estimates_not_imported_preview_rows():
+    from src.services.audit_service import redact_sensitive
+
+    payload = {
+        "preview_rows": [
+            {
+                "row_number": 1,
+                "estimated_cost_cents": 1234,
+                "warnings": [
+                    "Rate unavailable. Re-preview before confirming this batch."
+                ],
+                "recipient_name": SECRET,
+                "arbitrary": SECRET,
+                "rawResponse": {"nested": SECRET},
+                "credentials": SECRET,
+            }
+        ]
+    }
+    projected = redact_sensitive(payload)
+    assert projected["preview_rows"] == [
+        {
+            "row_number": 1,
+            "estimated_cost_cents": 1234,
+            "warnings": ["Rate unavailable. Re-preview before confirming this batch."],
+        }
+    ]
+    assert SECRET not in json.dumps(projected)
+    assert payload["preview_rows"][0]["recipient_name"] == SECRET
+
+
+@pytest.mark.parametrize("invalid", [True, -1, "1234"])
+def test_invalid_quote_metadata_cannot_arm_confirmation(privacy_db, invalid):
+    from src.db.models import Job, JobRow
+    from src.services.batch_executor import BatchConfirmationError, confirm_batch
+    from src.services.batch_preview import get_priced_preview, save_priced_preview
+
+    with privacy_db() as db:
+        job = Job(name="Invalid quote", original_command="ship")
+        db.add(job)
+        db.flush()
+        row = JobRow(
+            job_id=job.id, row_number=1, row_checksum="row-one", order_data="{}"
+        )
+        db.add(row)
+        db.flush()
+        save_priced_preview(
+            db,
+            job,
+            [row],
+            {
+                "confirmation_ready": True,
+                "total_rows": 1,
+                "additional_rows": 0,
+                "total_estimated_cost_cents": 1234,
+                "preview_rows": [{"row_number": 1, "estimated_cost_cents": invalid}],
+            },
+        )
+        assert job.preview_hash is None
+        preview = get_priced_preview(db, job, [row])
+        assert preview is None or preview["confirmation_ready"] is False
+        with pytest.raises(BatchConfirmationError):
+            confirm_batch(job.id, db)
+        assert job.status == "pending"

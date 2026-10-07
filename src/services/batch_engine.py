@@ -38,6 +38,11 @@ from src.services.international_rules import (
 )
 from src.services.label_storage import LabelStorage, build_label_storage
 from src.services.mcp_client import MCPConnectionError
+from src.services.quote_metadata import (
+    LANE_UNAVAILABLE_WARNING,
+    RATE_TIMEOUT_WARNING,
+    RATE_UNAVAILABLE_WARNING,
+)
 from src.services.ups_constants import DEFAULT_ORIGIN_COUNTRY, UPS_CARRIER_NAME
 from src.services.ups_payload_builder import (
     build_shipment_request,
@@ -231,9 +236,7 @@ class BatchEngine:
             async with semaphore:
                 order_data: dict[str, Any] = {}
                 rate_error: str | None = None
-                safe_rate_error = (
-                    "Rate unavailable. Re-preview before confirming this batch."
-                )
+                safe_rate_error = RATE_UNAVAILABLE_WARNING
                 cost_cents = 0
                 try:
                     order_data = self._parse_order_data(row)
@@ -254,7 +257,7 @@ class BatchEngine:
                     )
 
                     if requirements.not_shippable_reason:
-                        safe_rate_error = "This international shipping lane is not enabled. Review shipping settings."
+                        safe_rate_error = LANE_UNAVAILABLE_WARNING
                         raise ValueError(requirements.not_shippable_reason)
 
                     # Hydrate commodities from cache if needed
@@ -305,9 +308,7 @@ class BatchEngine:
                     amount = rate_result.get("totalCharges", {}).get("monetaryValue")
                     cost_cents = _dollars_to_cents(amount)
                 except TimeoutError:
-                    safe_rate_error = (
-                        "Rate timeout. Re-preview before confirming this batch."
-                    )
+                    safe_rate_error = RATE_TIMEOUT_WARNING
                     rate_error = (
                         f"[E-3006] Preview rate timeout after {rate_timeout_s:.1f}s "
                         "while calling UPS rate service."
