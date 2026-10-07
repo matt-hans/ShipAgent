@@ -201,6 +201,8 @@ async def _import_and_build_job(
     row_data = _build_job_row_data(list(flat_rows))
 
     job = job_service.create_job(name="E2E Test", original_command="test")
+    from tests.services.batch_acceptance_support import bind_job_source
+    bind_job_source(job_service.db, job.id, await mcp_client.get_source_info())
     job_service.create_rows(job.id, row_data)
     db_rows = job_service.get_rows(job.id)
     return job.id, db_rows

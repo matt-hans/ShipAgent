@@ -184,19 +184,27 @@ async def test_unbound_external_account_never_receives_tracking(
     assert _jobs(session_factory)[0].status == "completed_with_warnings"
 
 
-async def test_safe_source_binding_survives_audit_and_reimport_is_distinct(source, ups, session_factory):
+async def test_safe_source_binding_survives_audit_and_reimport_is_distinct(
+    source, ups, session_factory
+):
     import json
 
     from src.db.models import AuditLog
+
     info = await source.get_source_info()
     obs, _ = await _preview_in_conversation("scripted", source, ups)
     job_id = _preview_ready(obs)["job_id"]
     with session_factory() as db:
-        record = db.query(AuditLog).filter_by(job_id=job_id, message="job_source_signature").one()
+        record = (
+            db.query(AuditLog)
+            .filter_by(job_id=job_id, message="job_source_signature")
+            .one()
+        )
         signature = json.loads(record.details)["source_signature"]
         assert signature["binding_digest"] == info["binding_digest"]
         assert "CANARY" not in record.details
     from pathlib import Path
+
     await source.import_csv_file(Path(info["path"]))
     replacement = await source.get_source_info()
     assert replacement["binding_digest"] != info["binding_digest"]

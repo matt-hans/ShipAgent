@@ -401,6 +401,7 @@ class TestPreviewInteractiveShipment:
         )
 
         mock_preview_result = {
+            "confirmation_ready": True,
             "job_id": "svc-discovery-test",
             "total_rows": 1,
             "preview_rows": [
@@ -527,6 +528,7 @@ class TestPreviewInteractiveShipment:
         )
 
         mock_preview_result = {
+            "confirmation_ready": True,
             "job_id": "none-opt-test",
             "total_rows": 1,
             "preview_rows": [
@@ -621,6 +623,7 @@ class TestPreviewInteractiveShipment:
         )
 
         mock_preview_result = {
+            "confirmation_ready": True,
             "job_id": "pkg-int-test",
             "total_rows": 1,
             "preview_rows": [
@@ -681,6 +684,7 @@ class TestPreviewInteractiveShipment:
         )
 
         mock_preview_result = {
+            "confirmation_ready": True,
             "job_id": "svc-test",
             "total_rows": 1,
             "preview_rows": [
@@ -741,6 +745,7 @@ class TestPreviewInteractiveShipment:
         )
 
         mock_preview_result = {
+            "confirmation_ready": True,
             "job_id": "intl-fields-test",
             "total_rows": 1,
             "preview_rows": [
@@ -837,6 +842,7 @@ class TestPreviewInteractiveShipment:
         )
 
         mock_preview_result = {
+            "confirmation_ready": True,
             "job_id": "intl-attn-default-test",
             "total_rows": 1,
             "preview_rows": [
@@ -933,6 +939,7 @@ class TestPreviewInteractiveShipment:
         )
 
         mock_preview_result = {
+            "confirmation_ready": True,
             "job_id": "intl-gb-state-norm-test",
             "total_rows": 1,
             "preview_rows": [
@@ -1029,6 +1036,7 @@ class TestPreviewInteractiveShipment:
         )
 
         mock_preview_result = {
+            "confirmation_ready": True,
             "job_id": "test-job-id",
             "total_rows": 1,
             "preview_rows": [
@@ -1097,6 +1105,7 @@ class TestPreviewInteractiveShipment:
         )
 
         mock_preview_result = {
+            "confirmation_ready": True,
             "job_id": "test-job-id",
             "total_rows": 1,
             "preview_rows": [
@@ -1159,6 +1168,7 @@ class TestPreviewInteractiveShipment:
         )
 
         mock_preview_result = {
+            "confirmation_ready": True,
             "job_id": "test-job-id",
             "total_rows": 1,
             "preview_rows": [
@@ -1235,6 +1245,7 @@ class TestPreviewInteractiveShipment:
         )
 
         mock_preview_result = {
+            "confirmation_ready": True,
             "job_id": "test-job-id",
             "total_rows": 1,
             "preview_rows": [
@@ -1300,6 +1311,7 @@ class TestPreviewInteractiveShipment:
         )
 
         mock_preview_result = {
+            "confirmation_ready": True,
             "job_id": "test-job-id",
             "total_rows": 1,
             "preview_rows": [
@@ -1367,6 +1379,7 @@ class TestPreviewInteractiveShipment:
         )
 
         mock_preview_result = {
+            "confirmation_ready": True,
             "job_id": "pkg-test",
             "total_rows": 1,
             "preview_rows": [
@@ -1620,6 +1633,7 @@ class TestExecutionUsesPersistedShipper:
             patch("src.services.batch_executor.UPSMCPClient", return_value=mock_ups_cm),
             patch("src.services.batch_executor.BatchEngine", return_value=mock_be_instance),
             patch("src.services.ups_payload_builder.build_shipper", return_value=env_shipper) as mock_env,
+            patch("src.services.gateway_provider.get_data_gateway", new=AsyncMock(return_value=AsyncMock(get_source_info=AsyncMock(return_value={"source_type": "csv"})))) ,
             patch.dict(os.environ, {
                 "UPS_ACCOUNT_NUMBER": "X",
                 "UPS_BASE_URL": "https://wwwcie.ups.com",

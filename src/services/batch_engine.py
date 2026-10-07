@@ -232,6 +232,7 @@ class BatchEngine:
             async with semaphore:
                 order_data: dict[str, Any] = {}
                 rate_error: str | None = None
+                safe_rate_error = "Rate unavailable. Re-preview before confirming this batch."
                 cost_cents = 0
                 try:
                     order_data = self._parse_order_data(row)
@@ -252,6 +253,7 @@ class BatchEngine:
                     )
 
                     if requirements.not_shippable_reason:
+                        safe_rate_error = "This international shipping lane is not enabled. Review shipping settings."
                         raise ValueError(requirements.not_shippable_reason)
 
                     # Hydrate commodities from cache if needed
@@ -302,6 +304,7 @@ class BatchEngine:
                     amount = rate_result.get("totalCharges", {}).get("monetaryValue")
                     cost_cents = _dollars_to_cents(amount)
                 except TimeoutError:
+                    safe_rate_error = "Rate timeout. Re-preview before confirming this batch."
                     rate_error = (
                         f"[E-3006] Preview rate timeout after {rate_timeout_s:.1f}s "
                         "while calling UPS rate service."
@@ -339,9 +342,7 @@ class BatchEngine:
                     "estimated_cost_cents": cost_cents,
                 }
                 if rate_error:
-                    row_info["rate_error"] = (
-                        "Rate unavailable. Re-preview before confirming this batch."
-                    )
+                    row_info["rate_error"] = safe_rate_error
                 return row_info, cost_cents, row_elapsed
 
         try:
