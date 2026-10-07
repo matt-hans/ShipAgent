@@ -1,6 +1,7 @@
+import re
 from enum import StrEnum
 
-from pydantic import AnyHttpUrl, Field
+from pydantic import AnyHttpUrl, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -45,3 +46,11 @@ class ControlPlaneSettings(BaseSettings):
     # Dormant unless the control-plane operator explicitly enables retention.
     audit_retention_days: int = Field(default=90, ge=30, le=365, strict=True)
     retention_background_tasks_enabled: bool = False
+
+    @field_validator("audit_retention_days", mode="before")
+    @classmethod
+    def _parse_retention_days(cls, value):
+        # BaseSettings receives environment values as strings even in strict mode.
+        if isinstance(value, str) and re.fullmatch(r"[1-9][0-9]*", value):
+            return int(value)
+        return value
