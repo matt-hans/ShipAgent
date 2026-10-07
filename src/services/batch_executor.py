@@ -46,7 +46,7 @@ def confirm_batch(
     job_id: str,
     db: Any,
     *,
-    write_back_enabled: bool = True,
+    write_back_enabled: bool | None = None,
     selected_service_code: str | None = None,
 ) -> tuple[Job, str | None]:
     """Validate the entire confirmation, then claim the pending job atomically."""
@@ -105,7 +105,10 @@ def confirm_batch(
         .values(
             status="running",
             started_at=datetime.now(UTC).isoformat(),
-            write_back_enabled=bool(write_back_enabled and not job.is_interactive),
+            write_back_enabled=bool(
+                (job.write_back_enabled if write_back_enabled is None else write_back_enabled)
+                and not job.is_interactive
+            ),
         )
     )
     db.commit()
