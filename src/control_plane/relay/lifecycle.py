@@ -214,6 +214,8 @@ class InvocationLifecycleCoordinator:
             if sent is None:
                 raise LifecycleUnavailable()
             record = sent
+            if target.execution_target_id != identity.execution_target_id:
+                raise LifecycleUnavailable()
             await budget.call(
                 target.dispatch_invocation(
                     identity=identity,
