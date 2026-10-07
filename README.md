@@ -713,9 +713,7 @@ shipagent/
 │   │           └── oracle.py
 │   └── orchestrator/               # AI orchestration
 │       ├── agent/                  # Shared prompts and deterministic workflow tools
-│       │   ├── client.py           # OrchestrationAgent (conversation mgmt)
-│       │   ├── config.py           # Agent config + MCP server setup
-│       │   ├── hooks.py            # Pre/PostToolUse validation hooks
+│       │   ├── config.py           # Shared gateway subprocess configuration
 │       │   ├── system_prompt.py    # Dynamic system prompt builder
 │       │   └── tools/              # 30+ agent tool handlers
 │       │       ├── core.py         # EventEmitterBridge, helpers
