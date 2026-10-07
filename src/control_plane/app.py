@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from functools import lru_cache
 from typing import Any
 
@@ -23,6 +24,7 @@ from src.control_plane.relay.invocations import RelayInvocationBroker
 from src.control_plane.relay.registry import RelayDeviceRegistry
 from src.control_plane.relay.routes import build_relay_router
 from src.control_plane.request_controls import RequestControls
+from src.control_plane.retention.tasks import ControlPlaneRetentionWorker
 from src.control_plane.routes.oauth_metadata import build_metadata_router
 from src.control_plane.startup import validate_startup_security
 from src.hosted_mcp.execution_target_handlers import (
@@ -48,9 +50,7 @@ def _metadata_url(settings: ControlPlaneSettings) -> str:
 
 def _bearer_challenge(settings: ControlPlaneSettings) -> dict[str, str]:
     return {
-        "WWW-Authenticate": (
-            f'Bearer resource_metadata="{_metadata_url(settings)}"'
-        )
+        "WWW-Authenticate": (f'Bearer resource_metadata="{_metadata_url(settings)}"')
     }
 
 
@@ -72,7 +72,9 @@ async def _resolve_authorization(
     db_session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> AuthorizationContext:
     client_registry = ProviderClientRegistry(settings.auth0_provider_clients)
-    session_factory = db_session_factory or _build_db_sessionmaker(settings.database_url)
+    session_factory = db_session_factory or _build_db_sessionmaker(
+        settings.database_url
+    )
     async with session_factory() as session:
         service = AuthorizationService(session, client_registry)
         return await service.resolve(
@@ -124,12 +126,27 @@ def create_control_plane_app(
         request_controls=RequestControls(redis_client=redis_client),
     )
     mcp_app = mcp.http_app(path="/", transport="streamable-http")
-    app = FastAPI(lifespan=mcp_app.lifespan)
+    retention_worker = ControlPlaneRetentionWorker(
+        redis_client=redis_client,
+        session_factory=db_session_factory,
+        audit_retention_days=settings.audit_retention_days,
+        enabled=settings.retention_background_tasks_enabled,
+    )
+
+    @asynccontextmanager
+    async def lifespan(app):
+        async with mcp_app.lifespan(app):
+            await retention_worker.start()
+            try:
+                yield
+            finally:
+                await retention_worker.stop()
+
+    app = FastAPI(lifespan=lifespan)
+    app.state.retention_worker = retention_worker
     verifier = _build_verifier(settings.auth0_issuer, settings.auth0_audience)
     metadata_resource = str(settings.public_base_url).rstrip("/")
-    app.include_router(
-        build_metadata_router(metadata_resource, settings.auth0_issuer)
-    )
+    app.include_router(build_metadata_router(metadata_resource, settings.auth0_issuer))
     app.include_router(build_relay_router(relay_registry, relay_invocation_broker))
     app.mount("/mcp", mcp_app)
 
