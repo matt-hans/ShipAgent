@@ -843,6 +843,7 @@ async def ship_command_pipeline_tool(
         "source_type": source_info.get("source_type", "unknown"),
         "source_ref": source_info.get("path") or source_info.get("query") or "",
         "schema_fingerprint": schema_signature,
+        "binding_digest": source_info.get("binding_digest"),
     }
     binding_fingerprint = build_binding_fingerprint(
         source_signature=source_signature,

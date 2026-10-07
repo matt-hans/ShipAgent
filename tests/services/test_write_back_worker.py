@@ -26,6 +26,13 @@ from src.services.write_back_worker import (
 )
 
 
+def _source_info():
+    from src.services.source_identity import source_binding_digest
+    info = {"source_type": "csv", "path": "/synthetic/orders.csv", "signature": "schema-v1", "source_instance": "import-test", "row_key_columns": ["_source_row_num"]}
+    info["binding_digest"] = source_binding_digest(info)
+    return info
+
+
 @pytest.fixture
 def db_session():
     """Create an in-memory SQLite DB with write_back_tasks table."""
@@ -38,6 +45,11 @@ def db_session():
     job = Job(id="job-abc", name="Test Job", original_command="ship all", status="running")
     session.add(job)
     session.commit()
+    from src.services.audit_service import AuditService, EventType
+    AuditService(session).log_info(
+        job_id=job.id, event_type=EventType.row_event, message="job_source_signature",
+        details={"source_signature": {"binding_digest": _source_info()["binding_digest"]}},
+    )
 
     yield session
     session.close()
@@ -175,6 +187,7 @@ class TestWriteBackQueue:
     async def test_worker_processes_pending_tasks(self, db_session: Session) -> None:
         """process_write_back_queue() sends tracking to gateway and marks completed."""
         gateway = AsyncMock()
+        gateway.get_source_info.return_value = _source_info()
         gateway.write_back_single = AsyncMock(return_value={"success": True})
 
         enqueue_write_back(db_session, "job-abc", 1, "1Z001", "2026-02-17T00:00:00Z")
@@ -193,6 +206,7 @@ class TestWriteBackQueue:
     async def test_worker_retries_failed_tasks(self, db_session: Session) -> None:
         """Failed tasks stay pending with incremented retry_count."""
         gateway = AsyncMock()
+        gateway.get_source_info.return_value = _source_info()
         gateway.write_back_single = AsyncMock(
             side_effect=Exception("Network error"),
         )
@@ -210,6 +224,7 @@ class TestWriteBackQueue:
     async def test_worker_dead_letters_after_max_retries(self, db_session: Session) -> None:
         """Tasks exceeding max_retries are marked as dead_letter."""
         gateway = AsyncMock()
+        gateway.get_source_info.return_value = _source_info()
         gateway.write_back_single = AsyncMock(
             side_effect=Exception("Persistent failure"),
         )
@@ -239,6 +254,7 @@ class TestWriteBackQueue:
             return {"success": True}
 
         gateway = AsyncMock()
+        gateway.get_source_info.return_value = _source_info()
         gateway.write_back_single = selective_fail
 
         for i in range(1, 4):
@@ -257,6 +273,7 @@ class TestWriteBackQueue:
     async def test_empty_queue_returns_zero_counts(self, db_session: Session) -> None:
         """Processing empty queue returns all-zero counts."""
         gateway = AsyncMock()
+        gateway.get_source_info.return_value = _source_info()
 
         result = await process_write_back_queue(db_session, gateway, [])
 

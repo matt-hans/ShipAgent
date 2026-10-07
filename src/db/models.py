@@ -456,7 +456,7 @@ class WriteBackTask(Base):
         row_number: 1-based row number within the job.
         tracking_number: UPS tracking number to write back.
         shipped_at: ISO8601 timestamp of shipment creation.
-        status: Task status (pending, completed, dead_letter).
+        status: Task status (pending, completed, dead_letter, blocked).
         retry_count: Number of failed attempts so far.
         created_at: ISO8601 timestamp of task creation.
     """

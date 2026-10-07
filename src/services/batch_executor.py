@@ -331,7 +331,7 @@ async def execute_batch(
         wb_status = write_back.get("status", "skipped")
         if failed == 0 and wb_status in ("error", "partial"):
             final_status = "completed_with_warnings"
-            diagnostic = project_terminal_diagnostic("E-4001")
+            diagnostic = project_terminal_diagnostic(write_back.get("error_code", "E-4001"))
             job.error_code = diagnostic.error_code
             job.error_message = diagnostic.message
             raw_failure_count = write_back.get("failure_count")
