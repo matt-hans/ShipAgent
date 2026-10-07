@@ -157,4 +157,3 @@ async def test_pause_during_last_accepted_call_finishes_truthfully(
     assert len(ups.create_calls) == 1
     assert _jobs(session_factory)[0].status == "completed"
     assert [row.status for row in _rows(session_factory, job_id)] == ["completed"]
-
