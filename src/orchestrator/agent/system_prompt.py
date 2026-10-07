@@ -89,12 +89,19 @@ def _build_contacts_section(contacts: list[dict]) -> str:
 def _prompt_schema_columns(source_info: DataSourceInfo) -> list[dict]:
     """Use the same closed schema policy as model-visible tool results."""
     aliases = {"varchar": "string", "bigint": "integer", "smallint": "integer"}
-    return project_schema_columns([
-        {"name": col.name,
-         "type": aliases.get(col.type.lower(), col.type.lower()),
-         "nullable": col.nullable}
-        for col in source_info.columns
-    ]) or []
+    return (
+        project_schema_columns(
+            [
+                {
+                    "name": col.name,
+                    "type": aliases.get(col.type.lower(), col.type.lower()),
+                    "nullable": col.nullable,
+                }
+                for col in source_info.columns
+            ]
+        )
+        or []
+    )
 
 
 def _build_service_table() -> str:
@@ -132,8 +139,19 @@ def _build_schema_section(
     """
     # column_samples is retained for compatibility, but never read or rendered.
     source_type = source_info.source_type
-    if source_type not in {"csv", "excel", "json", "xml", "edi", "fixed_width",
-                           "database", "shopify", "amazon", "upload", "manual"}:
+    if source_type not in {
+        "csv",
+        "excel",
+        "json",
+        "xml",
+        "edi",
+        "fixed_width",
+        "database",
+        "shopify",
+        "amazon",
+        "upload",
+        "manual",
+    }:
         source_type = "unknown"
     row_count = source_info.row_count
     if not isinstance(row_count, int) or isinstance(row_count, bool) or row_count < 0:

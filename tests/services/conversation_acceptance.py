@@ -222,10 +222,15 @@ async def run_scenario(
             "src.services.conversation_handler.create_conversation_agent",
             side_effect=lambda **kwargs: ConversationRuntimeSession(
                 provider=provider,
-                **{key: kwargs[key] for key in (
-                    "system_prompt", "interactive_shipping", "session_id",
-                    "prior_conversation",
-                )},
+                **{
+                    key: kwargs[key]
+                    for key in (
+                        "system_prompt",
+                        "interactive_shipping",
+                        "session_id",
+                        "prior_conversation",
+                    )
+                },
             ),
         ),
         patch(
@@ -253,7 +258,8 @@ async def run_scenario(
             return_value=source_info
         )
         handler_gateway.return_value.get_column_samples = (
-            data_gateway.get_column_samples if data_gateway is not None
+            data_gateway.get_column_samples
+            if data_gateway is not None
             else AsyncMock(return_value={})
         )
         async for event in process_message(

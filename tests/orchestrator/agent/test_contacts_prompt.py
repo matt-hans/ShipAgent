@@ -1,6 +1,5 @@
 """Tests for aggregate-only saved-contact prompt guidance."""
 
-
 from src.orchestrator.agent.system_prompt import (
     MAX_PROMPT_CONTACTS,
     _build_contacts_section,
