@@ -15,7 +15,6 @@ import pytest
 from src.orchestrator.agent.config import (
     PROJECT_ROOT,
     _get_python_command,
-    create_mcp_servers_config,
     get_data_mcp_config,
     get_ups_mcp_config,
 )
@@ -189,79 +188,6 @@ class TestUPSMCPConfig:
         config = get_ups_mcp_config()
         assert isinstance(config["env"], dict)
 
-
-class TestCreateMCPServersConfig:
-    """Tests for the combined MCP servers configuration."""
-
-    def test_returns_dict_with_data_and_external(self):
-        """Should always return config for data and external servers."""
-        config = create_mcp_servers_config()
-        assert isinstance(config, dict)
-        assert "data" in config
-        assert "external" in config
-
-    def test_includes_ups_when_credentials_available(self, monkeypatch):
-        """Should include UPS config when credentials are set."""
-        monkeypatch.setenv("UPS_CLIENT_ID", "id")
-        monkeypatch.setenv("UPS_CLIENT_SECRET", "sec")
-        config = create_mcp_servers_config()
-        assert "ups" in config
-
-    def test_omits_ups_when_no_credentials(self, monkeypatch):
-        """Should omit UPS config when no credentials are available."""
-        monkeypatch.delenv("UPS_CLIENT_ID", raising=False)
-        monkeypatch.delenv("UPS_CLIENT_SECRET", raising=False)
-        config = create_mcp_servers_config()
-        assert "ups" not in config
-
-    def test_data_config_is_valid(self):
-        """Data config should have required keys."""
-        config = create_mcp_servers_config()
-        data_config = config["data"]
-        assert "command" in data_config
-        assert "args" in data_config
-        assert "env" in data_config
-
-    def test_external_config_is_valid(self):
-        """External Sources config should have required keys."""
-        config = create_mcp_servers_config()
-        external_config = config["external"]
-        assert "command" in external_config
-        assert "args" in external_config
-        assert "env" in external_config
-
-    def test_data_uses_preferred_python(self):
-        """Data server should use the preferred Python command."""
-        config = create_mcp_servers_config()
-        assert config["data"]["command"] == _get_python_command()
-
-    def test_external_uses_preferred_python(self):
-        """External Sources server should use the preferred Python command."""
-        config = create_mcp_servers_config()
-        assert config["external"]["command"] == _get_python_command()
-
-    def test_ups_uses_preferred_python(self, monkeypatch):
-        """UPS server should use the preferred Python command."""
-        monkeypatch.setenv("UPS_CLIENT_ID", "id")
-        monkeypatch.setenv("UPS_CLIENT_SECRET", "sec")
-        config = create_mcp_servers_config()
-        assert config["ups"]["command"] == _get_python_command()
-
-    def test_ups_config_is_valid(self, monkeypatch):
-        """UPS config should have required keys."""
-        monkeypatch.setenv("UPS_CLIENT_ID", "id")
-        monkeypatch.setenv("UPS_CLIENT_SECRET", "sec")
-        config = create_mcp_servers_config()
-        ups_config = config["ups"]
-        assert "command" in ups_config
-        assert "args" in ups_config
-        assert "env" in ups_config
-
-    def test_returns_new_dict_each_call(self):
-        """Each call should return a fresh dict (not cached)."""
-        config1 = create_mcp_servers_config()
-        config2 = create_mcp_servers_config()
-        assert config1 is not config2
 
 
 class TestUPSMCPConfigAccountNumber:

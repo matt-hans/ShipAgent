@@ -369,17 +369,17 @@ class TestFilterSpecValidation:
     @pytest.mark.asyncio
     async def test_filter_spec_without_root_denied(self):
         """filter_spec without root field is denied."""
-        from src.orchestrator.agent.hooks import validate_filter_spec_on_pipeline
+        from src.services.conversation_runtime.models import ProviderToolCall
+        from src.services.conversation_runtime.policy import RuntimePolicyEngine
+        from src.services.policy_decision import PolicyDenialCode
 
-        result = await validate_filter_spec_on_pipeline(
-            {"tool_name": "ship_command_pipeline", "tool_input": {
-                "filter_spec": {"status": "RESOLVED"},
-            }},
-            "test-id",
-            None,
+        result = await RuntimePolicyEngine(interactive_shipping=False).check_pre_tool(
+            ProviderToolCall(call_id="test-id", tool_name="ship_command_pipeline",
+                             parsed_input={"filter_spec": {"status": "RESOLVED"}})
         )
-        decision = result.get("hookSpecificOutput", {}).get("permissionDecision", "")
-        assert decision == "deny"
+        assert result.allowed is False
+        assert result.code is PolicyDenialCode.INVALID_FILTER_STRUCTURE
+
 
 
 # ============================================================================

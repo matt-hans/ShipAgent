@@ -19,8 +19,7 @@ from sqlalchemy.orm import sessionmaker
 
 from src.db.models import Base
 
-# Define PROJECT_ROOT locally to avoid importing from orchestrator.agent
-# which has heavy dependencies (claude_agent_sdk) not needed for basic tests
+# Keep fixture paths independent from application imports.
 PROJECT_ROOT = Path(__file__).parent.parent
 
 

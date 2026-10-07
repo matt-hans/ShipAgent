@@ -80,18 +80,13 @@ def version():
     """Show ShipAgent version and dependency info."""
     from importlib.metadata import version as pkg_version
 
-    from src.orchestrator.agent.client import is_claude_sdk_available
-
     try:
         v = pkg_version("shipagent")
     except Exception:
         v = "unknown"
     console.print(f"[bold]ShipAgent[/bold] v{v}")
     console.print("  CLI: headless automation suite")
-    if is_claude_sdk_available():
-        console.print("  Claude SDK runtime: available")
-    else:
-        console.print("  Claude SDK runtime: [red]not installed[/red]")
+    console.print("  Runtime: ShipAgent-owned (Anthropic, OpenAI, Gemini adapters)")
 
 
 # --- Config commands ---

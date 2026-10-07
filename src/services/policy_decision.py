@@ -34,10 +34,7 @@ class PolicyDecision:
     For decisions built by the shared runtime (``RuntimePolicyEngine``),
     ``reason`` is safe to show to a model or end user: it is fixed text, plus
     at most canonical identifiers (banned key names from a fixed set, the
-    denied tool name) and never arbitrary caller-supplied values. Decisions
-    built by the legacy Claude hook adapter are not covered by this guarantee:
-    they retain detailed validation text (input type name, validation error,
-    found key names) for backward compatibility.
+    denied tool name) and never arbitrary caller-supplied values.
     """
 
     allowed: bool
