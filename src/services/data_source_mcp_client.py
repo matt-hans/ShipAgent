@@ -18,6 +18,7 @@ from src.services.mapping_cache import (
     should_invalidate as mapping_cache_should_invalidate,
 )
 from src.services.mcp_client import MCPClient
+from src.utils.paths import get_data_dir
 from src.utils.runtime import bundled_mcp_command
 
 # -- Gateway-local DTOs --------------------------------------------------------
@@ -103,6 +104,7 @@ class DataSourceMCPClient:
             args=args,
             env={
                 "PYTHONPATH": _PROJECT_ROOT,
+                "SHIPAGENT_DATA_DIR": str(get_data_dir().resolve()),
                 "PATH": os.environ.get("PATH", ""),
             },
         )

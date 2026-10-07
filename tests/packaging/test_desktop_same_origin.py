@@ -273,7 +273,7 @@ def test_bundle_smoke_requires_data_source_status_and_excel_import():
 
     assert "/api/v1/data-sources/status" in bundler
     assert '"$STATUS_CODE" = "200"' in bundler
-    assert "/api/v1/data-sources/import" in bundler
+    assert "/api/v1/data-sources/upload" in bundler
     assert '"row_count": *2[^0-9]' in bundler
     # Hermetic: synthetic workbook in the throwaway data dir.
     assert "$SMOKE_DATA_DIR/smoke.xlsx" in bundler
