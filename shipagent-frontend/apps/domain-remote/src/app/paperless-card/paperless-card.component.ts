@@ -9,6 +9,7 @@
 import { Component, Input, ChangeDetectionStrategy } from '@angular/core';
 import { CheckIconComponent, FileIconComponent } from '@shipagent/shared-ui';
 import type { PaperlessResult } from '@shipagent/shared-types';
+import { WorkflowConfirmationComponent } from '../workflow-confirmation.component';
 
 interface ActionMeta {
   label: string;
@@ -16,6 +17,8 @@ interface ActionMeta {
 }
 
 const ACTION_META: Record<PaperlessResult['action'], ActionMeta> = {
+  push_preview: { label: 'Attach Document?', description: 'Confirm attaching this document to the shipment below.' },
+  delete_preview: { label: 'Delete Document?', description: 'Confirm deleting this document from UPS Forms History. This action cannot be undone.' },
   uploaded: { label: 'Document Uploaded', description: 'Document uploaded to UPS Forms History.' },
   pushed: { label: 'Document Attached', description: 'Document attached to shipment.' },
   deleted: { label: 'Document Deleted', description: 'Document removed from Forms History.' },
@@ -44,7 +47,7 @@ function formatFileSize(bytes: number): string {
   selector: 'app-paperless-card',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [CheckIconComponent, FileIconComponent],
+  imports: [CheckIconComponent, FileIconComponent, WorkflowConfirmationComponent],
   template: `
     <div class="card-premium p-4 space-y-3 border-l-4 card-domain-paperless">
       <!-- Header -->
@@ -55,7 +58,7 @@ function formatFileSize(bytes: number): string {
         </div>
         <span class="badge badge-success">
           <sa-icon-check class="w-3 h-3 mr-1" />
-          Done
+          {{ isPreview ? 'Awaiting confirmation' : 'Done' }}
         </span>
       </div>
 
@@ -79,6 +82,13 @@ function formatFileSize(bytes: number): string {
           <span class="text-muted-foreground">{{ documentIds.length > 1 ? 'Document IDs:' : 'Document ID:' }}</span>
           <span class="text-foreground break-all">{{ documentIds.join(', ') }}</span>
         </div>
+      }
+
+      @if (data.shipmentIdentifier) {
+        <p class="text-xs font-mono">Shipment: {{ data.shipmentIdentifier }}</p>
+      }
+      @if (isPreview) {
+        <app-workflow-confirmation [data]="data" [confirmLabel]="data.action === 'delete_preview' ? 'Confirm Deletion' : 'Confirm Attachment'" />
       }
 
       @if (data.formsGroupId) {
@@ -115,6 +125,12 @@ function formatFileSize(bytes: number): string {
 })
 export class PaperlessCardComponent {
   @Input({ required: true }) data!: PaperlessResult;
+  @Input() sessionId = '';
+  @Input() cardType = '';
+
+  get isPreview(): boolean {
+    return this.data?.action === 'push_preview' || this.data?.action === 'delete_preview';
+  }
 
   get meta(): ActionMeta {
     return ACTION_META[this.data?.action] ?? ACTION_META.uploaded;
