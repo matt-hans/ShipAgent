@@ -85,7 +85,6 @@ a = Analysis(
         'watchdog',
         'yaml',
         # Model runtime adapters
-        'claude_agent_sdk',
         'openai',
         'google.genai',
         # Misc

@@ -1,9 +1,8 @@
 """Orchestration layer for ShipAgent.
 
-The orchestration layer uses the Claude Agent SDK as its primary
-orchestration engine. The agent's system prompt and deterministic
-tools handle intent parsing, filter generation, and batch execution
-within the SDK agent loop.
+Shared prompt builders and deterministic workflow tools handle intent parsing,
+filter generation and shipping workflows. Provider-neutral conversation services
+own the model loop, policy gates, session lifecycle and tool dispatch.
 
 Supporting Models:
     ServiceCode/SERVICE_ALIASES: Canonical UPS service code definitions.

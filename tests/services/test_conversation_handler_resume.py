@@ -8,7 +8,6 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 # Pre-load submodules so patch() can resolve dotted paths for lazy imports
-import src.orchestrator.agent.client  # noqa: F401
 import src.orchestrator.agent.system_prompt  # noqa: F401
 from src.db.models import Base
 from src.services.conversation_persistence_service import ConversationPersistenceService
@@ -132,7 +131,7 @@ class TestEnsureAgentPriorConversation:
 
     @pytest.mark.asyncio
     async def test_resumed_session_passes_prior_conversation(self, db_session):
-        """A session with DB history passes messages to build_system_prompt."""
+        """A session seeds role history only, never duplicate system-prompt history."""
         _seed_session_with_messages(db_session, "resume-session", count=4)
 
         mock_session = MagicMock()
@@ -168,15 +167,15 @@ class TestEnsureAgentPriorConversation:
             patch(
                 "src.services.conversation_handler.create_conversation_agent",
                 return_value=mock_agent_instance,
-            ),
+            ) as mock_factory,
         ):
             from src.services.conversation_handler import ensure_agent
 
             await ensure_agent(mock_session, source_info=None)
 
             mock_prompt.assert_called_once()
-            call_kwargs = mock_prompt.call_args[1]
-            prior = call_kwargs.get("prior_conversation")
+            assert mock_prompt.call_args[1]["prior_conversation"] is None
+            prior = mock_factory.call_args[1]["prior_conversation"]
             assert prior is not None
             assert len(prior) == 4
             assert prior[0]["content"] == "Message 0"
@@ -236,8 +235,8 @@ class TestEnsureAgentPriorConversation:
 
         prompt_prior = mock_prompt.call_args[1]["prior_conversation"]
         runtime_prior = mock_create_agent.call_args[1]["prior_conversation"]
-        assert prompt_prior == [
+        assert prompt_prior is None
+        assert runtime_prior == [
             {"role": "user", "content": "Older question"},
             {"role": "assistant", "content": "Older answer"},
         ]
-        assert runtime_prior == prompt_prior

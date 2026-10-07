@@ -51,7 +51,8 @@ def fixed_model(monkeypatch):
 def _make_test_model_signature():
     return json.dumps(
         [
-            None,
+            (None if os.environ.get("SHIPAGENT_AGENT_RUNTIME") == "fake"
+             else "anthropic:claude-haiku-4-5-20251001"),
             os.environ.get("SHIPAGENT_AGENT_RUNTIME", "auto").strip().lower(),
             os.environ.get("OPENAI_MODEL", ""),
             os.environ.get("GEMINI_MODEL", ""),

@@ -1,14 +1,7 @@
 """MCP server configuration for the Orchestration Agent.
 
-This module defines how MCP servers are spawned as child processes via stdio.
-The configurations are used by ClaudeAgentOptions when initializing the agent.
-
-Configuration includes:
-    - Data MCP: Python-based server for data source operations
-    - External Sources MCP: Python-based unified gateway for external platforms
-    - UPS MCP: UPS API server used behind shared workflow tools and retained
-      for Claude adapter backward compatibility (local fork, run as Python
-      module via .venv)
+This module defines gateway-owned MCP subprocess configuration for data sources,
+external commerce and UPS. Conversation adapters never spawn their own copies.
 
 Hybrid UPS architecture:
     - Interactive path: Agent uses orchestrator workflow tools for ad-hoc
@@ -203,28 +196,3 @@ def get_external_sources_mcp_config() -> MCPServerConfig:
             "PATH": os.environ.get("PATH", ""),
         },
     )
-
-
-def create_mcp_servers_config(
-    ups_credentials: UPSCredentials | None = None,
-) -> dict[str, MCPServerConfig]:
-    """Create MCP server configurations for ClaudeAgentOptions.
-
-    Returns a dictionary mapping server names to their configurations,
-    suitable for passing to ClaudeAgentOptions.mcp_servers.
-
-    Args:
-        ups_credentials: Typed UPS credentials. When None, UPS MCP config
-            falls back to env vars or may be omitted entirely.
-
-    Returns:
-        Dict with server configurations. UPS key is omitted if no credentials.
-    """
-    configs: dict[str, MCPServerConfig] = {
-        "data": get_data_mcp_config(),
-        "external": get_external_sources_mcp_config(),
-    }
-    ups_config = get_ups_mcp_config(credentials=ups_credentials)
-    if ups_config is not None:
-        configs["ups"] = ups_config
-    return configs

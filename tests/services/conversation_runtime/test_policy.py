@@ -187,7 +187,9 @@ def test_post_tool_error_detection_for_dict_and_string() -> None:
     assert engine.detect_error_response('response {"error": "bad"}') is True
     assert engine.detect_error_response("UPS request failed") is True
     assert engine.detect_error_response("validation failed: missing address") is False
-    assert engine.detect_error_response({"status": "failed", "job_id": "job-1"}) is False
+    assert (
+        engine.detect_error_response({"status": "failed", "job_id": "job-1"}) is False
+    )
     assert engine.detect_error_response({"data": {"status": "failed"}}) is False
     assert engine.detect_error_response("no errors found") is False
     assert engine.detect_error_response("exception handled cleanly") is False
@@ -213,3 +215,38 @@ def test_post_tool_error_detection_for_explicit_status_error_markers(
     engine = RuntimePolicyEngine(interactive_shipping=False)
 
     assert engine.detect_error_response(response) is True
+
+
+@pytest.mark.parametrize("interactive", [False, True])
+@pytest.mark.parametrize("payload", [None, [], "not-a-dict", {}, {"confirmed": True}])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "mcp__ups__create_shipment",
+        "mcp__ups__upload_paperless_document",
+        "mcp__ups__push_document_to_shipment",
+        "mcp__ups__delete_paperless_document",
+        "mcp__ups__future_mutation",
+    ],
+)
+async def test_raw_carrier_denials_survive_malformed_input_and_claimed_approval(
+    interactive, payload, name
+):
+    decision = await RuntimePolicyEngine(
+        interactive_shipping=interactive
+    ).check_pre_tool(
+        ProviderToolCall(call_id="raw-call", tool_name=name, parsed_input=payload)
+    )
+    assert decision.allowed is False
+    assert decision.code in {
+        PolicyDenialCode.DIRECT_SHIPMENT_CREATION_NOT_ALLOWED,
+        PolicyDenialCode.RAW_CARRIER_CALL_NOT_ALLOWED,
+    }
+
+
+@pytest.mark.parametrize("response", [None, {}, {"data": [1, 2, 3]}, {"status": 200}])
+def test_post_tool_success_detection_after_hook_removal(response):
+    assert (
+        RuntimePolicyEngine(interactive_shipping=False).detect_error_response(response)
+        is False
+    )

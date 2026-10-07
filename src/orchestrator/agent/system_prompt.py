@@ -1,4 +1,4 @@
-"""System prompt builder for the SDK orchestration agent.
+"""Shared system prompt builder for ShipAgent conversation runtimes.
 
 Dynamically builds the agent's system prompt by merging shipping domain
 knowledge (service codes, filter rules, workflow) with the current data

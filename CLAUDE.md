@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **ShipAgent** is an AI-native shipping automation platform. The goal is to build the most robust shipping workflow platform ever — a system where provider runtimes expose the same canonical workflow/tool backbone, with internal connectivity modules for external systems and deterministic services for execution.
 
-**Provider-Neutral Backbone:** ShipAgent's backbone is the canonical workflow/tool layer. Claude Agent SDK, OpenAI Apps SDK, Anthropic connectors, Microsoft Copilot, Gemini function calling, generic MCP clients, CLI, API routes, and desktop/Tauri are runtime or distribution adapters over that backbone.
+**Provider-Neutral Backbone:** ShipAgent's backbone is the canonical workflow/tool layer. Model protocol adapters, OpenAI Apps SDK, Anthropic connectors, Microsoft Copilot, Gemini function calling, generic MCP clients, CLI, API routes, and desktop/Tauri are runtime or distribution adapters over that backbone.
 
 **Runtime Adapter Rule:** Provider runtimes may plan, render, stream, or package workflows, but shipping business logic lives in workflow services and canonical registry definitions. Do not add new provider-specific shipping logic directly inside model SDK handlers.
 
@@ -48,7 +48,7 @@ User → Browser UI (Angular) → FastAPI REST API → Conversation SSE Route
                                                        ↓
                                               AgentSessionManager
                                                        ↓
-                                              OrchestrationAgent (Claude SDK adapter)
+                                              ConversationRuntimeSession (shared provider loop)
                                                ↓              ↓
                                     Orchestrator Tools    UPS MCP (stdio)
                                          ↓
@@ -63,7 +63,7 @@ User → Browser UI (Angular) → FastAPI REST API → Conversation SSE Route
 
 ### System Components
 
-**Agent Layer:** `OrchestrationAgent` (Claude SDK) → 9 tool modules → Pre/PostToolUse hooks → `AgentSessionManager` (per-conversation lifecycle).
+**Agent Layer:** `ConversationRuntimeSession` → canonical tool catalog and neutral policy → deterministic handlers; `AgentSessionManager` owns conversation lifecycle.
 **MCP Layer:** Data Source MCP (FastMCP+DuckDB, stdio), UPS MCP (local fork, stdio, 18 tools), External Sources MCP (FastMCP, stdio — Shopify/WooCommerce/SAP/Oracle). Gateway singletons in `gateway_provider.py`.
 **Execution Layer:** `BatchEngine` (concurrent preview+execute), `UPSMCPClient` (programmatic batch), `ConversationPersistenceService` (session/message DB).
 **Presentation:** FastAPI backend (REST+SSE), Angular 21+Nx+Native Federation frontend, Typer+Rich headless CLI. SQLite+SQLAlchemy for persistence.
@@ -72,32 +72,30 @@ User → Browser UI (Angular) → FastAPI REST API → Conversation SSE Route
 
 ### Agent Tool Architecture
 
-9 tool modules in `orchestrator/agent/tools/`: `core` (EventEmitterBridge, row cache), `data` (source querying, filtering, platforms), `pipeline` (batch workflow — `ship_command_pipeline` fast path), `interactive` (ad-hoc single shipment), `pickup` (schedule/cancel/rate/status/divisions/facilities), `locator` (Access Points/stores/service centers), `paperless` (upload/push/delete documents), `landed_cost` (duties/taxes), `tracking` (package tracking with mismatch detection).
+Shared tool modules in `orchestrator/agent/tools/`: `core`, `data`, `pipeline`, `interactive`, `pickup`, `documents`, `tracking`, `contacts` and `ups`. Registration is `get_all_tool_definitions()` in `tools/__init__.py`; `WorkflowToolCatalog` applies mode, side-effect and safe-result metadata. Interactive and batch tools share deterministic handlers and gateways, with mode-specific preview/pipeline exposure.
 
-Tool registration: `get_all_tool_definitions()` in `tools/__init__.py`. Interactive mode: only status + `preview_interactive_shipment`. V2 tools (pickup, locator, paperless, landed cost, tracking) available in both modes.
+### Agent Policy & Intelligence
 
-### Agent Hooks & Intelligence
-
-Hooks in `hooks.py`: `create_shipping_hook` blocks direct `create_shipment`, `schedule_pickup_hook`/`cancel_pickup_hook` gate financial ops, `validate_track_package` forces orchestrator wrapper, `log_post_tool` audits all calls, `detect_error_response` flags failures.
+`RuntimePolicyEngine` blocks raw carrier calls, unsafe filter SQL and model-initiated purchase execution. Shared workflow services own trusted preview/confirmation gates. The conversation service owns redacted audit events; neutral policy classifies tool response errors.
 
 System prompt (`system_prompt.py`) built per-message by `build_system_prompt()`: identity, service codes, live schema, mode-aware filter rules. Self-correction: up to 3 Jinja2 mapping retries (`CorrectionResult`).
 
 ### Data Flow
 
-`POST /conversations/` → `POST /conversations/{id}/messages` → `OrchestrationAgent.process_message_stream()` → SSE events (deltas, tool calls) → `PreviewCard` → **mandatory user confirmation** → `confirmJob()` → `BatchEngine` execution → `CompletionArtifact` with labels → write-back tracking numbers. Fast path: `ship_command_pipeline` handles the entire flow in one tool call.
+`POST /conversations/` → `POST /conversations/{id}/messages` → shared `conversation_handler.process_message()` → SSE events (deltas, tool calls) → `PreviewCard` → **mandatory user confirmation** → `confirmJob()` → `BatchEngine` execution → `CompletionArtifact` with labels → write-back tracking numbers. `ship_command_pipeline` prepares the batch and preview; only the trusted confirmation path can execute it.
 
 ### Dual Shipping Modes
 
 | Mode | Toggle | Agent Behavior | Tools Available |
 |------|--------|---------------|-----------------|
 | **Batch** (default) | Off | Data-source-driven — filter rows, preview costs, execute batch | All tools (data, pipeline, status) |
-| **Interactive** | On | Conversational — collect recipient details, preview single shipment | `preview_interactive_shipment`, `get_job_status`, `get_platform_status` only |
+| **Interactive** | On | Conversational — collect recipient details, preview single shipment | Mode-filtered preview, status, contact and auxiliary workflow tools |
 
 Mode switching resets the conversation session (deletes old session, creates new one with opposite flag).
 
 ### Agent Safety Model
 
-Three layers: **Structural** (tool registry filtering by mode, session isolation, gateway singletons), **Behavioral** (hooks block unsafe operations, audit all calls), **Procedural** (mandatory preview before execution, `confirmJob()` is the only execution path, E-XXXX error codes).
+Three layers: **Structural** (tool registry filtering by mode, session isolation, gateway singletons), **Behavioral** (neutral policy blocks unsafe operations; the conversation service audits calls), **Procedural** (mandatory preview before execution, `confirmJob()` is the only execution path, E-XXXX error codes).
 
 ### Canonical Data Models
 
@@ -105,7 +103,7 @@ All constants/enums centralized — no magic numbers. Key modules: `ups_constant
 
 ### MCP Gateway Architecture
 
-Two paths: **Agent MCP** (interactive, SDK-managed per session) and **Programmatic MCP** (batch + data, `gateway_provider.py` singletons). UPS MCP spawned per session or per batch job. Data Source + External Sources MCPs are process-global singletons with `asyncio.Lock`. All clients inherit `MCPClient` with retry + exponential backoff.
+All conversation providers and batch workflows use the established programmatic gateways. `gateway_provider.py` owns process-global data-source, external-source and UPS clients behind async locks; providers never spawn per-session MCP copies. Read-only retries remain bounded; carrier mutations are single-attempt and ambiguous outcomes remain unconfirmed, never silently replayed.
 
 ## Source Structure
 
@@ -195,22 +193,20 @@ src/
     │   ├── mapping.py          # Column mapping models
     │   ├── elicitation.py      # Elicitation models
     │   └── correction.py       # Self-correction loop tracking (max 3 attempts)
-    ├── agent/                  # Claude Agent SDK runtime adapter
-    │   ├── client.py           # OrchestrationAgent — SDK agent with streaming + MCP coordination
+    ├── agent/                  # Shared prompts and deterministic workflow tools
     │   ├── system_prompt.py    # Dynamic system prompt builder (domain knowledge + data schema)
-    │   ├── tools/              # Deterministic SDK tools (split by concern — 9 modules)
+    │   ├── tools/              # Deterministic workflow tools (split by concern — 9 modules)
     │   │   ├── __init__.py     # Tool registry — get_all_tool_definitions()
     │   │   ├── core.py         # EventEmitterBridge, row cache, bridge binding helpers
     │   │   ├── data.py         # Data source + platform tool handlers
     │   │   ├── pipeline.py     # Batch pipeline tool handlers (ship_command_pipeline fast path)
     │   │   ├── interactive.py  # Interactive shipment tool handler (preview_interactive_shipment)
     │   │   ├── pickup.py       # UPS pickup operations (schedule, cancel, rate, status, divisions, facilities)
-    │   │   ├── locator.py      # UPS location search (find_locations_tool)
-    │   │   ├── paperless.py    # Paperless customs (upload, push, delete document tools)
-    │   │   ├── landed_cost.py  # Landed cost estimation (get_landed_cost_tool)
+    │   │   ├── documents.py    # Paperless document workflow tools
+    │   │   ├── ups.py          # UPS rate, address, transit and landed-cost wrappers
+    │   │   ├── contacts.py     # Owner contact-handle workflows
     │   │   └── tracking.py     # UPS package tracking (track_package_tool)
-    │   ├── config.py           # MCP server configuration factory (Data, External, UPS)
-    │   └── hooks.py            # Pre/PostToolUse validation hooks (mode enforcement, audit)
+    │   └── config.py           # Gateway subprocess configuration (Data, External, UPS)
     └── batch/                  # Batch orchestration
         ├── events.py           # BatchEventObserver protocol
         ├── models.py           # Batch state models
@@ -250,8 +246,11 @@ scripts/
 
 ## Key Services
 
-### OrchestrationAgent (`src/orchestrator/agent/client.py`)
-Claude Agent SDK runtime adapter. Manages conversation state, tool dispatch, MCP servers, hooks, streaming, error recovery. `process_message_stream()` yields SSE events. MCP servers: `orchestrator` (in-process) + `ups` (stdio). Default model: `AGENT_MODEL` → `ANTHROPIC_MODEL` → Claude Haiku 4.5.
+### Conversation runtime (`src/services/conversation_runtime/`)
+ShipAgent owns state, policy, dispatch, streaming and cancellation for Anthropic,
+OpenAI and Gemini. The shared factory is `src/services/conversation_agent.py`;
+API, CLI and desktop use the same conversation service. See
+`docs/runtime/sdk-free-runtime.md` for settings precedence and legacy aliases.
 
 ### UPS MCP Server (local fork: `matt-hans/ups-mcp`)
 Stdio child process, editable install from pinned commit. 18 tools across 6 domains: Shipping, Address/Transit, Landed Cost, Paperless, Locator, Pickup.
@@ -260,7 +259,7 @@ Stdio child process, editable install from pinned commit. 18 tools across 6 doma
 Concurrent preview + execution (`asyncio.gather` + semaphore, `BATCH_CONCURRENCY` env, default 5). Per-row state writes for crash recovery. SSE events for real-time progress. Integrated write-back.
 
 ### AgentSessionManager (`src/services/agent_session_manager.py`)
-Per-conversation isolated history, persistent `OrchestrationAgent`, `agent_source_hash` for change detection, `asyncio.Lock` for serialization.
+Per-conversation isolated history, persistent `ConversationAgent`, `agent_source_hash` for change detection, `asyncio.Lock` for serialization.
 
 ### UPSPayloadBuilder (`src/services/ups_payload_builder.py`)
 Builds payloads from column-mapped data + canonical constants. All field limits imported from `ups_constants.py` — never inline.
@@ -316,7 +315,7 @@ All endpoints use `/api/v1/` prefix. See route files in `src/api/routes/` for fu
 | Desktop App | Tauri v2 (Rust), tauri-plugin-shell, tauri-plugin-updater (Ed25519; inactive until `plugins.updater` is configured) |
 | Backend | Python 3.12+, FastAPI, SQLAlchemy, SQLite |
 | Bundling | PyInstaller (one-folder), `bundle_entry.py` subcommand dispatch |
-| Runtime Adapter | Claude Agent SDK adapter (`claude-agent-sdk>=0.1.22`), Anthropic API, extensible provider adapters |
+| Runtime Adapter | ShipAgent-owned runtime; Anthropic Messages, OpenAI Responses and Gemini adapters |
 | MCP Protocol | FastMCP v2 (servers), `mcp` (stdio clients) |
 | Credentials | `keyring` (macOS Keychain / Linux Secret Service), `platformdirs` |
 | Data Processing | DuckDB (in-memory analytics), openpyxl (Excel), `defusedxml` (XXE prevention) |
@@ -424,7 +423,7 @@ cargo tauri dev
 ### Agent Testing
 
 ```bash
-pytest tests/orchestrator/agent/ -v        # Agent tools + hooks + system prompt
+pytest tests/orchestrator/agent/ -v        # Shared workflow tools + system prompt
 pytest tests/services/test_batch_engine.py -v  # Batch preview + execution
 pytest tests/services/test_ups_mcp_client.py -v  # UPS MCP client
 pytest tests/services/test_ups_payload_builder.py -v  # Payload builder + constants
@@ -474,7 +473,6 @@ All enums inherit from both `str` and `Enum` for JSON serialization.
 - SSE/streaming tests may hang — use `pytest -k "not stream and not sse and not progress"`
 - After backend restart, Shopify connection lost (in-memory) — call `GET /api/v1/platforms/shopify/env-status`
 - EDI adapter test collection errors (10 tests, unrelated to core features)
-- **Claude Agent SDK bug [#265](https://github.com/anthropics/claude-agent-sdk-python/issues/265)**: PreToolUse hook denials generate a synthetic "API Error: 400 due to tool use concurrency issues" message. Hooks remain active; the misleading error is suppressed in the chat UI (`chat-container.component.ts`). Remove the filter when the SDK fix ships.
 
 ## UPS API Lessons
 

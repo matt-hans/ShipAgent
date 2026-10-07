@@ -60,7 +60,7 @@ def select_provider(monkeypatch, db, kind, turns):
     SettingsService(db).update({"agent_model": MODELS[kind]})
     monkeypatch.setenv(
         "SHIPAGENT_AGENT_RUNTIME",
-        {"scripted": "fake", "anthropic": "anthropic_messages"}.get(kind, "auto"),
+        {"scripted": "fake"}.get(kind, "auto"),
     )
     names = {
         "scripted": ("fake", "Fake"),
@@ -833,3 +833,52 @@ async def test_service_interruption_after_delta_suppresses_text_and_persistence(
     # The service must guard its own suspension even without a transport signal.
     assert [event async for event in stream] == []
     assert svc.get_session_with_messages("lifecycle")["messages"] == []
+
+
+async def test_unset_model_is_snapshotted_before_stopping_old_agent(
+    lifecycle, monkeypatch
+):
+    db, svc = lifecycle
+    session = AgentSession("lifecycle")
+    select_provider(monkeypatch, db, "openai", [[Say("Initial")]])
+    await send(session, svc, "First")
+    old = session.agent
+    stop = old.stop
+    monkeypatch.setattr(
+        "src.services.conversation_handler._resolve_agent_model", lambda: None
+    )
+    monkeypatch.delenv("AGENT_MODEL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+    monkeypatch.setenv("SHIPAGENT_AGENT_RUNTIME", "auto")
+
+    async def change_configuration_while_stopping():
+        monkeypatch.setenv("AGENT_MODEL", "openai:later-model")
+        await stop()
+
+    monkeypatch.setattr(old, "stop", change_configuration_while_stopping)
+    rendered = build_provider("anthropic", [[Say("Default Anthropic")]])
+    selected = []
+
+    def construct(**kwargs):
+        selected.append(kwargs["model"])
+        return rendered.provider
+
+    monkeypatch.setattr(
+        "src.services.conversation_runtime.anthropic_provider.AnthropicProviderClient",
+        construct,
+    )
+    await send(session, svc, "Use the default")
+    assert selected == ["anthropic:claude-haiku-4-5-20251001"]
+
+
+@pytest.mark.parametrize("runtime", ["auto", "", "claude", "claude_sdk", "anthropic"])
+async def test_cutover_selectors_resume_history_once(lifecycle, monkeypatch, runtime):
+    db, svc = lifecycle
+    svc.save_message("lifecycle", "user", "Historical question!")
+    svc.save_message("lifecycle", "assistant", "Historical answer!")
+    rendered = select_provider(monkeypatch, db, "anthropic", [[Say("Resumed!")]])
+    monkeypatch.setenv("SHIPAGENT_AGENT_RUNTIME", runtime)
+    await send(AgentSession("lifecycle"), svc, "New question!")
+    request = wire(rendered)
+    for text in ("Historical question!", "Historical answer!", "New question!"):
+        assert request.count(text) == 1

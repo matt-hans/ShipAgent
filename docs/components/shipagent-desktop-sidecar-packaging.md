@@ -4,7 +4,11 @@ The Desktop Sidecar Packaging component turns ShipAgent into a Tauri desktop app
 
 Packaging configuration is in `src-tauri/tauri.conf.json`, which points to the Angular shell build, declares app window/security settings, bundles `../dist/shipagent-core` as `backend-dist`, and targets macOS app/dmg bundles. `scripts/bundle_backend.sh` builds the frontend, runs PyInstaller using `shipagent-core.spec`, verifies the one-folder backend output, starts it on an OS-assigned port, and smoke-tests `/health`. `scripts/start-backend.sh` is the development backend launcher that loads `.env`, verifies `.venv` dependencies, and starts uvicorn with one worker.
 
-Evidence: `tests/test_bundle_entry.py`, `tests/test_claude_sdk_optional.py`, `tests/utils/test_runtime.py`, and the build/packaging files under `src-tauri/` and `scripts/`.
+Evidence: `tests/test_bundle_entry.py`, `tests/test_claude_sdk_optional.py`, `tests/packaging/test_sdk_free_runtime.py`, `tests/utils/test_runtime.py`, and the build/packaging files under `src-tauri/` and `scripts/`.
+
+The sidecar uses the shared conversation runtime and does not collect or probe
+the Claude Agent SDK. Source entry-point tests do not establish that a new
+frozen desktop build has passed; final clean-install/package validation is #41.
 
 ## Read Variables
 

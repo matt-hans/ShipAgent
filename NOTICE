@@ -28,7 +28,7 @@ ShipAgent integrates with and/or depends on the following third-party
 systems and services. Their licenses are separate from this project
 and govern their respective terms of use:
 
-  - Anthropic Claude Agent SDK — https://github.com/anthropics/claude-agent-sdk-python
+  - Anthropic Messages API — https://www.anthropic.com/
   - Model Context Protocol (MCP) — https://modelcontextprotocol.io/
   - FastMCP — https://github.com/jlowin/fastmcp (MIT License)
   - FastAPI — https://fastapi.tiangolo.com/ (MIT License)

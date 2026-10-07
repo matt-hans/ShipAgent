@@ -36,14 +36,14 @@ if [ ! -x "$BACKEND_PYTHON" ]; then
 fi
 
 if ! "$BACKEND_PYTHON" - <<'PY' >/dev/null 2>&1
-import claude_agent_sdk
+import httpx
 import google.genai
 import openai
 import uvicorn
 PY
 then
     echo "Error: backend dependencies are missing in .venv."
-    echo "Required runtime modules include uvicorn, claude-agent-sdk, openai, and google-genai."
+    echo "Required runtime modules include uvicorn, httpx, openai, and google-genai."
     echo "Run: .venv/bin/python -m pip install -e '.[dev]'"
     exit 1
 fi
