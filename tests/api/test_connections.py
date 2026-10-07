@@ -1,5 +1,6 @@
 """Tests for /connections API routes."""
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -47,6 +48,25 @@ def test_client(db_engine, tmp_path, monkeypatch):
     app.dependency_overrides.clear()
 
 
+@pytest.fixture
+def provider_auth_failure_transport(monkeypatch):
+    """Exercise real validation/status logic against a deterministic local 401."""
+    original = httpx.AsyncClient
+    requests = []
+
+    def reject(request):
+        requests.append(request)
+        return httpx.Response(401, json={"error": "invalid_credentials"})
+
+    def offline_client(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(reject)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", offline_client)
+    yield requests
+    assert len(requests) == 1, "validation must exercise exactly one mocked HTTP call"
+
+
 def _ups_payload(**overrides):
     """Build a standard UPS save payload."""
     payload = {
@@ -91,7 +111,6 @@ def _amazon_payload(**overrides):
 
 
 class TestListConnections:
-
     def test_list_empty(self, test_client):
         """GET /connections/ returns empty list."""
         resp = test_client.get("/api/v1/connections/")
@@ -126,7 +145,6 @@ class TestListConnections:
 
 
 class TestSaveConnection:
-
     def test_save_ups_creates_201(self, test_client):
         """POST /connections/ups/save returns 201 on create."""
         resp = test_client.post("/api/v1/connections/ups/save", json=_ups_payload())
@@ -138,49 +156,64 @@ class TestSaveConnection:
     def test_save_ups_overwrite_200(self, test_client):
         """POST /connections/ups/save returns 200 on overwrite."""
         test_client.post("/api/v1/connections/ups/save", json=_ups_payload())
-        resp = test_client.post("/api/v1/connections/ups/save", json=_ups_payload(
-            display_name="UPS v2",
-        ))
+        resp = test_client.post(
+            "/api/v1/connections/ups/save",
+            json=_ups_payload(
+                display_name="UPS v2",
+            ),
+        )
         assert resp.status_code == 200
         assert resp.json()["is_new"] is False
 
     def test_save_shopify(self, test_client):
         """POST /connections/shopify/save saves Shopify credentials."""
-        resp = test_client.post("/api/v1/connections/shopify/save", json=_shopify_payload())
+        resp = test_client.post(
+            "/api/v1/connections/shopify/save", json=_shopify_payload()
+        )
         assert resp.status_code == 201
         data = resp.json()
         assert data["connection_key"] == "shopify:mystore.myshopify.com"
 
     def test_save_amazon(self, test_client):
         """POST /connections/amazon/save saves Amazon credentials."""
-        resp = test_client.post("/api/v1/connections/amazon/save", json=_amazon_payload())
+        resp = test_client.post(
+            "/api/v1/connections/amazon/save", json=_amazon_payload()
+        )
         assert resp.status_code == 201
         data = resp.json()
         assert data["connection_key"] == "amazon:ATVPDKIKX0DER"
 
     def test_invalid_provider_400(self, test_client):
         """Invalid provider returns 400."""
-        resp = test_client.post("/api/v1/connections/fedex/save", json={
-            "auth_mode": "oauth", "credentials": {}, "metadata": {},
-            "display_name": "FedEx",
-        })
+        resp = test_client.post(
+            "/api/v1/connections/fedex/save",
+            json={
+                "auth_mode": "oauth",
+                "credentials": {},
+                "metadata": {},
+                "display_name": "FedEx",
+            },
+        )
         assert resp.status_code == 400
         assert resp.json()["error"]["code"] == "INVALID_PROVIDER"
 
     def test_missing_fields_400(self, test_client):
         """Missing required fields returns 400."""
-        resp = test_client.post("/api/v1/connections/ups/save", json={
-            "auth_mode": "client_credentials",
-            "credentials": {"client_id": "only_id"},
-            "metadata": {}, "environment": "test",
-            "display_name": "UPS",
-        })
+        resp = test_client.post(
+            "/api/v1/connections/ups/save",
+            json={
+                "auth_mode": "client_credentials",
+                "credentials": {"client_id": "only_id"},
+                "metadata": {},
+                "environment": "test",
+                "display_name": "UPS",
+            },
+        )
         assert resp.status_code == 400
         assert resp.json()["error"]["code"] == "MISSING_FIELD"
 
 
 class TestGetConnection:
-
     def test_get_connection(self, test_client):
         """GET /connections/{key} returns connection with runtime_usable."""
         test_client.post("/api/v1/connections/ups/save", json=_ups_payload())
@@ -206,7 +239,6 @@ class TestGetConnection:
 
 
 class TestDeleteConnection:
-
     def test_delete_connection(self, test_client):
         """DELETE /connections/{key} removes connection."""
         test_client.post("/api/v1/connections/ups/save", json=_ups_payload())
@@ -221,7 +253,6 @@ class TestDeleteConnection:
 
 
 class TestDisconnectConnection:
-
     def test_disconnect_preserves_row(self, test_client):
         """POST /connections/{key}/disconnect sets status, preserves row."""
         test_client.post("/api/v1/connections/ups/save", json=_ups_payload())
@@ -240,8 +271,9 @@ class TestDisconnectConnection:
 
 
 class TestServiceConstructionFailure:
-
-    def test_save_returns_json_500_on_service_init_failure(self, test_client, monkeypatch):
+    def test_save_returns_json_500_on_service_init_failure(
+        self, test_client, monkeypatch
+    ):
         """Service construction failure returns structured JSON 500, not bare text.
 
         When ConnectionService.__init__ raises (e.g. encryption key issue),
@@ -262,7 +294,9 @@ class TestServiceConstructionFailure:
         assert body["error"]["code"] == "INTERNAL_ERROR"
         assert "permission denied" in body["error"]["message"].lower()
 
-    def test_list_returns_json_500_on_service_init_failure(self, test_client, monkeypatch):
+    def test_list_returns_json_500_on_service_init_failure(
+        self, test_client, monkeypatch
+    ):
         """List endpoint also returns structured JSON 500 on init failure."""
         from src.services.connection_service import ConnectionService
 
@@ -278,14 +312,15 @@ class TestServiceConstructionFailure:
 
 
 class TestValidateConnection:
-
     def test_validate_not_found(self, test_client):
         """POST /connections/{key}/validate returns 404 for missing connection."""
         resp = test_client.post("/api/v1/connections/ups:test/validate")
         assert resp.status_code == 404
         assert resp.json()["error"]["code"] == "NOT_FOUND"
 
-    def test_validate_shopify_auth_failure(self, test_client):
+    def test_validate_shopify_auth_failure(
+        self, test_client, provider_auth_failure_transport
+    ):
         """POST /connections/{key}/validate returns 422 with descriptive error for invalid Shopify token."""
         # Save credentials first
         save_resp = test_client.post(
@@ -295,7 +330,7 @@ class TestValidateConnection:
         assert save_resp.status_code == 201
         connection_key = save_resp.json()["connection_key"]
 
-        # Validate — will fail because token is fake
+        # Validate using the deterministic mocked 401 transport
         resp = test_client.post(f"/api/v1/connections/{connection_key}/validate")
         assert resp.status_code == 422
         body = resp.json()
@@ -303,7 +338,9 @@ class TestValidateConnection:
         assert body["status"] == "error"
         assert len(body["message"]) > 0
 
-    def test_validate_ups_auth_failure(self, test_client):
+    def test_validate_ups_auth_failure(
+        self, test_client, provider_auth_failure_transport
+    ):
         """POST /connections/{key}/validate returns 422 with descriptive error for invalid UPS creds."""
         # Save credentials first
         save_resp = test_client.post(
@@ -313,7 +350,7 @@ class TestValidateConnection:
         assert save_resp.status_code == 201
         connection_key = save_resp.json()["connection_key"]
 
-        # Validate — will fail because creds are fake
+        # Validate using the deterministic mocked 401 transport
         resp = test_client.post(f"/api/v1/connections/{connection_key}/validate")
         assert resp.status_code == 422
         body = resp.json()
@@ -321,7 +358,9 @@ class TestValidateConnection:
         assert body["status"] == "error"
         assert len(body["message"]) > 0
 
-    def test_validate_updates_status_to_error(self, test_client):
+    def test_validate_updates_status_to_error(
+        self, test_client, provider_auth_failure_transport
+    ):
         """Validation failure updates connection status to 'error' with error code."""
         save_resp = test_client.post(
             "/api/v1/connections/shopify/save",
@@ -329,7 +368,7 @@ class TestValidateConnection:
         )
         connection_key = save_resp.json()["connection_key"]
 
-        # Validate (will fail)
+        # Validate with the mocked authentication failure
         test_client.post(f"/api/v1/connections/{connection_key}/validate")
 
         # Get connection — status should be 'error'
@@ -340,7 +379,6 @@ class TestValidateConnection:
 
 
 class TestCustom422Handler:
-
     def test_422_redaction_strips_input_values(self, test_client):
         """Custom 422 handler strips raw input values for connection routes."""
         # Send a non-dict body (string) to trigger 422
