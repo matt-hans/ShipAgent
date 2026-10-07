@@ -224,7 +224,7 @@ async def fetch_rows_tool(
         except FilterCompilationError as e:
             return _err(f"[{e.code.value}] {e.message}")
         except Exception as e:
-            logger.error("fetch_rows_tool compile failed: %s", e)
+            logger.error("fetch_rows_tool compile failed: %s", type(e).__name__)
             return _err(f"Filter compilation failed: {e}")
 
         where_sql = compiled.where_sql
@@ -276,7 +276,7 @@ async def fetch_rows_tool(
             payload["rows"] = rows
         return _ok(payload)
     except Exception as e:
-        logger.error("fetch_rows_tool failed: %s", e)
+        logger.error("fetch_rows_tool failed: %s", type(e).__name__)
         return _err(f"Failed to fetch rows: {e}")
 
 
@@ -383,11 +383,11 @@ async def resolve_filter_intent_tool(
         )
         return _err(f"[{e.code.value}] {e.message}")
     except Exception as e:
-        logger.error("resolve_filter_intent_tool failed: %s", e)
+        logger.error("resolve_filter_intent_tool failed: %s", type(e).__name__)
         _audit_event(
             "error",
             "resolve_filter_intent.failed",
-            {"message": str(e)},
+            {"exception_type": type(e).__name__},
             tool_name="resolve_filter_intent",
         )
         return _err(f"Filter resolution failed: {e}")
@@ -542,7 +542,9 @@ async def confirm_filter_interpretation_tool(
     except FilterCompilationError as e:
         return _err(f"[{e.code.value}] {e.message}")
     except Exception as e:
-        logger.error("confirm_filter_interpretation re-resolve failed: %s", e)
+        logger.error(
+            "confirm_filter_interpretation re-resolve failed: %s", type(e).__name__
+        )
         return _err(f"Re-resolution failed: {e}")
 
     # Enforce token/intent binding: the token's resolved_spec_hash must
@@ -600,7 +602,7 @@ async def confirm_filter_interpretation_tool(
     except FilterCompilationError as e:
         return _err(f"[{e.code.value}] {e.message}")
     except Exception as e:
-        logger.error("confirm_filter_interpretation_tool failed: %s", e)
+        logger.error("confirm_filter_interpretation_tool failed: %s", type(e).__name__)
         return _err(f"Confirmation re-resolution failed: {e}")
 
     if resolved.status.value != "RESOLVED":
@@ -698,7 +700,7 @@ async def connect_shopify_tool(
     except ShopifyActivationError as exc:
         return _err(str(exc))
     except Exception as exc:
-        logger.error("connect_shopify_tool unexpected error: %s", exc)
+        logger.error("connect_shopify_tool unexpected error: %s", type(exc).__name__)
         return _err(f"Shopify activation failed: {exc}")
 
     return _ok({
@@ -723,7 +725,7 @@ async def connect_amazon_tool(
     except AmazonActivationError as exc:
         return _err(str(exc))
     except Exception as exc:
-        logger.error("connect_amazon_tool unexpected error: %s", exc)
+        logger.error("connect_amazon_tool unexpected error: %s", type(exc).__name__)
         return _err(f"Amazon activation failed: {exc}")
 
     return _ok({

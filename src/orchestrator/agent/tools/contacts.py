@@ -130,7 +130,9 @@ async def resolve_contact_tool(
             })
 
     except Exception as e:
-        logger.exception("Error in resolve_contact_tool")
+        logger.warning(
+            "Error in resolve_contact_tool exception_type=%s", type(e).__name__
+        )
         return _err(f"Error resolving contact: {e}")
 
 
@@ -265,7 +267,7 @@ async def save_contact_tool(
     except ValueError as e:
         return _err(str(e))
     except Exception as e:
-        logger.exception("Error in save_contact_tool")
+        logger.warning("Error in save_contact_tool exception_type=%s", type(e).__name__)
         return _err(f"Error saving contact: {e}")
 
 
@@ -314,7 +316,9 @@ async def list_contacts_tool(
             return _ok(result)
 
     except Exception as e:
-        logger.exception("Error in list_contacts_tool")
+        logger.warning(
+            "Error in list_contacts_tool exception_type=%s", type(e).__name__
+        )
         return _err(f"Error listing contacts: {e}")
 
 
@@ -368,5 +372,7 @@ async def delete_contact_tool(
             })
 
     except Exception as e:
-        logger.exception("Error in delete_contact_tool")
+        logger.warning(
+            "Error in delete_contact_tool exception_type=%s", type(e).__name__
+        )
         return _err(f"Error deleting contact: {e}")

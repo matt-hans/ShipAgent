@@ -19,6 +19,12 @@ from src.orchestrator.agent.intent_detection import (
 )
 from src.services.agent_session_manager import AgentSession
 from src.services.conversation_agent import create_conversation_agent
+from src.services.conversation_privacy import (
+    TEXT_BLOCK_PRIVACY_ERROR,
+    PublicTextBlock,
+    TextBlockPrivacyError,
+    provider_conversation_history,
+)
 from src.services.decision_audit_context import (
     get_decision_job_id,
     get_decision_run_id,
@@ -29,6 +35,7 @@ from src.services.decision_audit_context import (
 )
 from src.services.decision_audit_service import DecisionAuditService
 from src.services.gateway_provider import get_data_gateway
+from src.utils.redaction import project_public_artifact
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +85,7 @@ def _get_mru_contacts_for_prompt() -> list[dict]:
                 for c in contacts
             ]
     except Exception as e:
-        logger.warning("Failed to fetch MRU contacts for prompt: %s", e)
+        logger.warning("Failed to fetch MRU contacts for prompt: %s", type(e).__name__)
         return []
 
 
@@ -121,11 +128,11 @@ def _load_prior_conversation(session_id: str) -> list[dict] | None:
             )
             if result is None or not result["messages"]:
                 return None
-            return [
-                {"role": m["role"], "content": m["content"]} for m in result["messages"]
-            ]
+            return provider_conversation_history(result["messages"])
     except Exception as e:
-        logger.warning("Failed to load prior conversation for %s: %s", session_id, e)
+        logger.warning(
+            "Failed to load prior conversation for %s: %s", session_id, type(e).__name__
+        )
         return None
 
 
@@ -251,7 +258,11 @@ def _persist_session_context(session_id: str, source_info: Any | None) -> None:
             svc = ConversationPersistenceService(db)
             svc.update_session_context(session_id, context_data)
     except Exception as exc:
-        logger.error("Failed to persist session context for %s: %s", session_id, exc)
+        logger.error(
+            "Failed to persist session context for %s: %s",
+            session_id,
+            type(exc).__name__,
+        )
 
 
 _LIVE_ARTIFACT_EVENTS: set[str] = {
@@ -306,13 +317,15 @@ def _persist_assistant_message(session_id: str, text: str) -> None:
             svc = ConversationPersistenceService(db)
             svc.save_message(session_id, "assistant", text)
     except Exception as exc:
-        logger.error("Failed to persist assistant msg for %s: %s", session_id, exc)
+        logger.error(
+            "Failed to persist assistant msg for %s: %s", session_id, type(exc).__name__
+        )
 
 
 def _persist_artifact_message(session_id: str, event_type: str, data: dict) -> None:
     """Persist a tool artifact event as a replayable system artifact message."""
     meta_key = _ARTIFACT_METADATA_KEY.get(event_type, event_type)
-    metadata = {"action": event_type, meta_key: data}
+    metadata = {"action": event_type, meta_key: project_public_artifact(data)}
     try:
         from src.db.connection import get_db_context
         from src.services.conversation_persistence_service import (
@@ -333,7 +346,7 @@ def _persist_artifact_message(session_id: str, event_type: str, data: dict) -> N
             "Failed to persist artifact %s for %s: %s",
             event_type,
             session_id,
-            exc,
+            type(exc).__name__,
         )
 
 
@@ -361,7 +374,7 @@ def _log_decision_event(
             "Decision audit log_event failed for %s/%s: %s",
             run_id,
             event_name,
-            exc,
+            type(exc).__name__,
         )
 
 
@@ -411,28 +424,18 @@ async def ensure_agent(
         try:
             await session.agent.stop()
         except Exception as e:
-            logger.warning("Error stopping old agent: %s", e)
+            logger.warning("Error stopping old agent: %s", type(e).__name__)
         session.confirmed_resolutions.clear()
-
-    # Fetch column samples for filter grounding (batch mode only)
-    column_samples = None
-    if source_info is not None and not interactive_shipping:
-        try:
-            gw = await get_data_gateway()
-            column_samples = await gw.get_column_samples(max_samples=5)
-        except Exception as e:
-            logger.debug("Could not fetch column samples: %s", e)
 
     # Load prior conversation for resumed sessions
     prior_conversation = _without_current_user_turn(
-        _load_prior_conversation(session.session_id),
+        provider_conversation_history(_load_prior_conversation(session.session_id)) or None,
         current_user_message,
     )
 
     system_prompt = build_system_prompt(
         source_info=source_info,
         interactive_shipping=interactive_shipping,
-        column_samples=column_samples,
         contacts=contacts,
         prior_conversation=prior_conversation,
     )
@@ -505,7 +508,9 @@ async def process_message(
                 source_info = await gw.get_source_info_typed()
             except Exception as exc:
                 logger.warning(
-                    "Failed to resolve data source for %s: %s", session.session_id, exc
+                    "Failed to resolve data source for %s exception_type=%s",
+                    session.session_id,
+                    type(exc).__name__,
                 )
                 source_info = None
             if not _turn_active():
@@ -525,7 +530,7 @@ async def process_message(
                 logger.warning(
                     "Decision audit source signature update failed for %s: %s",
                     active_run_id,
-                    exc,
+                    type(exc).__name__,
                 )
             _log_decision_event(
                 run_id=active_run_id,
@@ -562,6 +567,7 @@ async def process_message(
             hide_transient_chat = _hide_transient_chat_enabled()
             artifact_emitted = False
             buffered_agent_messages: list[str] = []
+            public_text_block = PublicTextBlock()
             preview_ready_logged = False
             pending_bridge_events: list[dict[str, Any]] = []
 
@@ -583,7 +589,7 @@ async def process_message(
                         logger.warning(
                             "Decision audit set_run_job_id failed for %s: %s",
                             active_run_id,
-                            exc,
+                            type(exc).__name__,
                         )
                     if not preview_ready_logged:
                         preview_ready_logged = True
@@ -610,7 +616,7 @@ async def process_message(
                 nonlocal artifact_emitted
                 if not _turn_active():
                     return
-                event_data = data or {}
+                event_data = project_public_artifact(data or {})
                 if hide_transient_chat and event_type in _LIVE_ARTIFACT_EVENTS:
                     artifact_emitted = True
                 if isinstance(event_type, str):
@@ -649,6 +655,8 @@ async def process_message(
                     data = event.get("data", {})
                     if not isinstance(data, dict):
                         data = {}
+                    data = project_public_artifact(data)
+                    event = {**event, "data": data}
 
                     if isinstance(event_type, str):
                         if hide_transient_chat and event_type in _LIVE_ARTIFACT_EVENTS:
@@ -656,11 +664,38 @@ async def process_message(
                         _persist_artifact_once(event_type, data)
                         _track_preview_ready(event_type, data)
 
-                    if event_type == "agent_message_delta" and hide_transient_chat:
+                    if event_type == "agent_message_delta":
+                        try:
+                            public_text_block.observe(data.get("text", ""))
+                        except TextBlockPrivacyError:
+                            await session.agent.interrupt()
+                            run_status = AgentDecisionRunStatus.failed
+                            yield {
+                                "event": "error",
+                                "data": {"message": TEXT_BLOCK_PRIVACY_ERROR},
+                            }
+                            return
                         continue
 
                     if event_type == "agent_message":
-                        text = event.get("data", {}).get("text", "")
+                        try:
+                            text, streamed = public_text_block.complete(
+                                data.get("text", "")
+                            )
+                        except TextBlockPrivacyError:
+                            await session.agent.interrupt()
+                            run_status = AgentDecisionRunStatus.failed
+                            yield {
+                                "event": "error",
+                                "data": {"message": TEXT_BLOCK_PRIVACY_ERROR},
+                            }
+                            return
+                        event = {**event, "data": {**data, "text": text}}
+                        if streamed and not hide_transient_chat and text:
+                            yield {
+                                "event": "agent_message_delta",
+                                "data": {"text": text},
+                            }
                         if hide_transient_chat:
                             if text:
                                 buffered_agent_messages.append(text)
@@ -669,9 +704,19 @@ async def process_message(
                             session.add_message("assistant", text)
                             _persist_assistant_message(session.session_id, text)
                     elif event_type == "error":
+                        public_text_block = PublicTextBlock()
                         run_status = AgentDecisionRunStatus.failed
 
                     yield event
+
+                if public_text_block.length:
+                    await session.agent.interrupt()
+                    run_status = AgentDecisionRunStatus.failed
+                    yield {
+                        "event": "error",
+                        "data": {"message": TEXT_BLOCK_PRIVACY_ERROR},
+                    }
+                    return
 
                 for bridge_event in _drain_pending_bridge_events():
                     if not _turn_active():
@@ -707,7 +752,7 @@ async def process_message(
             phase="error",
             event_name="conversation.processing.failed",
             actor="system",
-            payload={"error": str(exc)},
+            payload={"exception_type": type(exc).__name__},
         )
         raise
     finally:
@@ -739,7 +784,7 @@ async def process_message(
                     logger.warning(
                         "Decision audit complete_run failed for %s: %s",
                         active_run_id,
-                        exc,
+                        type(exc).__name__,
                     )
         finally:
             reset_decision_job_id(job_token)

@@ -37,7 +37,9 @@ async def rate_shipment_tool(
     except UPSServiceError as e:
         return _err(f"[{e.code}] {e.message}")
     except Exception as e:
-        logger.exception("Unexpected error in rate_shipment_tool")
+        logger.warning(
+            "Unexpected error in rate_shipment_tool exception_type=%s", type(e).__name__
+        )
         return _err(f"Unexpected error: {e}")
 
 
@@ -72,7 +74,10 @@ async def validate_address_tool(
     except UPSServiceError as e:
         return _err(f"[{e.code}] {e.message}")
     except Exception as e:
-        logger.exception("Unexpected error in validate_address_tool")
+        logger.warning(
+            "Unexpected error in validate_address_tool exception_type=%s",
+            type(e).__name__,
+        )
         return _err(f"Unexpected error: {e}")
 
 
@@ -93,5 +98,8 @@ async def get_time_in_transit_tool(
     except UPSServiceError as e:
         return _err(f"[{e.code}] {e.message}")
     except Exception as e:
-        logger.exception("Unexpected error in get_time_in_transit_tool")
+        logger.warning(
+            "Unexpected error in get_time_in_transit_tool exception_type=%s",
+            type(e).__name__,
+        )
         return _err(f"Unexpected error: {e}")

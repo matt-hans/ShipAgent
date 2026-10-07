@@ -17,6 +17,7 @@ from src.errors.terminal_diagnostics import (
     validate_completion_artifact_diagnostics,
 )
 from src.services.job_progress_projection import project_authoritative_job_progress
+from src.utils.redaction import project_public_artifact
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,10 @@ class ConversationPersistenceService:
                 raise ValueError("Completion artifact content must be empty.")
             if metadata.get("type") == "completion":
                 metadata = self._authoritative_completion_metadata(metadata["jobId"])
+
+        metadata = project_public_artifact(metadata)
+        if message_type == MessageType.system_artifact.value:
+            content = project_public_artifact(content)
 
         # Compute next sequence number.
         # Note: For SQLite with single-writer semantics, SELECT+INSERT
@@ -313,7 +318,9 @@ class ConversationPersistenceService:
                 "metadata_json",
                 m.id,
             )
-            metadata = sanitize_completion_artifact_metadata(raw_metadata)
+            metadata = project_public_artifact(
+                sanitize_completion_artifact_metadata(raw_metadata)
+            )
             is_completion = (
                 isinstance(raw_metadata, dict)
                 and raw_metadata.get("type") == "completion"
@@ -323,7 +330,13 @@ class ConversationPersistenceService:
                     "id": m.id,
                     "role": m.role,
                     "message_type": m.message_type,
-                    "content": "" if is_completion else m.content,
+                    "content": (
+                        ""
+                        if is_completion
+                        else project_public_artifact(m.content)
+                        if m.message_type == MessageType.system_artifact.value
+                        else m.content
+                    ),
                     "metadata": metadata,
                     "sequence": m.sequence,
                     "created_at": m.created_at,

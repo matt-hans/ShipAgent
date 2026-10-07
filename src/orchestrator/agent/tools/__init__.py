@@ -419,7 +419,10 @@ def get_all_tool_definitions(
                     },
                     "city": {"type": "string", "description": "City."},
                     "state": {"type": "string", "description": "State/province code."},
-                    "postal_code": {"type": "string", "description": "Postal/ZIP code."},
+                    "postal_code": {
+                        "type": "string",
+                        "description": "Postal/ZIP code.",
+                    },
                     "country_code": {"type": "string", "description": "Country code."},
                     "contact_name": {"type": "string", "description": "Contact name."},
                     "phone_number": {"type": "string", "description": "Contact phone."},
@@ -429,9 +432,16 @@ def get_all_tool_definitions(
                     },
                 },
                 "required": [
-                    "pickup_date", "ready_time", "close_time",
-                    "address_line", "city", "state", "postal_code",
-                    "country_code", "contact_name", "phone_number",
+                    "pickup_date",
+                    "ready_time",
+                    "close_time",
+                    "address_line",
+                    "city",
+                    "state",
+                    "postal_code",
+                    "country_code",
+                    "contact_name",
+                    "phone_number",
                     "confirmed",
                 ],
             },
@@ -477,20 +487,38 @@ def get_all_tool_definitions(
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "address_line": {"type": "string", "description": "Pickup address."},
+                    "address_line": {
+                        "type": "string",
+                        "description": "Pickup address.",
+                    },
                     "city": {"type": "string", "description": "City."},
                     "state": {"type": "string", "description": "State/province code."},
-                    "postal_code": {"type": "string", "description": "Postal/ZIP code."},
+                    "postal_code": {
+                        "type": "string",
+                        "description": "Postal/ZIP code.",
+                    },
                     "country_code": {"type": "string", "description": "Country code."},
                     "pickup_date": {"type": "string", "description": "Date YYYYMMDD."},
                     "ready_time": {"type": "string", "description": "Ready time HHMM."},
                     "close_time": {"type": "string", "description": "Close time HHMM."},
-                    "contact_name": {"type": "string", "description": "Contact name for the pickup."},
-                    "phone_number": {"type": "string", "description": "Contact phone number."},
+                    "contact_name": {
+                        "type": "string",
+                        "description": "Contact name for the pickup.",
+                    },
+                    "phone_number": {
+                        "type": "string",
+                        "description": "Contact phone number.",
+                    },
                 },
                 "required": [
-                    "address_line", "city", "state", "postal_code", "country_code", "pickup_date",
-                    "ready_time", "close_time",
+                    "address_line",
+                    "city",
+                    "state",
+                    "postal_code",
+                    "country_code",
+                    "pickup_date",
+                    "ready_time",
+                    "close_time",
                 ],
             },
             "handler": _bind_bridge(rate_pickup_tool, bridge),
@@ -525,10 +553,16 @@ def get_all_tool_definitions(
                         "description": "Type of location to search.",
                         "enum": ["access_point", "retail", "general"],
                     },
-                    "address_line": {"type": "string", "description": "Street address."},
+                    "address_line": {
+                        "type": "string",
+                        "description": "Street address.",
+                    },
                     "city": {"type": "string", "description": "City."},
                     "state": {"type": "string", "description": "State/province code."},
-                    "postal_code": {"type": "string", "description": "Postal/ZIP code."},
+                    "postal_code": {
+                        "type": "string",
+                        "description": "Postal/ZIP code.",
+                    },
                     "country_code": {"type": "string", "description": "Country code."},
                     "radius": {
                         "type": "number",
@@ -548,8 +582,12 @@ def get_all_tool_definitions(
                     },
                 },
                 "required": [
-                    "location_type", "address_line", "city",
-                    "state", "postal_code", "country_code",
+                    "location_type",
+                    "address_line",
+                    "city",
+                    "state",
+                    "postal_code",
+                    "country_code",
                 ],
             },
             "handler": _bind_bridge(find_locations_tool, bridge),
@@ -562,7 +600,10 @@ def get_all_tool_definitions(
                 "properties": {
                     "city": {"type": "string", "description": "City."},
                     "state": {"type": "string", "description": "State/province code."},
-                    "postal_code": {"type": "string", "description": "Postal/ZIP code."},
+                    "postal_code": {
+                        "type": "string",
+                        "description": "Postal/ZIP code.",
+                    },
                     "country_code": {"type": "string", "description": "Country code."},
                 },
                 "required": ["city", "state", "postal_code", "country_code"],
@@ -667,9 +708,9 @@ def get_all_tool_definitions(
         {
             "name": "resolve_contact",
             "description": (
-                "Resolve an @handle to a contact record with address data. "
-                "Returns order_data with ship_to_* keys ready for UPS payload. "
-                "Also supports prefix search for autocomplete."
+                "Check an @handle against the local address book. "
+                "Returns match status; saved addresses stay local. "
+                "Use ship_to_handle on preview_interactive_shipment to ship to an exact match."
             ),
             "input_schema": {
                 "type": "object",
@@ -715,16 +756,41 @@ def get_all_tool_definitions(
                         "description": "Street address line 2.",
                     },
                     "city": {"type": "string", "description": "City."},
-                    "state_province": {"type": "string", "description": "State/province code. Omit if not provided or unknown."},
-                    "postal_code": {"type": "string", "description": "Postal/ZIP code."},
-                    "country_code": {"type": "string", "description": "Country code.", "default": "US"},
+                    "state_province": {
+                        "type": "string",
+                        "description": "State/province code. Omit if not provided or unknown.",
+                    },
+                    "postal_code": {
+                        "type": "string",
+                        "description": "Postal/ZIP code.",
+                    },
+                    "country_code": {
+                        "type": "string",
+                        "description": "Country code.",
+                        "default": "US",
+                    },
                     "phone": {"type": "string", "description": "Phone number."},
                     "email": {"type": "string", "description": "Email address."},
                     "company": {"type": "string", "description": "Company name."},
-                    "attention_name": {"type": "string", "description": "UPS AttentionName."},
-                    "use_as_ship_to": {"type": "boolean", "description": "Can be ShipTo.", "default": True},
-                    "use_as_shipper": {"type": "boolean", "description": "Can be Shipper.", "default": False},
-                    "use_as_third_party": {"type": "boolean", "description": "Can be ThirdParty.", "default": False},
+                    "attention_name": {
+                        "type": "string",
+                        "description": "UPS AttentionName.",
+                    },
+                    "use_as_ship_to": {
+                        "type": "boolean",
+                        "description": "Can be ShipTo.",
+                        "default": True,
+                    },
+                    "use_as_shipper": {
+                        "type": "boolean",
+                        "description": "Can be Shipper.",
+                        "default": False,
+                    },
+                    "use_as_third_party": {
+                        "type": "boolean",
+                        "description": "Can be ThirdParty.",
+                        "default": False,
+                    },
                     "tags": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -803,7 +869,6 @@ def get_all_tool_definitions(
         # ---------------------------------------------------------------
         # UPS MCP v2 — Landed cost tool
         # ---------------------------------------------------------------
-
         {
             "name": "get_landed_cost",
             "description": (
@@ -841,8 +906,10 @@ def get_all_tool_definitions(
                     },
                 },
                 "required": [
-                    "currency_code", "export_country_code",
-                    "import_country_code", "commodities",
+                    "currency_code",
+                    "export_country_code",
+                    "import_country_code",
+                    "commodities",
                 ],
             },
             "handler": _bind_bridge(get_landed_cost_tool, bridge),
@@ -881,6 +948,10 @@ def get_all_tool_definitions(
             "input_schema": {
                 "type": "object",
                 "properties": {
+                    "ship_to_handle": {
+                        "type": "string",
+                        "description": "Exact saved-contact handle. Resolves locally; omit explicit ship_to_* address fields when using this option.",
+                    },
                     "ship_to_name": {
                         "type": "string",
                         "description": "Recipient full name.",
@@ -1041,15 +1112,8 @@ def get_all_tool_definitions(
                         ],
                     },
                 },
-                "required": [
-                    "ship_to_name",
-                    "ship_to_address1",
-                    "ship_to_city",
-                    "ship_to_zip",
-                    "service",
-                    "weight",
-                    "command",
-                ],
+                # The handler validates either a local handle or explicit address.
+                "required": ["service", "weight", "command"],
             },
             "handler": _bind_bridge(preview_interactive_shipment_tool, bridge),
         },

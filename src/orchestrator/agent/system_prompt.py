@@ -19,14 +19,13 @@ from src.orchestrator.filter_schema_inference import (
 )
 from src.orchestrator.models.filter_spec import FilterOperator
 from src.orchestrator.models.intent import SERVICE_ALIASES, ServiceCode
+from src.services.conversation_privacy import provider_conversation_history
+from src.services.conversation_runtime.dispatcher import project_schema_columns
 from src.services.data_source_mcp_client import DataSourceInfo
 from src.services.filter_constants import BUSINESS_PREDICATES, REGIONS
 
 # International service codes for labeling
 _INTERNATIONAL_SERVICES = frozenset({"07", "08", "11", "54", "65"})
-_MAX_SCHEMA_SAMPLES = 3
-# Cap total sample characters embedded in system prompt to limit injection surface (CWE-94).
-_MAX_TOTAL_SAMPLE_CHARS = 500
 MAX_PROMPT_CONTACTS = 20
 
 FILE_IMPORT_INSTRUCTIONS = """
@@ -74,68 +73,35 @@ def _sanitize_for_prompt(value: str, max_len: int = 64) -> str:
 
 
 def _build_contacts_section(contacts: list[dict]) -> str:
-    """Build the saved contacts catalogue for the system prompt.
-
-    Formats contacts as: @handle — City, ST (roles)
-    Roles are inferred from use_as_ship_to and use_as_shipper flags.
-
-    Args:
-        contacts: List of contact dicts with handle, city, state_province,
-                  use_as_ship_to, use_as_shipper keys.
-
-    Returns:
-        Formatted string with contacts section, or empty string if no contacts.
-    """
+    """Expose contact availability, never local identities or address samples."""
     if not contacts:
         return ""
-
-    lines = ["## Saved Contacts", ""]
-    lines.append(
-        "The user has saved contacts in their address book. When shipping to a "
-        "known contact, use `resolve_contact` with the @handle to get the full "
-        "address. You can reference contacts by @handle in commands."
+    return (
+        "## Saved Contacts\n\n"
+        "Saved contacts are available locally. Ask the user for an exact @handle "
+        "or use the address-book UI. Use `resolve_contact` to check a handle; "
+        "addresses remain local. For a single shipment, pass `ship_to_handle` "
+        "to `preview_interactive_shipment` so the address is resolved locally. "
+        "Do not ask tools to return saved addresses for copying into model arguments."
     )
-    lines.append("")
-    lines.append("Available contacts:")
-
-    for c in contacts[:MAX_PROMPT_CONTACTS]:
-        handle = _sanitize_for_prompt(c.get("handle", "unknown"), max_len=30)
-        city = _sanitize_for_prompt(c.get("city", ""), max_len=50)
-        state = _sanitize_for_prompt(c.get("state_province", ""), max_len=20)
-
-        # Build roles list
-        roles = []
-        if c.get("use_as_ship_to"):
-            roles.append("ship_to")
-        if c.get("use_as_shipper"):
-            roles.append("shipper")
-        roles_str = ", ".join(roles) if roles else "no roles"
-
-        location = f"{city}, {state}" if city and state else city or state or "no location"
-        lines.append(f"- @{handle} — {location} ({roles_str})")
-
-    if len(contacts) > MAX_PROMPT_CONTACTS:
-        lines.append(f"- ... and {len(contacts) - MAX_PROMPT_CONTACTS} more")
-
-    return "\n".join(lines)
 
 
-def _resolve_sample_char_limit() -> int:
-    """Resolve prompt sample truncation length with safe fallback."""
-    raw = os.environ.get("SYSTEM_PROMPT_SAMPLE_MAX_CHARS", "50")
-    try:
-        value = int(raw)
-    except ValueError:
-        return 50
-    return max(10, value)
-
-
-def _format_schema_sample(value: object, max_chars: int) -> str:
-    """Render a sample value with truncation to control prompt growth."""
-    rendered = repr(value)
-    if len(rendered) <= max_chars:
-        return rendered
-    return f"{rendered[:max_chars - 3]}..."
+def _prompt_schema_columns(source_info: DataSourceInfo) -> list[dict]:
+    """Use the same closed schema policy as model-visible tool results."""
+    aliases = {"varchar": "string", "bigint": "integer", "smallint": "integer"}
+    return (
+        project_schema_columns(
+            [
+                {
+                    "name": col.name,
+                    "type": aliases.get(col.type.lower(), col.type.lower()),
+                    "nullable": col.nullable,
+                }
+                for col in source_info.columns
+            ]
+        )
+        or []
+    )
 
 
 def _build_service_table() -> str:
@@ -166,41 +132,34 @@ def _build_schema_section(
 
     Args:
         source_info: Metadata about the connected data source.
-        column_samples: Optional sample values per column for filter grounding.
+        column_samples: Deprecated compatibility input; values are never exposed.
 
     Returns:
         Formatted string describing the source and its columns.
     """
-    lines = [
-        f"Source type: {source_info.source_type}",
-    ]
-    if source_info.file_path:
-        lines.append(f"File: {source_info.file_path}")
-    lines.append(f"Row count: {source_info.row_count}")
-    lines.append("")
-    lines.append("Columns:")
-    max_chars = _resolve_sample_char_limit()
-    total_sample_chars = 0
-    samples_budget_exhausted = False
-    for col in source_info.columns:
-        nullable = "nullable" if col.nullable else "not null"
-        col_display = _sanitize_for_prompt(col.name)
-        samples = column_samples.get(col.name) if column_samples else None
-        if samples and not samples_budget_exhausted:
-            sample_str = ", ".join(
-                _sanitize_for_prompt(
-                    _format_schema_sample(sample, max_chars), max_len=max_chars
-                )
-                for sample in samples[:_MAX_SCHEMA_SAMPLES]
-            )
-            total_sample_chars += len(sample_str)
-            if total_sample_chars > _MAX_TOTAL_SAMPLE_CHARS:
-                samples_budget_exhausted = True
-                lines.append(f"  - {col_display} ({col.type}, {nullable})")
-            else:
-                lines.append(f"  - {col_display} ({col.type}, {nullable}) — samples: {sample_str}")
-        else:
-            lines.append(f"  - {col_display} ({col.type}, {nullable})")
+    # column_samples is retained for compatibility, but never read or rendered.
+    source_type = source_info.source_type
+    if source_type not in {
+        "csv",
+        "excel",
+        "json",
+        "xml",
+        "edi",
+        "fixed_width",
+        "database",
+        "shopify",
+        "amazon",
+        "upload",
+        "manual",
+    }:
+        source_type = "unknown"
+    row_count = source_info.row_count
+    if not isinstance(row_count, int) or isinstance(row_count, bool) or row_count < 0:
+        row_count = 0
+    lines = [f"Source type: {source_type}", f"Row count: {row_count}", "", "Columns:"]
+    for col in _prompt_schema_columns(source_info):
+        nullable = "nullable" if col.get("nullable") else "not null"
+        lines.append(f"  - {col['name']} ({col.get('type', 'unknown')}, {nullable})")
     return "\n".join(lines)
 
 
@@ -351,6 +310,7 @@ def _build_prior_conversation_section(
     Returns:
         Formatted conversation history section, or empty string.
     """
+    messages = provider_conversation_history(messages)
     if not messages:
         return ""
 
@@ -413,7 +373,7 @@ def build_system_prompt(
     Args:
         source_info: Current data source metadata. None if no source connected.
         interactive_shipping: Whether interactive single-shipment mode is enabled.
-        column_samples: Optional sample values per column for filter grounding.
+        column_samples: Deprecated compatibility input; values are never exposed.
         contacts: Optional list of saved contacts for @handle resolution.
         prior_conversation: Optional list of {role, content} dicts for session resume.
 
@@ -533,7 +493,7 @@ for shipment creation. Do not attempt batch/data-source tools in this mode.
 """
     else:
         _src_cols = (
-            {col.name for col in source_info.columns}
+            {col["name"] for col in _prompt_schema_columns(source_info)}
             if source_info is not None
             else None
         )
