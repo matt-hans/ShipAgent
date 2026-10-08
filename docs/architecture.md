@@ -16,6 +16,17 @@ The Automated Shipment Creation Agent is a natural language interface for batch 
 
 **Architecture Style:** The system uses the Model Context Protocol (MCP) to separate concerns into independent servers—one for data access, one for UPS integration—exposed through a canonical workflow/tool layer with provider runtimes as adapters.
 
+### Initial ChatGPT/Claude backend target
+
+On 2026-10-08 the owner selected an **always-on user-controlled headless server**
+for the initial full-agent connector backend. No Mac app is required. ShipAgent
+keeps its own reasoning runtime and deterministic services on an account-dedicated
+Execution Target; shared relay storage does not become a shipment-data store.
+[ADR 0009](adr/0009-headless-full-agent-authority.md) separates this selected
+hosting profile from the approved scope/enrollment extension and later
+approval, deployment and live-transaction gates. The existing public MCP handler
+remains status-only until reviewed implementation slices qualify more tools.
+
 ### Provider-Neutral Portability Layer
 
 The canonical workflow/tool layer is the product backbone. `ConversationRuntimeSession` owns the conversation loop, history, interruption and tool dispatch for Anthropic, OpenAI and Gemini. Their thin protocol adapters translate provider requests and streamed responses; they do not own shipping decisions. The Claude Agent SDK and its client/hooks have been removed. Registry exports for MCP, OpenAPI, function declarations, manifests and UI resources are separate projections of canonical services. See the [SDK-free runtime guide](runtime/sdk-free-runtime.md).
