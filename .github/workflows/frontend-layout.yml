@@ -1,0 +1,53 @@
+name: Frontend Layout
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'shipagent-frontend/**'
+      - '.github/workflows/frontend-layout.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'shipagent-frontend/**'
+      - '.github/workflows/frontend-layout.yml'
+
+jobs:
+  shipment-settings-layout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: shipagent-frontend
+    env:
+      NX_DAEMON: 'false'
+      NX_ISOLATE_PLUGINS: 'false'
+      NG_BUILD_MAX_WORKERS: '1'
+      SHIPAGENT_LAYOUT_EVIDENCE_DIR: layout-evidence
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: shipagent-frontend/package-lock.json
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Check frontend
+        run: |
+          npx nx run-many -t typecheck lint --all --parallel=1
+          npx nx run-many -t test --all --parallel=1
+      - name: Build staged production shell and remotes
+        run: |
+          for project in shared-state provider-widget settings-remote sidebar-remote domain-remote chat-remote shell; do
+            npx nx build "$project" --configuration=production --parallel=1
+          done
+          ./scripts/link-remotes.sh
+      - name: Check shipment settings layout in Chromium
+        run: npm run smoke:shipment-settings-layout
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shipment-settings-layout
+          path: shipagent-frontend/layout-evidence
+          if-no-files-found: ignore

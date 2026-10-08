@@ -104,3 +104,19 @@ And join the Nx community:
 - [Follow us on X](https://twitter.com/nxdevtools) or [LinkedIn](https://www.linkedin.com/company/nrwl)
 - [Our Youtube channel](https://www.youtube.com/@nxdevtools)
 - [Our blog](https://nx.dev/blog?utm_source=nx_project&utm_medium=readme&utm_campaign=nx_projects)
+
+## Shipment settings layout regression
+
+After production builds and `./scripts/link-remotes.sh`, run
+`npm run smoke:shipment-settings-layout`. Install Playwright Chromium with
+`npx playwright install chromium`, or set
+`PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to a local Chromium executable.
+
+This renders the actual staged shell and settings remote at 1200×800 and
+900×600. Only API responses are synthetic; all browser requests are intercepted,
+so it needs no running backend, credentials, network service or provider calls.
+It checks clipping ancestors, usable postal width, fallback fonts, long labels
+and values, keyboard focus/caret, validation feedback, retry, scrolling and
+reopening settings. Set `SHIPAGENT_LAYOUT_EVIDENCE_DIR` to retain screenshots
+and measured bounds, including on failure. The Frontend Layout CI job runs the
+frontend checks, production build and this regression together.
