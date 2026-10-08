@@ -55,3 +55,5 @@ tsconfig.federation.json
 libs/**/*.d.ts
 
 __screenshots__/
+
+layout-evidence/
