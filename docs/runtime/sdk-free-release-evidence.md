@@ -39,6 +39,7 @@ changes do not silently become newly tested executable source.
 | Prior equivalent-input full backend | **5,251 passed, 29 skipped, 19 warnings** at `9a5021d69ec72f40741626227815e4ea39296d38`; its tree equals `1616278`. Backend source/tests/dependency and packaging inputs remain unchanged through `04a4bba`. This is **not a fresh final-commit full-suite rerun** |
 | Additional prior smoke/docs evidence | The 119-test `1616278` integration smoke and PR #73's 341 guarded checks are separate records; neither is added to the 752 fresh checks |
 | Native macOS build and static inspection | **Passed on ARM64**: native locked install, type/lint, a separate **199-test** frontend run, seven builds, native freeze and app-only Tauri packaging. Native manifests, linkage and SDK absence checked; this is not a runtime pass |
+| Native packaged sidecar runtime | **Passed**: exact app-bundled binary, two owned local starts, CLI/API/assets, synthetic CSV/XLSX import/write-back, export/persistence, MCP EOF and planned standalone SIGTERM; 8.093 s, peak 541.688 MiB; no app/WebView launch |
 | Native macOS wrapper | **Pending**: actual final ARM64 `.app`, its own bundled sidecar, real window/local workflows and normal owned-process shutdown |
 
 All successful guarded stages ended with verified cleanup and zero owned
@@ -239,33 +240,102 @@ source-package hashes already retained in cloud evidence.
   plus the manifest. Binaries, dependencies, credentials and real profile
   contents are excluded.
 
-**The native app has not been opened.** Read-only preflight proved that temporary
+### Native QA derivative and packaged-sidecar runtime
+
+**Neither native app has been opened.** Read-only preflight proved that temporary
 `HOME` does not redirect macOS Foundation home/Library/Application Support;
 existing ShipAgent-specific persistent WebKit/cache locations are present.
 Their contents were not inspected or changed. The production wrapper uses
-the default persistent WebKit store. The reviewed next step is a QA-only
-one-key bundle-identifier overlay, preserving that store type and every other
-configuration field, with fresh identity-specific paths checked before launch.
-The original production artifact stays unopened. The QA rebuild and GUI checks
-have not run; production-identifier behavior, profile migration, signing and
-distribution will remain outside the derivative's acceptance claim.
+the default persistent WebKit store. A reviewed QA derivative was therefore
+built with a **one-key bundle-identifier overlay**,
+`com.shipagent.qa.r04a4bba.t20261008`, preserving that store type and every other
+configuration field. Eight identity-specific namespaces were absent, with
+non-symlink ancestry verified. The original production app was preserved and
+all 915 original file hashes rechecked before and after the QA build.
 
-Backend runtime isolation additionally needs explicit task-local data/SQLite,
-audit and credential-key paths, disabled dotenv/keyring access, a synthetic
-filter secret, empty working directory and no provider credentials or hot-folder
-configuration. This controls backend state; it does not prove WebKit isolation.
-Native startup, local imports/export, persistence/relaunch, real fallback-font
-layout and normal app/sidecar/MCP shutdown remain **not run**.
+The QA app-only build passed in **27.935 s**, peak **973.047 MiB**. Only
+`Contents/Info.plist` and the wrapper executable changed; the sole plist change
+is `CFBundleIdentifier`. All **913 resource files**, including the full frozen
+backend and frontend, are byte-identical. The source remains clean at `04a4bba`
+and all four tracked lockfile hashes match. This derivative does not test the
+production identifier, existing-profile migration, signing or distribution.
+
+- QA app executable SHA-256:
+  `d129af41b825caf8b46481c148ad16d72af442268aaaf1761495840c38cf4be3`
+- QA app manifest SHA-256:
+  `cbbfc1dda2d3c96f7544d9d06d1b3c5c09f6d41434b90762a33159d7235f7a96`
+- QA supplement: `shipagent-native-qa-supplement-04a4bba-20261008.zip`,
+  **158,093 bytes**, SHA-256
+  `5768ee89c9e7721ca76a04b4d98be6b414f254bc198ef3e5a8ffa4a3e48ac472`.
+  All 57 payload hashes plus the archive manifest were checked. It also retains
+  raw `LC_ID_DYLIB` / project metadata evidence for the earlier helper corrections.
+
+Native GUI permission preflight found screen capture available but no usable
+Accessibility/event-posting route. No app was launched and no permission was
+changed. That environment prerequisite is not a product runtime failure.
+Real native window/font/keyboard/scroll/dismissal/repeated-flow and ordinary
+application Quit acceptance remain **not run**.
+
+The independent backend gate used the QA app's **actual bundled sidecar**, whose
+bytes equal the preserved production sidecar, without starting Tauri or WebKit.
+Its 360-second / 2 GiB guard completed in **8.093 s**, peak **541.688 MiB**, exit 0.
+The exact reviewed harness hashes were verified on the Mac and in retained
+evidence. Both the harness and outer supervisor recorded **zero fallback
+signals, zero ownership-monitor errors and zero owned survivors**.
+
+The run used fresh task-local HOME/CWD/TMPDIR, data/SQLite, audit and credential-key
+paths, disabled dotenv/keyring, a disposable filter secret, fake-local auth and
+loopback binding. Credential-status booleans were false for all providers,
+carrier, commerce and API credentials; only the synthetic filter secret was
+present. No hot-folder config, chat/model request or live service call was used.
+
+Observed checks include CLI version/help, health/readiness, settings, two
+dynamic-port starts with exact PID/start/executable and `lsof` listener ownership,
+and all four remote manifests/exposed chunks matched to native packaged hashes.
+Two-row CSV/XLSX multipart imports and raw DataSource MCP atomic write-back
+passed. Sibling, sensitive-name, traversal, symlink and overwrite denials
+preserved the **complete** active-source identity/schema, not just row count.
+Data/UPS/external MCP exposed **23/18/8** tools and all three exited **0 on EOF**;
+only DataSource local import/write-back tools were called. UPS listing used
+disposable synthetic credentials.
+
+One synthetic message was inserted directly into the disposable SQLite database
+to test conversation JSON export and restart persistence. No chat endpoint or
+provider submission was used. The exported session/title and exact message
+ID/role/type/content/sequence matched across restart; saved settings survived and
+`PRAGMA integrity_check` returned `ok`. This does not test model responses or
+cross-port WebView localStorage persistence.
+
+Both standalone servers retired on their intended exact-child **SIGTERM** with
+exit **-15**; both listeners closed and observed MCP descendants retired without
+fallback. This is not an ordinary Tauri Quit result or an exit-0 graceful-server
+claim. The locked native wrapper's normal UI-quit policy calls
+`CommandChild.kill()` (Unix SIGKILL); its separate future acceptance must verify
+actual listener/sidecar/MCP retirement and database integrity without external
+supervisor cleanup. The known closed-stdio `ValueError` remains in all three MCP
+logs despite EOF exit 0. Expected negative-import errors and single-worker /
+in-memory-queue warnings are also retained.
+
+Source, all four locks, native packaged bytes and QA app manifest remained
+unchanged. Native read-only bundle modes were not enforced; the unwritable-install
+result remains Linux-only. Runtime evidence is retained as
+`shipagent-native-sidecar-evidence-04a4bba-20261008.zip`, **84,742 bytes**, SHA-256
+`e4e27d08c1462c8980b7733d7bdfdd090e344ad6b76ad8665fd0d571bc819435`;
+all 33 payload hashes plus the archive manifest were checked. It contains no
+secret values, databases, binaries or user profile contents.
 
 ### Remaining native gate and residual limitations
 
 1. The exact candidate's native build/static checks above are complete. Preserve
    its own frontend, staged-remote and app-resource identities; do not require
    cross-toolchain equality with Linux or substitute a Linux binary/environment.
-   Resolve the existing persistent-profile isolation gate before GUI launch.
-2. Launch the reviewed `.app`, verify that it starts its own native sidecar, inspect
+   The one-key QA identity provides the reviewed isolation approach and verified
+   absent-path preconditions; actual WebKit write paths await launch. GUI control
+   remains unavailable until the environment prerequisite is resolved.
+2. Launch the reviewed QA `.app`, verify that it starts its own native sidecar, inspect
    its real window/default and minimum size, exercise synthetic local workflows,
-   then verify normal quit stops the exact owned sidecar and MCP children.
+   then verify ordinary UI quit stops the exact owned sidecar/listener/MCP children
+   without supervisor fallback. Preserve the production-identity limitations.
 3. Record native source, architecture, toolchain, commands, artifact hashes,
    screenshots and cleanup. Until those observations exist, #41 and #30 remain
    open and no complete desktop qualification is claimed.

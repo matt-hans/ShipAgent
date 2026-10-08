@@ -52,12 +52,21 @@ module-loader failure. That failed attempt and two corrected inspection-helper
 false positives remain recorded. Native artifact/linkage/resource identities
 are separate from Linux; no native runtime pass is inferred from the build.
 
-**Issue #41 remains open.** Actual final ARM64 macOS Tauri app startup, its own
-native sidecar, the real window/local workflows and normal owned-process
+The **actual app-bundled native sidecar** has since passed a separate 8.093-second
+local-only gate: CLI, two dynamic-port starts, served-asset hashes, CSV/XLSX
+imports/write-back, source escape denials, JSON export, database/settings
+persistence, MCP EOF and intended standalone SIGTERM. Both listeners and all
+observed owned children retired without fallback; packaged bytes stayed unchanged.
+A reviewed QA app differs only in bundle identity/wrapper metadata, preserving
+the production artifact and all resources. Neither Tauri app has been opened.
+
+**Issue #41 remains open.** Actual final ARM64 macOS Tauri app startup, its
+app-owned sidecar lifecycle, the real window/local workflows and normal owned-process
 shutdown are still unverified. Cloud Chromium layout and Linux-sidecar evidence
-do not establish those native results. The app remains unopened while the
-existing persistent WebKit profile is protected and an isolated test route is
-reviewed; changing HOME alone does not redirect Foundation storage. No complete
+do not establish those native results. The existing persistent WebKit profile
+is protected through a reviewed QA identity because HOME alone does not redirect
+Foundation storage. Native GUI control is currently blocked by the Accessibility
+environment prerequisite, not a product test failure. No complete
 desktop release, signing/notarization, updater,
 Intel qualification, live shipment or offline model inference is claimed.
 The separate dormant authority/store qualification below does not enable hosted
