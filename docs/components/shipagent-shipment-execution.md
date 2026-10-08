@@ -80,13 +80,13 @@ prove rollback of a remote write or target execution. Late outcomes are observed
 and no new hold or release is started after the deadline. Failed settlement
 leaves the original reserve non-reusable; expiry means denial, never availability.
 The authority must make reserve atomic, bound its own I/O and safely clean up or
-quarantine interrupted reservations. No production authority exists here.
+quarantine interrupted reservations. The real Redis authority is dormant and explicitly constructed only; default apps do not inject it.
 A handler-raised `ToolAuthorizationError` is projected as the generic provider
 error like any other handler failure; only gate-raised errors keep their code.
 
 **Caller obligations** (`src/control_plane/execution_grants.py`):
 
-- *Authority* (`ExecutionGrantAuthority.reserve`, no store exists yet): exclusively reserve; compare
+- *Authority* (`ExecutionGrantAuthority.reserve`, dormant Redis implementation): exclusively reserve; compare
   target, policy, amount, currency and payload against the live approved preview
   and reject any drift, including a lower amount; deny a second reservation.
   Atomically fence settlement against the original owner, recheck expiry at
@@ -112,6 +112,15 @@ See [the authority contract and separate implementation prerequisites](execution
 for cancellation, original expiry, reconciliation and required real-store tests.
 Existing fake-backed gate tests do not satisfy issue 51's persistent replay proof.
 
-**Status:** no grant store, approval page, connector, non-status handler or
-provider export is enabled. `confirmation_artifact_id` and the `INGRESS` family
+**Status:** the real grant store/authority is dormant; no approval page, connector, non-status handler or provider export is enabled. `confirmation_artifact_id` and the `INGRESS` family
 remain reserved with no tool consumer.
+
+The dormant authority adds a hidden server-only reservation token to the binding
+passed unchanged by the gate. Callers use `callbacks_for_binding`/`invoke_bound`
+to retain that exact owner, never a latest-owner lookup. Only persisted accepted
+results can return normally; exact positive rejection raises `PreAcceptFailure`,
+and unknown outcomes remain held. New attempt generations preserve original
+purchase/job/deadline identity. Public job-reference/status projection and real
+adapter wiring remain separate enablement obligations. See
+[the real authority implementation](../control-plane/redis-grant-authority.md)
+for bounded I/O, original-expiry audit-only recovery and issue 51's remaining gate.

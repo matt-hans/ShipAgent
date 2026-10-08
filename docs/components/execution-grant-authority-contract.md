@@ -27,8 +27,8 @@ It atomically checks expiry and existing state and returns exclusive ownership.
 The authority must associate each reservation with a server-owned fencing
 identity. Consume/release/hold compare that identity atomically. Late callbacks
 cannot release a new reservation or downgrade held/consumed state. These are
-requirements for the missing store, not properties supplied by the Python
-protocol or the test fake.
+implemented by the dormant Redis authority; the Python protocol and in-memory
+gate fake alone do not establish those guarantees.
 
 | Outcome | Required behavior |
 |---|---|
@@ -37,7 +37,7 @@ protocol or the test fake.
 | Proven pre-acceptance failure | Fenced release may allow retry only inside original expiry |
 | Ambiguous handler failure or cancellation | Hold for reconciliation; never release |
 | Consume failure | Best-effort hold within remaining settlement budget; never release |
-| Failed/timed-out release or hold | Existing reserve remains non-reusable; local timeout proves no rollback |
+| Failed/timed-out release or hold | Never infer rollback or reuse; only a positive-proof release that actually committed can reopen state |
 | Reconciled acceptance | Record consumption and recover original job through Plan 2; never purchase twice |
 | Unknown recovery evidence | Continue denial, without new dispatch or idempotency key |
 | Expired/missing authorization | Deny; never reconstruct executable authorization from an approved request or ledger |
@@ -63,8 +63,8 @@ deadline. Outstanding operations are strongly referenced and eventual outcomes
 are retrieved and logged without payloads. A child operation's self-cancellation
 is a failed settlement, distinct from cancellation of the caller.
 
-The future authority must use bounded I/O and cancellation-cooperative
-coroutines. Python cannot stop an uncooperative coroutine or undo an uncertain
+The dormant authority uses a two-second bounded I/O budget (at most five
+seconds when configured) and cancellation-cooperative operations. Python cannot stop an uncooperative coroutine or undo an uncertain
 remote write. Fencing and idempotence remain essential even after the caller
 returns. The gate's timer cannot establish those store guarantees.
 
@@ -105,11 +105,11 @@ allow fenced release only before original expiry. Unreachable or ambiguous
 evidence never means safe replay. No automatic second purchase or created-label
 void is permitted.
 
-Ordinary `reservation.release()` must not reopen a held reservation. A future
-Plan 2-driven reconciliation transition may do so only on positive nonacceptance
-evidence, atomically matching the held generation and original unexpired
-authorization. That privileged reconciliation is distinct from a stale or late
-gate release; its real-store implementation and proof remain prerequisites.
+Ordinary `reservation.release()` cannot reopen held or dispatch-claimed state.
+Plan 2-driven privileged reconciliation requires positive nonacceptance evidence,
+atomically matches the held owner/generation and original unexpired authorization,
+and advances only the permitted next attempt. This is distinct from a stale or
+late gate release; lease expiry alone never authorizes reuse.
 
 Redis Approval Requests/Execution Grants stay TTL-bound; deletion or expiry
 denies the old reference. Neither an approved request nor a durable SQL ledger
@@ -117,47 +117,29 @@ can resurrect executable authorization. SQL stores only ADR 0005's permitted
 hashed/redacted fields. Do not keep raw grants indefinitely as SQL tombstones or
 extend retention to avoid designing lifecycle recovery.
 
-## Separately bounded implementation prerequisites
+## Implemented dormant prerequisites and remaining gate
 
-The shared persistence primitives are documented in
+Plan 4's shared lifetime/hashed-ledger APIs are documented in
 [authorization-persistence.md](../control-plane/authorization-persistence.md).
-Issue 66's bounded `InvocationLifecycleCoordinator`, `GrantCallbacks` and
-`JobReferenceStore` seam is documented in
-[invocation-recovery.md](../control-plane/invocation-recovery.md). It supplies
-real-Redis acceptance/recovery evidence and a deterministic process target;
-production grant authority, gate ownership adaptation, safe authorized preaccept
-retry and hosted enablement remain issue 67 / issue 51 obligations. Its terminal
-rejection evidence must not be mistaken for an implemented redispatch protocol.
+Plan 2's sole lifecycle/job-reference store and explicit safe attempt-generation
+seam are documented in
+[invocation-recovery.md](../control-plane/invocation-recovery.md).
+Issue 67's real Redis authority, PostgreSQL commit-before-enable ordering,
+server-only gate ownership token, dispatch claim and evidence-only expired
+acceptance recovery are documented in
+[redis-grant-authority.md](../control-plane/redis-grant-authority.md).
 
+The dormant authority reuses those APIs; there is no parallel invocation/job
+store or SQL executable grant. Explicit next-attempt dispatch preserves purchase
+key, logical invocation, original job and all original deadlines while permanent
+target rejection fences block delayed older attempts. Repeated ordinary invoke
+never resets or silently redispatches.
 
-Issue 51 explicitly excludes building the store. The following missing work
-must be tracked separately, then used for issue 51's real-store verification:
-
-1. **Plan 4 shared Redis lifetime and hashed ledger.** Implement the shared
-   Approval Request/Execution Grant key/TTL APIs and authorization-ledger
-   service/models/migrations consumed by Plan 7. Include required TTL sweeps,
-   SQL retention/account deletion and explicit legal-hold behavior for introduced
-   records. Approval/grant TTL is 900 seconds in Plan 4; invocation/job-reference
-   retention is at most 24 hours. No raw PII, rows, labels, tracking, tokens,
-   URLs or prompts belong in the ledger. Existing audit events are not this API
-2. **Plan 2 acceptance/reconciliation seam.** Provide the shared
-   `InvocationLifecycleCoordinator`, `GrantCallbacks`, `JobReferenceStore` and
-   exact-target recovery using the actual relay/target prerequisites from
-   Plan 1. Prove accepted-response loss and original-job recovery without a
-   second effect. Do not release merely because the acceptance timer elapsed
-3. **Plan 7 dormant real authority.** Consume those shared APIs to implement
-   atomic fenced reserve/consume/release/hold, live preview validation, original
-   expiry checks and stranded/accepted-outcome recovery. Tests may instantiate
-   it explicitly; production wiring, approval UI and non-status exports remain
-   disabled. Broader Plan 7 integration retains its Plans 2/4/6 dependency gate
-
-These scopes must reuse the accepted lifecycle and ledger; no parallel state
-machine, desktop job store or SQLite authority substitute is introduced here.
-See the [parallel execution guide](../superpowers/plans/2026-06-30-openai-claude-connector-parallel-execution-guide.md)
-and accepted Plans
-[2](../superpowers/plans/2026-06-30-openai-claude-connector-02-invocation-lifecycle-relay-recovery.md),
-[4](../superpowers/plans/2026-06-30-openai-claude-connector-04-ephemeral-retention-authorization-audit.md),
-[7](../superpowers/plans/2026-06-30-openai-claude-connector-07-provider-execution-approval-flow.md).
+Issue 51 remains the separate final evidence/enablement review. Production
+post-gesture approval, authenticated exact-target/live-preview adapters,
+provider-safe job/status projection, coordinated revoke/retention startup and
+production Redis persistence/failover policy are not enabled by this slice.
+Broader Plan 7 integration retains its accepted Plans 2/4/6 dependency gate.
 
 ## Real-store evidence required before enablement
 
@@ -171,7 +153,8 @@ accepted-but-unsettled original-job reconciliation. Missing/expired store state
 must deny rather than remint. Verify TTL/redaction/retention and account cleanup.
 
 The deterministic target may be a fake; the **authority/store may not** be an
-in-memory fake for this acceptance. Gate tests only show how the gate responds
-to its injected authority's declared outcomes. No native Mac test substitutes
+in-memory fake for this acceptance. In-memory gate tests alone only show responses to a fake authority. The separate
+real-store tests explicitly inject the real authority into a test-only gate and
+exercise separate authority/target processes; default wiring remains unchanged. No native Mac test substitutes
 for these prerequisites, and this source work does not complete native release
 qualification in issues 30/41.
