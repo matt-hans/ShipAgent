@@ -1,0 +1,886 @@
+"""Coordinator behavior with real Redis and deterministic target evidence."""
+
+from datetime import UTC, datetime
+
+import pytest
+
+from tests.control_plane.persistence.test_lifecycle_store import identity
+
+
+class GrantRecorder:
+    def __init__(self):
+        self.calls = []
+
+    async def reserve(self, record):
+        self.calls.append(("reserve", record))
+
+    async def consume_on_accept(self, record):
+        self.calls.append(("consume", record))
+
+    async def release(self, record):
+        self.calls.append(("release", record))
+
+    async def hold_for_reconciliation(self, record):
+        self.calls.append(("hold", record))
+
+
+class DurableTarget:
+    def __init__(self, bound, grants):
+        self.execution_target_id = bound.execution_target_id
+        self.grants = grants
+        self.dispatches = []
+        self.queries = []
+        self.proof = None
+
+    async def dispatch_invocation(self, *, identity, arguments, deadline_at):
+        from src.control_plane.relay.protocol import TargetAcceptanceEvidence
+
+        assert self.grants.calls[0][0] == "reserve"
+        self.dispatches.append((identity, arguments, deadline_at))
+        self.proof = TargetAcceptanceEvidence(
+            identity=identity,
+            outcome="accepted",
+            local_job_id="original-job",
+            proof_id="sha256:" + "c" * 64,
+            accepted_at=datetime.now(UTC),
+        )
+
+    async def get_acceptance(self, identity):
+        from src.control_plane.relay.protocol import TargetAcceptanceEvidence
+
+        self.queries.append(identity)
+        return self.proof or TargetAcceptanceEvidence(
+            identity=identity, outcome="unknown"
+        )
+
+
+def coordinator(redis, **kwargs):
+    from src.control_plane.relay.lifecycle import InvocationLifecycleCoordinator
+    from src.control_plane.relay.lifecycle_store import (
+        InvocationLifecycleStore,
+        JobReferenceStore,
+    )
+
+    return InvocationLifecycleCoordinator(
+        invocation_store=InvocationLifecycleStore(redis),
+        job_reference_store=JobReferenceStore(redis),
+        **kwargs,
+    )
+
+
+def bound_identity(arguments=None, **updates):
+    from src.control_plane.relay.protocol import relay_invocation_input_hash
+
+    return identity(
+        arguments_hash=relay_invocation_input_hash(
+            "execute_shipments", arguments or {}
+        ),
+        **updates,
+    )
+
+
+async def test_reserve_before_dispatch_and_consume_only_target_owned_acceptance(
+    real_redis,
+):
+    from src.control_plane.relay.lifecycle_store import (
+        InvocationState,
+        JobReferenceStore,
+    )
+
+    bound = bound_identity()
+    grants = GrantRecorder()
+    target = DurableTarget(bound, grants)
+    result = await coordinator(real_redis).invoke(
+        target=target, identity=bound, arguments={}, grant_callbacks=grants
+    )
+    assert result == {
+        "status": "processing",
+        "job_ref": result["job_ref"],
+        "poll_after_ms": 2000,
+    }
+    assert [name for name, _ in grants.calls] == ["reserve", "consume"]
+    assert len(target.dispatches) == 1
+    assert target.dispatches[0][2] <= bound.authorization_expires_at
+    record = await JobReferenceStore(real_redis).resolve(
+        result["job_ref"],
+        account_id=bound.account_id,
+        provider_connection_id=bound.provider_connection_id,
+    )
+    assert record.state == InvocationState.ACCEPTED
+    assert record.local_job_id == "original-job"
+    # Replay returns the original reference, with no second purchase or key.
+    replay = await coordinator(real_redis).invoke(
+        target=target, identity=bound, arguments={}, grant_callbacks=grants
+    )
+    assert replay == result
+    assert len(target.dispatches) == 1
+
+
+async def test_lost_send_response_stays_unknown_until_exact_target_recovers_original_job(
+    real_redis,
+):
+    from src.control_plane.relay.lifecycle_store import (
+        InvocationState,
+        JobReferenceStore,
+    )
+
+    bound = bound_identity()
+    grants = GrantRecorder()
+
+    class LostReplyTarget(DurableTarget):
+        async def dispatch_invocation(self, **kwargs):
+            await super().dispatch_invocation(**kwargs)
+            raise ConnectionError("PRIVATE_TARGET_CANARY")
+
+    target = LostReplyTarget(bound, grants)
+    first = await coordinator(real_redis).invoke(
+        target=target, identity=bound, arguments={}, grant_callbacks=grants
+    )
+    assert first["status"] == "processing_unknown"
+    assert first["terminal"] is False
+    assert "PRIVATE_TARGET_CANARY" not in str(first)
+    assert [name for name, _ in grants.calls] == ["reserve", "hold"]
+    recovered = await coordinator(real_redis).reconcile(
+        target=target,
+        job_ref=first["job_ref"],
+        account_id=bound.account_id,
+        provider_connection_id=bound.provider_connection_id,
+        grant_callbacks=grants,
+    )
+    assert recovered == {
+        "status": "processing",
+        "job_ref": first["job_ref"],
+        "poll_after_ms": 2000,
+    }
+    assert [name for name, _ in grants.calls] == ["reserve", "hold", "consume"]
+    assert target.queries == [bound]
+    assert len(target.dispatches) == 1
+    record = await JobReferenceStore(real_redis).resolve(
+        first["job_ref"],
+        account_id=bound.account_id,
+        provider_connection_id=bound.provider_connection_id,
+    )
+    assert record.state == InvocationState.RECOVERED_BY_POLL
+    assert record.local_job_id == "original-job"
+
+
+async def test_missing_target_lookup_does_not_release_or_redispatch(real_redis):
+    bound = bound_identity()
+    grants = GrantRecorder()
+
+    class UnreachableTarget(DurableTarget):
+        async def dispatch_invocation(self, **kwargs):
+            self.dispatches.append(kwargs)
+            raise ConnectionError("unreachable")
+
+    target = UnreachableTarget(bound, grants)
+    first = await coordinator(real_redis).invoke(
+        target=target, identity=bound, arguments={}, grant_callbacks=grants
+    )
+    replay = await coordinator(real_redis).invoke(
+        target=target, identity=bound, arguments={}, grant_callbacks=grants
+    )
+    assert replay["status"] == "processing_unknown"
+    assert replay["job_ref"] == first["job_ref"]
+    assert len(target.dispatches) == 1
+    assert "release" not in [name for name, _ in grants.calls]
+    assert "consume" not in [name for name, _ in grants.calls]
+
+
+@pytest.mark.parametrize("phase", ["send", "accept", "reserve", "consume", "hold"])
+async def test_all_waits_have_one_budget_even_if_dependency_ignores_cancellation(
+    real_redis, phase
+):
+    import asyncio
+    import time
+
+    from src.control_plane.relay.lifecycle import TimeoutLadder
+
+    release = asyncio.Event()
+    entered = asyncio.Event()
+
+    async def stubborn():
+        entered.set()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue
+
+    bound = bound_identity()
+    grants = GrantRecorder()
+    target = DurableTarget(bound, grants)
+    if phase in {"reserve", "consume", "hold"}:
+        original = getattr(
+            grants,
+            {
+                "reserve": "reserve",
+                "consume": "consume_on_accept",
+                "hold": "hold_for_reconciliation",
+            }[phase],
+        )
+
+        async def slow_callback(record):
+            await original(record)
+            await stubborn()
+
+        setattr(
+            grants,
+            {
+                "reserve": "reserve",
+                "consume": "consume_on_accept",
+                "hold": "hold_for_reconciliation",
+            }[phase],
+            slow_callback,
+        )
+    if phase == "send":
+        original_send = target.dispatch_invocation
+
+        async def slow_send(**kwargs):
+            await original_send(**kwargs)
+            await stubborn()
+
+        target.dispatch_invocation = slow_send
+    elif phase == "accept":
+
+        async def slow_accept(identity):
+            await stubborn()
+            return target.proof
+
+        target.get_acceptance = slow_accept
+    elif phase == "hold":
+
+        async def failed_send(**kwargs):
+            raise ConnectionError("lost transport")
+
+        target.dispatch_invocation = failed_send
+    start = time.monotonic()
+    task = asyncio.create_task(
+        coordinator(
+            real_redis,
+            timeout_ladder=TimeoutLadder(
+                cloud_send_seconds=0.02,
+                target_accept_seconds=0.03,
+                sync_hard_deadline_seconds=0.1,
+            ),
+        ).invoke(target=target, identity=bound, arguments={}, grant_callbacks=grants)
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), 0.3)
+        await asyncio.sleep(0.15)
+        assert task.done(), "coordinator waited for uncooperative cancellation cleanup"
+        result = task.result()
+        assert result["status"] == (
+            "processing" if phase == "consume" else "processing_unknown"
+        )
+        assert time.monotonic() - start < 0.3
+        assert "release" not in [name for name, _ in grants.calls]
+    finally:
+        release.set()
+        await asyncio.wait_for(task, 0.3)
+        await asyncio.sleep(0.01)
+
+
+async def test_fenced_nonacceptance_releases_only_unexpired_authorization(real_redis):
+    from src.control_plane.relay.protocol import TargetAcceptanceEvidence
+
+    bound = bound_identity()
+    grants = GrantRecorder()
+
+    class RejectingTarget(DurableTarget):
+        async def dispatch_invocation(self, *, identity, **kwargs):
+            self.dispatches.append(identity)
+            self.proof = TargetAcceptanceEvidence(
+                identity=identity,
+                outcome="not_accepted",
+                proof_id="sha256:" + "d" * 64,
+                rejection_fenced=True,
+            )
+
+    target = RejectingTarget(bound, grants)
+    result = await coordinator(real_redis).invoke(
+        target=target, identity=bound, arguments={}, grant_callbacks=grants
+    )
+    assert result["status"] == "unavailable"
+    assert result["reason"] == "target_offline"
+    assert result["terminal"] is True
+    assert [name for name, _ in grants.calls] == ["reserve", "release"]
+    replay = await coordinator(real_redis).invoke(
+        target=target, identity=bound, arguments={}, grant_callbacks=grants
+    )
+    assert replay == result
+    assert len(target.dispatches) == 1
+
+
+@pytest.mark.parametrize("when", ["before", "during_reserve"])
+async def test_expired_authorization_never_dispatches_or_releases(real_redis, when):
+    import asyncio
+    from datetime import timedelta
+
+    bound = bound_identity(
+        authorization_expires_at=datetime.now(UTC)
+        + timedelta(seconds=-1 if when == "before" else 0.02)
+    )
+    grants = GrantRecorder()
+    if when == "during_reserve":
+
+        async def reserve(record):
+            grants.calls.append(("reserve", record))
+            await asyncio.sleep(0.04)
+
+        grants.reserve = reserve
+    target = DurableTarget(bound, grants)
+    result = await coordinator(real_redis).invoke(
+        target=target, identity=bound, arguments={}, grant_callbacks=grants
+    )
+    assert result["status"] == "blocked"
+    assert result["reason"] == "approval_expired"
+    assert not target.dispatches
+    assert "release" not in [name for name, _ in grants.calls]
+
+
+async def test_acceptance_before_expiry_is_recovered_after_expiry_without_renewal(
+    real_redis,
+):
+    import asyncio
+    from datetime import timedelta
+
+    from src.control_plane.redis_keys import RedisKey
+
+    bound = bound_identity(
+        authorization_expires_at=datetime.now(UTC) + timedelta(seconds=0.03)
+    )
+    grants = GrantRecorder()
+
+    class SlowReplyTarget(DurableTarget):
+        async def dispatch_invocation(self, **kwargs):
+            await super().dispatch_invocation(**kwargs)
+            await asyncio.sleep(0.05)
+
+    target = SlowReplyTarget(bound, grants)
+    first = await coordinator(real_redis).invoke(
+        target=target, identity=bound, arguments={}, grant_callbacks=grants
+    )
+    assert first["status"] == "processing"
+    assert [name for name, _ in grants.calls] == ["reserve", "hold"]
+    expiry = await real_redis.pexpiretime(
+        RedisKey.invocation(bound.relay_invocation_id)
+    )
+    replay = await coordinator(real_redis).invoke(
+        target=target, identity=bound, arguments={}, grant_callbacks=grants
+    )
+    assert replay == first
+    assert len(target.dispatches) == 1
+    assert (
+        await real_redis.pexpiretime(RedisKey.invocation(bound.relay_invocation_id))
+        == expiry
+    )
+
+
+@pytest.mark.parametrize("phase", ["send", "consume"])
+async def test_caller_cancellation_holds_with_remaining_budget_and_preserves_acceptance(
+    real_redis, phase
+):
+    import asyncio
+
+    from src.control_plane.relay.lifecycle import TimeoutLadder
+
+    entered = asyncio.Event()
+    hold_entered = asyncio.Event()
+    finish = asyncio.Event()
+    bound = bound_identity()
+    grants = GrantRecorder()
+    target = DurableTarget(bound, grants)
+    if phase == "send":
+        original_send = target.dispatch_invocation
+
+        async def send(**kwargs):
+            await original_send(**kwargs)
+            entered.set()
+            await finish.wait()
+
+        target.dispatch_invocation = send
+    else:
+
+        async def consume(record):
+            grants.calls.append(("consume", record))
+            entered.set()
+            await finish.wait()
+
+        grants.consume_on_accept = consume
+
+    async def hold(record):
+        grants.calls.append(("hold", record))
+        hold_entered.set()
+        while not finish.is_set():
+            try:
+                await finish.wait()
+            except asyncio.CancelledError:
+                continue
+
+    grants.hold_for_reconciliation = hold
+    task = asyncio.create_task(
+        coordinator(
+            real_redis,
+            timeout_ladder=TimeoutLadder(
+                cloud_send_seconds=0.02,
+                target_accept_seconds=0.03,
+                sync_hard_deadline_seconds=0.15,
+            ),
+        ).invoke(target=target, identity=bound, arguments={}, grant_callbacks=grants)
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), 0.3)
+        task.cancel()
+        await asyncio.sleep(0.02)
+        assert hold_entered.is_set(), "caller cancellation skipped reconciliation hold"
+        task.cancel()  # Does not restart the original budget or suppress cancellation.
+        await asyncio.sleep(0.16)
+        assert task.done()
+        with pytest.raises(asyncio.CancelledError):
+            task.result()
+        assert "release" not in [name for name, _ in grants.calls]
+        assert len(target.dispatches) == 1
+    finally:
+        finish.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.sleep(0.02)
+    # Fresh callback can reconcile the same accepted work after caller interruption.
+    result = await coordinator(real_redis).invoke(
+        target=target, identity=bound, arguments={}, grant_callbacks=GrantRecorder()
+    )
+    assert result["status"] == "processing"
+    assert len(target.dispatches) == 1
+
+
+async def test_nested_transit_arguments_are_snapshotted_before_reserve_await(
+    real_redis,
+):
+    arguments = {"preview": {"address": "TRANSIT_ONLY_CANARY"}}
+    bound = bound_identity(arguments)
+    grants = GrantRecorder()
+    original_reserve = grants.reserve
+
+    async def reserve(record):
+        await original_reserve(record)
+        arguments["preview"]["address"] = "CHANGED_AFTER_HASH"
+
+    grants.reserve = reserve
+    target = DurableTarget(bound, grants)
+    result = await coordinator(real_redis).invoke(
+        target=target, identity=bound, arguments=arguments, grant_callbacks=grants
+    )
+    assert result["status"] == "processing"
+    assert target.dispatches[0][1]["preview"]["address"] == "TRANSIT_ONLY_CANARY"
+    raw = b" ".join([await real_redis.get(key) for key in await real_redis.keys("*")])
+    assert b"TRANSIT_ONLY_CANARY" not in raw
+    assert b"CHANGED_AFTER_HASH" not in raw
+    assert "TRANSIT_ONLY_CANARY" not in str(result)
+
+
+async def test_configured_poll_delay_is_preserved(real_redis):
+    from src.control_plane.relay.lifecycle import TimeoutLadder
+
+    bound = bound_identity()
+    grants = GrantRecorder()
+    target = DurableTarget(bound, grants)
+    result = await coordinator(
+        real_redis, timeout_ladder=TimeoutLadder(poll_after_ms=3456)
+    ).invoke(target=target, identity=bound, arguments={}, grant_callbacks=grants)
+    assert result["poll_after_ms"] == 3456
+
+
+@pytest.mark.parametrize(
+    "failure", ["wrong_target", "changed_hash", "missing_job", "redis_unreachable"]
+)
+async def test_denials_return_closed_provider_safe_envelopes(real_redis, failure):
+    from redis.exceptions import ConnectionError
+
+    bound = bound_identity()
+    grants = GrantRecorder()
+    target = DurableTarget(bound, grants)
+    coord = coordinator(real_redis)
+    arguments = {}
+    if failure == "wrong_target":
+        target.execution_target_id = "PRIVATE_TARGET_CANARY"
+    elif failure == "changed_hash":
+        arguments = {"raw": "PRIVATE_ARGUMENT_CANARY"}
+    elif failure == "redis_unreachable":
+
+        async def unavailable():
+            raise ConnectionError("PRIVATE_REDIS_CANARY")
+
+        coord.invocations.redis.time = unavailable
+    if failure == "missing_job":
+        result = await coord.reconcile(
+            target=target,
+            job_ref="sa_job_" + "9" * 32,
+            account_id=bound.account_id,
+            provider_connection_id=bound.provider_connection_id,
+            grant_callbacks=grants,
+        )
+    else:
+        result = await coord.invoke(
+            target=target, identity=bound, arguments=arguments, grant_callbacks=grants
+        )
+    assert result["status"] == "unavailable"
+    assert result["reason"] == "invocation_unavailable"
+    assert result["terminal"] is True
+    assert not target.dispatches
+    assert not grants.calls
+    assert "PRIVATE_" not in str(result)
+
+
+async def test_invalid_target_evidence_stays_pending_without_consumption(real_redis):
+    bound = bound_identity()
+    grants = GrantRecorder()
+    target = DurableTarget(bound, grants)
+
+    async def wrong_proof(identity):
+        return target.proof.model_copy(
+            update={
+                "identity": identity.model_copy(
+                    update={"execution_target_id": "other-target"}
+                )
+            }
+        )
+
+    target.get_acceptance = wrong_proof
+    result = await coordinator(real_redis).invoke(
+        target=target, identity=bound, arguments={}, grant_callbacks=grants
+    )
+    assert result["status"] == "processing_unknown"
+    assert [name for name, _ in grants.calls] == ["reserve", "hold"]
+
+
+async def test_missing_invocation_with_retained_job_pointer_cannot_be_recovered_or_redispatched(
+    real_redis,
+):
+    from src.control_plane.execution_grants import (
+        ExecutionGrantDenial,
+        ExecutionGrantError,
+    )
+    from src.control_plane.redis_keys import RedisKey
+
+    bound = bound_identity()
+    grants = GrantRecorder()
+    target = DurableTarget(bound, grants)
+    coord = coordinator(real_redis)
+    first = await coord.invoke(
+        target=target, identity=bound, arguments={}, grant_callbacks=grants
+    )
+    await real_redis.delete(RedisKey.invocation(bound.relay_invocation_id))
+    denied = await coord.reconcile(
+        target=target,
+        job_ref=first["job_ref"],
+        account_id=bound.account_id,
+        provider_connection_id=bound.provider_connection_id,
+        grant_callbacks=grants,
+    )
+    assert denied["reason"] == "invocation_unavailable"
+
+    # The authority, not lifecycle.create metadata, must reject replay if state was lost.
+    async def consumed(record):
+        raise ExecutionGrantError(ExecutionGrantDenial.GRANT_CONSUMED)
+
+    grants.reserve = consumed
+    await coord.invoke(
+        target=target, identity=bound, arguments={}, grant_callbacks=grants
+    )
+    assert len(target.dispatches) == 1
+    assert await real_redis.exists(RedisKey.job_reference(first["job_ref"]))
+
+
+@pytest.mark.parametrize("phase", ["pair_create", "sent", "acceptance"])
+async def test_lost_redis_write_reply_keeps_one_pair_and_never_replays_dispatch(
+    real_redis, phase
+):
+    from redis.exceptions import ConnectionError
+
+    from src.control_plane.relay.lifecycle_store import JobReferenceStore
+
+    bound = bound_identity()
+    grants = GrantRecorder()
+    target = DurableTarget(bound, grants)
+    original_eval = real_redis.eval
+    replace_count = 0
+    injected = False
+
+    async def lost_reply(script, *args):
+        nonlocal replace_count, injected
+        result = await original_eval(script, *args)
+        if "KEEPTTL" in script:
+            replace_count += 1
+        drop = (
+            (phase == "pair_create" and "'PXAT'" in script)
+            or (phase == "sent" and replace_count == 1 and "KEEPTTL" in script)
+            or (phase == "acceptance" and replace_count == 2 and "KEEPTTL" in script)
+        )
+        if drop and not injected:
+            injected = True
+            raise ConnectionError("PRIVATE_WRITE_REPLY_CANARY")
+        return result
+
+    real_redis.eval = lost_reply
+    first = await coordinator(real_redis).invoke(
+        target=target, identity=bound, arguments={}, grant_callbacks=grants
+    )
+    assert injected
+    assert "PRIVATE_" not in str(first)
+    assert await real_redis.dbsize() == 2
+    effect_count = len(target.dispatches)
+    second = await coordinator(real_redis).invoke(
+        target=target, identity=bound, arguments={}, grant_callbacks=grants
+    )
+    assert await real_redis.dbsize() == 2
+    assert len(target.dispatches) == effect_count == (1 if phase == "acceptance" else 0)
+    if phase == "acceptance":
+        assert second["status"] == "processing"
+        record = await JobReferenceStore(real_redis).resolve(
+            second["job_ref"],
+            account_id=bound.account_id,
+            provider_connection_id=bound.provider_connection_id,
+        )
+        assert record.local_job_id == "original-job"
+    else:
+        assert second["status"] == "processing_unknown"
+
+
+async def test_changed_target_during_reservation_denies_dispatch(real_redis):
+    bound = bound_identity()
+    grants = GrantRecorder()
+    target = DurableTarget(bound, grants)
+    original_reserve = grants.reserve
+
+    async def reserve(record):
+        await original_reserve(record)
+        target.execution_target_id = "replacement-target"
+
+    grants.reserve = reserve
+    result = await coordinator(real_redis).invoke(
+        target=target, identity=bound, arguments={}, grant_callbacks=grants
+    )
+    assert not target.dispatches
+    assert result["status"] != "processing"
+    assert "release" not in [name for name, _ in grants.calls]
+
+
+async def test_failure_after_reserve_never_attempts_new_reserve_or_dispatch(real_redis):
+    bound = bound_identity()
+    grants = GrantRecorder()
+    target = DurableTarget(bound, grants)
+
+    async def reserve(record):
+        grants.calls.append(("reserve", record))
+        raise ConnectionError("lost reserve response")
+
+    grants.reserve = reserve
+    first = await coordinator(real_redis).invoke(
+        target=target, identity=bound, arguments={}, grant_callbacks=grants
+    )
+    second = await coordinator(real_redis).invoke(
+        target=target, identity=bound, arguments={}, grant_callbacks=grants
+    )
+    assert first["status"] == second["status"] == "processing_unknown"
+    assert first["job_ref"] == second["job_ref"]
+    assert [name for name, _ in grants.calls].count("reserve") == 1
+    assert not target.dispatches
+
+
+async def test_full_lifecycle_pair_loss_still_requires_nonreusable_authority_reserve(
+    real_redis,
+):
+    from src.control_plane.execution_grants import (
+        ExecutionGrantDenial,
+        ExecutionGrantError,
+    )
+    from src.control_plane.redis_keys import RedisKey
+
+    bound = bound_identity()
+    grants = GrantRecorder()
+    target = DurableTarget(bound, grants)
+    coord = coordinator(real_redis)
+    first = await coord.invoke(
+        target=target, identity=bound, arguments={}, grant_callbacks=grants
+    )
+    await real_redis.delete(
+        RedisKey.invocation(bound.relay_invocation_id),
+        RedisKey.job_reference(first["job_ref"]),
+    )
+    reserved_again = []
+
+    async def consumed(record):
+        reserved_again.append(record)
+        raise ExecutionGrantError(ExecutionGrantDenial.GRANT_CONSUMED)
+
+    grants.reserve = consumed
+    replay = await coord.invoke(
+        target=target, identity=bound, arguments={}, grant_callbacks=grants
+    )
+    assert len(reserved_again) == 1
+    assert replay["status"] == "processing_unknown"
+    assert replay["job_ref"] == first["job_ref"]
+    assert len(target.dispatches) == 1
+
+
+async def test_consume_failure_preserves_accepted_job_and_retries_only_settlement(
+    real_redis,
+):
+    bound = bound_identity()
+    grants = GrantRecorder()
+    target = DurableTarget(bound, grants)
+    calls = 0
+
+    async def consume(record):
+        nonlocal calls
+        calls += 1
+        grants.calls.append(("consume", record))
+        if calls == 1:
+            raise ConnectionError("PRIVATE_SETTLEMENT_CANARY")
+
+    grants.consume_on_accept = consume
+    first = await coordinator(real_redis).invoke(
+        target=target, identity=bound, arguments={}, grant_callbacks=grants
+    )
+    assert first["status"] == "processing"
+    assert [name for name, _ in grants.calls] == ["reserve", "consume", "hold"]
+    second = await coordinator(real_redis).reconcile(
+        target=target,
+        job_ref=first["job_ref"],
+        account_id=bound.account_id,
+        provider_connection_id=bound.provider_connection_id,
+        grant_callbacks=grants,
+    )
+    assert second == first
+    assert calls == 2
+    assert len(target.dispatches) == 1
+    assert "PRIVATE_" not in str(first)
+
+
+async def test_expired_negative_evidence_never_releases_reserved_authorization(
+    real_redis,
+):
+    import asyncio
+    from datetime import timedelta
+
+    from src.control_plane.relay.protocol import TargetAcceptanceEvidence
+
+    bound = bound_identity(
+        authorization_expires_at=datetime.now(UTC) + timedelta(seconds=0.03)
+    )
+    grants = GrantRecorder()
+    target = DurableTarget(bound, grants)
+
+    async def send(*, identity, **kwargs):
+        target.proof = TargetAcceptanceEvidence(
+            identity=identity,
+            outcome="not_accepted",
+            proof_id="sha256:" + "d" * 64,
+            rejection_fenced=True,
+        )
+        await asyncio.sleep(0.05)
+
+    target.dispatch_invocation = send
+    result = await coordinator(real_redis).invoke(
+        target=target, identity=bound, arguments={}, grant_callbacks=grants
+    )
+    assert result["reason"] == "approval_expired"
+    assert [name for name, _ in grants.calls] == ["reserve"]
+
+
+async def test_stale_unknown_reconciliation_cannot_replace_concurrent_acceptance(
+    real_redis,
+):
+    import asyncio
+
+    from src.control_plane.relay.lifecycle_store import (
+        InvocationLifecycleStore,
+        InvocationState,
+        JobReferenceStore,
+    )
+    from src.control_plane.relay.protocol import TargetAcceptanceEvidence
+
+    bound = bound_identity()
+    store = InvocationLifecycleStore(real_redis)
+    initial, _ = await store.create(bound)
+    sent = await store.transition(initial, InvocationState.SENT_TO_TARGET)
+    entered = asyncio.Event()
+    finish = asyncio.Event()
+    grants = GrantRecorder()
+    target = DurableTarget(bound, grants)
+
+    async def unknown(identity):
+        entered.set()
+        await finish.wait()
+        return TargetAcceptanceEvidence(identity=identity, outcome="unknown")
+
+    target.get_acceptance = unknown
+    pending = asyncio.create_task(
+        coordinator(real_redis).reconcile(
+            target=target,
+            job_ref=initial.job_ref,
+            account_id=bound.account_id,
+            provider_connection_id=bound.provider_connection_id,
+            grant_callbacks=grants,
+        )
+    )
+    await asyncio.wait_for(entered.wait(), 1)
+    accepted = await store.record_evidence(
+        sent,
+        TargetAcceptanceEvidence(
+            identity=bound,
+            outcome="accepted",
+            local_job_id="original-job",
+            proof_id="sha256:" + "c" * 64,
+            accepted_at=datetime.now(UTC),
+        ),
+    )
+    finish.set()
+    await asyncio.wait_for(pending, 1)
+    assert (
+        await JobReferenceStore(real_redis).resolve(
+            initial.job_ref,
+            account_id=bound.account_id,
+            provider_connection_id=bound.provider_connection_id,
+        )
+        == accepted
+    )
+    assert "release" not in [name for name, _ in grants.calls]
+
+
+async def test_acceptance_timeout_keeps_recoverable_deadline_state(real_redis):
+    import asyncio
+
+    from src.control_plane.relay.lifecycle import TimeoutLadder
+    from src.control_plane.relay.lifecycle_store import (
+        InvocationState,
+        JobReferenceStore,
+    )
+
+    bound = bound_identity()
+    grants = GrantRecorder()
+    target = DurableTarget(bound, grants)
+
+    async def slow_query(identity):
+        await asyncio.sleep(0.2)
+        return target.proof
+
+    target.get_acceptance = slow_query
+    first = await coordinator(
+        real_redis,
+        timeout_ladder=TimeoutLadder(
+            cloud_send_seconds=0.01,
+            target_accept_seconds=0.02,
+            sync_hard_deadline_seconds=0.1,
+        ),
+    ).invoke(target=target, identity=bound, arguments={}, grant_callbacks=grants)
+    assert first["status"] == "processing_unknown"
+    record = await JobReferenceStore(real_redis).resolve(
+        first["job_ref"],
+        account_id=bound.account_id,
+        provider_connection_id=bound.provider_connection_id,
+    )
+    assert record.state == InvocationState.DEADLINE_EXCEEDED
+    assert "release" not in [name for name, _ in grants.calls]

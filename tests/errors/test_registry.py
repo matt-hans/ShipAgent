@@ -29,3 +29,25 @@ def test_v2_error_codes_registered(code, category, title):
     assert error is not None, f"{code} not found in registry"
     assert error.category == category
     assert error.title == title
+
+
+@pytest.mark.parametrize(
+    "code,title",
+    [
+        ("E-6001", "Relay Target Offline"),
+        ("E-6002", "Relay Disconnected Mid Call"),
+        ("E-6003", "Relay Invocation Deadline Exceeded"),
+        ("E-6004", "Relay Processing Unknown"),
+        ("E-6005", "Relay Invocation Abandoned"),
+        ("E-6006", "Relay Envelope Rejected"),
+        ("E-6007", "Relay Invocation Unavailable"),
+        ("E-6008", "Execution Approval Expired"),
+    ],
+)
+def test_provider_lifecycle_errors_are_registered_without_automatic_retry(code, title):
+    error = get_error(code)
+    assert error is not None
+    assert error.category.value == "provider"
+    assert error.title == title
+    assert error.is_retryable is False
+    assert "{" not in error.message_template  # No dependency payload interpolation.

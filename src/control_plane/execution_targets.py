@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Protocol
 
 from src.control_plane.relay.invocations import (
@@ -11,8 +12,10 @@ from src.control_plane.relay.invocations import (
 )
 from src.control_plane.relay.protocol import (
     ExecutionTargetStatus,
+    InvocationIdentity,
     RelayTargetState,
     ShipAgentStatus,
+    TargetAcceptanceEvidence,
 )
 from src.control_plane.relay.registry import RelayDeviceRegistry
 from src.registry.vocabulary import PUBLIC_STATUS_CAPABILITIES
@@ -123,3 +126,35 @@ def _offline_status() -> ShipAgentStatus:
             message="No active execution target connected.",
         ),
     )
+
+
+class DurableExecutionTarget(Protocol):
+    """Optional acceptance/recovery capability; invoke-only targets do not qualify.
+
+    The adapter owns the authenticated exact-target session and increasing
+    transport sequence. It must use the existing RelayInvocationEnvelope fields
+    (datetime deadline_at, canonical input hash), preserve the supplied server
+    invocation/idempotency identity, and never retry a dispatch automatically.
+    No current production relay or desktop target opts into this protocol.
+    """
+
+    execution_target_id: str
+
+    async def dispatch_invocation(
+        self,
+        *,
+        identity: InvocationIdentity,
+        arguments: dict[str, object],
+        deadline_at: datetime,
+    ) -> None:
+        """Send once. Return is transport delivery, never durable acceptance."""
+
+    async def get_acceptance(
+        self, identity: InvocationIdentity
+    ) -> TargetAcceptanceEvidence:
+        """Read exact-key durable evidence. Missing/unreachable means unknown.
+
+        A negative answer requires an existing durable rejection fence that also
+        prevents delayed original sends from accepting. This operation must not
+        invoke/purchase, select a replacement target, or mint a new key.
+        """

@@ -34,7 +34,9 @@ An authority must fence every mutation against the original reservation owner,
 keep failed/unknown settlements non-reusable, and recheck expiry at consume.
 Expiry or lost Redis state denies old authorization; it never remints a grant.
 See ``docs/components/execution-grant-authority-contract.md`` for the contract
-and the still-missing real-store and invocation-recovery prerequisites.
+and the dormant invocation-recovery seam in
+``docs/control-plane/invocation-recovery.md``. The real fenced authority and
+production integration remain separate prerequisites.
 """
 
 import re

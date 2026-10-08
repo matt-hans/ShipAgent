@@ -7,6 +7,7 @@ into categories:
 - E-3xxx: UPS API errors
 - E-4xxx: System/internal errors
 - E-5xxx: Authentication errors
+- E-6xxx: Provider/relay lifecycle errors
 
 Each error includes a code, title, message template, and remediation steps.
 """
@@ -23,6 +24,7 @@ class ErrorCategory(str, Enum):
     UPS_API = "ups_api"  # E-3xxx: UPS API errors
     SYSTEM = "system"  # E-4xxx: System/internal errors
     AUTH = "auth"  # E-5xxx: Authentication errors
+    PROVIDER = "provider"  # E-6xxx: Relay lifecycle; never automatic purchase retry
 
 
 @dataclass
@@ -448,6 +450,63 @@ ERROR_REGISTRY: dict[str, ErrorCode] = {
         message_template="UPS access token has expired and could not be refreshed.",
         remediation="Re-authenticate with UPS in settings.",
         is_retryable=True,
+    ),
+    # Provider/relay lifecycle outcomes use fixed redacted copy.
+    "E-6001": ErrorCode(
+        code="E-6001",
+        category=ErrorCategory.PROVIDER,
+        title="Relay Target Offline",
+        message_template="The target positively rejected this invocation.",
+        remediation="Reconnect before continuing; release evidence alone does not authorize a new attempt.",
+    ),
+    "E-6002": ErrorCode(
+        code="E-6002",
+        category=ErrorCategory.PROVIDER,
+        title="Relay Disconnected Mid Call",
+        message_template="The target disconnected before its outcome could be verified.",
+        remediation="Check the existing job before retrying a purchase.",
+    ),
+    "E-6003": ErrorCode(
+        code="E-6003",
+        category=ErrorCategory.PROVIDER,
+        title="Relay Invocation Deadline Exceeded",
+        message_template="The local invocation deadline elapsed; acceptance may still have occurred.",
+        remediation="Reconcile the existing job using its original reference.",
+    ),
+    "E-6004": ErrorCode(
+        code="E-6004",
+        category=ErrorCategory.PROVIDER,
+        title="Relay Processing Unknown",
+        message_template="Acceptance is still being reconciled.",
+        remediation="Check the existing job before retrying a purchase.",
+    ),
+    "E-6005": ErrorCode(
+        code="E-6005",
+        category=ErrorCategory.PROVIDER,
+        title="Relay Invocation Abandoned",
+        message_template="The invocation was interrupted before its outcome was established.",
+        remediation="Reconcile the original invocation; interruption is not proof of nonacceptance.",
+    ),
+    "E-6006": ErrorCode(
+        code="E-6006",
+        category=ErrorCategory.PROVIDER,
+        title="Relay Envelope Rejected",
+        message_template="The target could not validate the invocation envelope.",
+        remediation="Verify the exact target and original invocation; do not automatically retry.",
+    ),
+    "E-6007": ErrorCode(
+        code="E-6007",
+        category=ErrorCategory.PROVIDER,
+        title="Relay Invocation Unavailable",
+        message_template="The existing invocation cannot be verified.",
+        remediation="Do not retry a purchase; check its original status.",
+    ),
+    "E-6008": ErrorCode(
+        code="E-6008",
+        category=ErrorCategory.PROVIDER,
+        title="Execution Approval Expired",
+        message_template="This authorization expired.",
+        remediation="Check any existing job before requesting a new preview and approval.",
     ),
 }
 
