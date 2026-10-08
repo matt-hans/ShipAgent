@@ -4,7 +4,8 @@ An Execution Grant is minted by ShipAgent only after an explicit approval of one
 immutable priced preview. The model never holds it: provider calls carry only the
 opaque Approval Request reference, which the authority resolves server-side.
 This module defines the contract the hosted tool boundary enforces; storage and
-the approval flow are separate concerns (no store exists yet).
+the approval flow are separate concerns. A real Redis authority is dormant in
+``redis_grant_authority.py`` and is never automatically injected.
 
 Responsibility split (callers must honour it):
 
@@ -35,12 +36,12 @@ keep failed/unknown settlements non-reusable, and recheck expiry at consume.
 Expiry or lost Redis state denies old authorization; it never remints a grant.
 See ``docs/components/execution-grant-authority-contract.md`` for the contract
 and the dormant invocation-recovery seam in
-``docs/control-plane/invocation-recovery.md``. The real fenced authority and
-production integration remain separate prerequisites.
+``docs/control-plane/invocation-recovery.md``. The real fenced authority is explicitly constructed by disposable-store tests;
+production integration remains a separate prerequisite.
 """
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -92,8 +93,9 @@ class ExecutionGrantBinding:
     policy: str
     amount: str
     currency_code: str
-    idempotency_key: str
+    idempotency_key: str = field(repr=False)
     expires_at: datetime
+    reservation_token: str | None = field(default=None, repr=False)
 
     def validate(self, *, policy: str | None) -> None:
         """Raise ``ValueError`` unless every field is well formed.
@@ -101,6 +103,11 @@ class ExecutionGrantBinding:
         ``policy`` is the tool contract's ``confirmation_policy`` the binding
         must equal. Account, connection and preview matching is the gate's job.
         """
+        if self.reservation_token is not None and (
+            not isinstance(self.reservation_token, str)
+            or re.fullmatch(r"[0-9a-f]{64}", self.reservation_token) is None
+        ):
+            raise ValueError("invalid reservation ownership token")
         text_fields = (
             self.account_id,
             self.provider_connection_id,
@@ -135,7 +142,7 @@ class ExecutionGrantReservation(Protocol):
     Operations must be idempotent, use bounded I/O, and cooperate with local
     cancellation. A delayed write must never downgrade consumed/held state or
     mutate a replacement reservation. A failed hold is safe only because the
-    original reserve already denies reuse. No implementation exists here.
+    original reserve already denies reuse. The real implementation stays dormant.
     """
 
     binding: ExecutionGrantBinding
@@ -152,7 +159,7 @@ class ExecutionGrantReservation(Protocol):
         """Allow retry only on proof of nonacceptance within original expiry.
 
         Compare the reservation fence atomically; never make held/consumed,
-        expired, missing, or another owner's reservation reusable.
+        expired, missing, dispatch-claimed, or another owner's reservation reusable.
         """
 
     async def hold_for_reconciliation(self) -> None:
@@ -185,5 +192,6 @@ class ExecutionGrantAuthority(Protocol):
         clean it up only with fenced proof of no dispatch/acceptance, otherwise
         reconcile or expire to denial. Never suppress cancellation and return
         dispatchable ownership. Missing state cannot be rebuilt from an approved
-        request or the SQL ledger. Redis/ledger implementation is separate work.
+        request or the SQL ledger. The shared Redis/ledger implementation is dormant
+        in ``redis_grant_authority.py``; production wiring remains separate.
         """

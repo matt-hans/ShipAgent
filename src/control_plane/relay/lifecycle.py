@@ -213,32 +213,20 @@ class InvocationLifecycleCoordinator:
                 if record.identity != identity:
                     raise LifecycleUnavailable()
                 return await self._reconcile(target, record, grant_callbacks, budget)
-            record, created = await budget.call(self.invocations.create(identity))
+            record, created = await budget.call(
+                self.invocations.create(
+                    identity,
+                    dispatch_deadline_at=min(
+                        identity.authorization_expires_at, budget.wall_deadline
+                    ),
+                )
+            )
             if not created:
                 return await self._reconcile(target, record, grant_callbacks, budget)
             await budget.call(grant_callbacks.reserve(record))
-            if datetime.now(UTC) >= identity.authorization_expires_at:
-                await self._unknown(record, grant_callbacks, budget)
-                return build_expired_envelope()
-            sent = await budget.call(
-                self.invocations.transition(record, InvocationState.SENT_TO_TARGET)
+            return await self._dispatch_reserved(
+                target, record, arguments, grant_callbacks, budget
             )
-            if sent is None:
-                raise LifecycleUnavailable()
-            record = sent
-            if target.execution_target_id != identity.execution_target_id:
-                raise LifecycleUnavailable()
-            await budget.call(
-                target.dispatch_invocation(
-                    identity=identity,
-                    arguments=arguments,
-                    deadline_at=min(
-                        identity.authorization_expires_at, budget.wall_deadline
-                    ),
-                ),
-                cap=self.timeouts.cloud_send_seconds,
-            )
-            return await self._reconcile(target, sent, grant_callbacks, budget)
         except asyncio.CancelledError:
             if record is not None:
                 await self._cancel_and_hold(record, grant_callbacks, budget)
@@ -250,6 +238,109 @@ class InvocationLifecycleCoordinator:
                 record, grant_callbacks, budget, timed_out=isinstance(exc, TimeoutError)
             )
             return build_unknown_envelope(record.job_ref, self.timeouts.poll_after_ms)
+
+    async def reattempt(
+        self,
+        *,
+        target: DurableExecutionTarget,
+        rejected_record: InvocationRecord,
+        arguments: dict[str, object],
+        grant_callbacks: GrantCallbacks,
+    ) -> dict[str, object]:
+        """Explicit proof-backed attempt under a newly acquired grant owner.
+
+        ``invoke`` and ``reconcile`` never enter this path. The authority must
+        already have durably released the exact rejection and reserved its next
+        generation; callbacks validate that same owner, never acquire another.
+        A lost reserve or CAS response strands ownership safely without sending.
+        """
+        budget = _Budget(self.timeouts.sync_hard_deadline_seconds)
+        record = None
+        try:
+            arguments = json.loads(json.dumps(arguments, allow_nan=False))
+            if type(rejected_record) is not InvocationRecord:
+                raise LifecycleUnavailable()
+            rejected_record = InvocationRecord.model_validate_json(
+                rejected_record.model_dump_json()
+            )
+            identity = rejected_record.identity
+            if (
+                target.execution_target_id != identity.execution_target_id
+                or relay_invocation_input_hash(identity.tool_name, arguments)
+                != identity.arguments_hash
+            ):
+                raise LifecycleUnavailable()
+            current = await budget.call(
+                self.invocations.get(
+                    identity.relay_invocation_id,
+                    account_id=identity.account_id,
+                    provider_connection_id=identity.provider_connection_id,
+                )
+            )
+            if current != rejected_record:
+                raise LifecycleUnavailable()
+            if datetime.now(UTC) >= identity.authorization_expires_at:
+                return build_expired_envelope()
+            if datetime.now(UTC) >= current.dispatch_deadline_at:
+                return build_unavailable_envelope()
+            record = current.next_attempt()
+            await budget.call(grant_callbacks.reserve(record))
+            changed = await budget.call(self.invocations.begin_reattempt(current))
+            if changed is None:
+                raise LifecycleUnavailable()
+            record = changed
+            return await self._dispatch_reserved(
+                target,
+                record,
+                arguments,
+                grant_callbacks,
+                budget,
+                revalidate_owner=True,
+            )
+        except asyncio.CancelledError:
+            if record is not None:
+                await self._cancel_and_hold(record, grant_callbacks, budget)
+            raise
+        except Exception as exc:
+            if record is None:
+                return build_unavailable_envelope()
+            await self._unknown(
+                record, grant_callbacks, budget, timed_out=isinstance(exc, TimeoutError)
+            )
+            return build_unknown_envelope(record.job_ref, self.timeouts.poll_after_ms)
+
+    async def _dispatch_reserved(
+        self, target, record, arguments, callbacks, budget, *, revalidate_owner=False
+    ):
+        identity = record.identity
+        if datetime.now(UTC) >= identity.authorization_expires_at:
+            await self._unknown(record, callbacks, budget)
+            return build_expired_envelope()
+        if datetime.now(UTC) >= record.dispatch_deadline_at:
+            raise LifecycleUnavailable()
+        sent = await budget.call(
+            self.invocations.transition(record, InvocationState.SENT_TO_TARGET)
+        )
+        if sent is None:
+            raise LifecycleUnavailable()
+        if revalidate_owner:
+            # A second check catches revoke/expiry while the lifecycle CAS ran.
+            # Both checks attach the SAME already-reserved authority owner.
+            await budget.call(callbacks.reserve(sent))
+        if (
+            target.execution_target_id != identity.execution_target_id
+            or datetime.now(UTC) >= record.dispatch_deadline_at
+        ):
+            raise LifecycleUnavailable()
+        await budget.call(
+            target.dispatch_invocation(
+                identity=identity,
+                arguments=arguments,
+                deadline_at=min(record.dispatch_deadline_at, budget.wall_deadline),
+            ),
+            cap=self.timeouts.cloud_send_seconds,
+        )
+        return await self._reconcile(target, sent, callbacks, budget)
 
     async def reconcile(
         self,
@@ -292,6 +383,8 @@ class InvocationLifecycleCoordinator:
                 )
             except Exception:
                 latest = record
+            if latest.identity != record.identity:
+                latest = record  # Never hold a different attempt with this owner.
             await self._unknown(latest, callbacks, budget)
 
         operation = asyncio.create_task(settle())
@@ -308,6 +401,18 @@ class InvocationLifecycleCoordinator:
                 continue
 
     async def _unknown(self, record, callbacks, budget, *, timed_out=False):
+        try:
+            latest = await budget.call(
+                self.invocations.get(
+                    record.relay_invocation_id,
+                    account_id=record.identity.account_id,
+                    provider_connection_id=record.identity.provider_connection_id,
+                )
+            )
+            if latest.identity == record.identity:
+                record = latest
+        except Exception:
+            pass
         try:
             state = (
                 InvocationState.ABANDONED
