@@ -7,9 +7,12 @@ Related: [issue 51](https://github.com/matt-hans/ShipAgent/issues/51), ADRs
 
 **Enablement remains blocked.** This documents the dormant gate's caller
 contract. No production grant authority/store, approval UI or non-status hosted
-handler is enabled. Gate tests use explicit in-memory test doubles; they are not
-real-store replay, fencing, expiry or recovery proof. Issue 51 stays open until
-its documented design **and real-store tests** acceptance is met.
+handler is enabled. Gate unit tests use explicit in-memory test doubles;
+separate integration tests inject the real Redis authority and PostgreSQL ledger,
+including independent authority and deterministic target processes. The
+[issue 51 qualification record](../control-plane/execution-grant-qualification.md)
+maps all four prerequisites to their design and real-store assertions on pinned
+main. That bounded prerequisite qualification does not enable hosted mutations.
 
 The current public input is
 `execute_shipments(preview_id, approval_request_id)`. The opaque Approval Request
@@ -135,26 +138,31 @@ key, logical invocation, original job and all original deadlines while permanent
 target rejection fences block delayed older attempts. Repeated ordinary invoke
 never resets or silently redispatches.
 
-Issue 51 remains the separate final evidence/enablement review. Production
-post-gesture approval, authenticated exact-target/live-preview adapters,
+The [issue 51 evidence review](../control-plane/execution-grant-qualification.md)
+qualifies these dormant prerequisites separately from production enablement.
+Production post-gesture approval, authenticated exact-target/live-preview adapters,
 provider-safe job/status projection, coordinated revoke/retention startup and
 production Redis persistence/failover policy are not enabled by this slice.
 Broader Plan 7 integration retains its accepted Plans 2/4/6 dependency gate.
 
-## Real-store evidence required before enablement
+## Real-store qualification boundary
 
-Use synthetic references/hashes and disposable services, not live shipments.
-Run separate clients/processes against the real selected Redis authority and
-ledger/lifecycle dependencies. Verify one effect for races and replay, including
-application/authority process restart while Redis retains state; lost replies
+The qualification uses synthetic references/hashes and disposable services, not
+live shipments. Separate clients/processes use the real Redis authority and
+ledger/lifecycle dependencies. The mapped tests verify one effect for races and
+replay, including application/authority process restart while Redis retains state; lost replies
 after successful writes; interruption before/after reserve commit; expiry and
 fence loss during consume; failed release/hold; delayed stale callbacks; and
 accepted-but-unsettled original-job reconciliation. Missing/expired store state
-must deny rather than remint. Verify TTL/redaction/retention and account cleanup.
+must deny rather than remint. TTL/redaction/retention and account cleanup are
+covered by the shared persistence suites. See the qualification record for exact
+source identities, commands, counts, skips and service versions.
 
 The deterministic target may be a fake; the **authority/store may not** be an
 in-memory fake for this acceptance. In-memory gate tests alone only show responses to a fake authority. The separate
 real-store tests explicitly inject the real authority into a test-only gate and
-exercise separate authority/target processes; default wiring remains unchanged. No native Mac test substitutes
+exercise separate authority/target processes; default wiring remains unchanged.
+Redis remains running across those application/authority restarts. Redis AOF,
+power-loss and failover durability are not qualified. No native Mac test substitutes
 for these prerequisites, and this source work does not complete native release
 qualification in issues 30/41.

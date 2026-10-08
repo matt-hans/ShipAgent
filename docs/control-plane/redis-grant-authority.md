@@ -121,7 +121,7 @@ recorded while authorization remains absent/terminal. Unknown evidence remains
 non-reusable. Account deletion/revocation can prevent authenticated recovery;
 there is no account or ledger reconstruction from target data.
 
-## Acceptance and remaining issue 51 gate
+## Acceptance and remaining production gate
 
 The tests instantiate the real authority with disposable Redis/PostgreSQL and
 synthetic deterministic target evidence. They include separate authority
@@ -137,9 +137,12 @@ SHIPAGENT_TEST_SERVICE_ROOT=/path/to/test-services/extracted \
   .venv/bin/python -m pytest tests/control_plane/persistence -q
 ```
 
-Issue 51 still requires review of the actual final-head evidence and production
-integration obligations before enabling: authenticated exact-target/live-preview
-and post-gesture adapters, supported provider result/status projection, coordinated
+The [issue 51 qualification record](execution-grant-qualification.md) maps the
+four prerequisite requirements to exact-main evidence and separately labeled
+same-tree candidate verification. It qualifies the dormant authority/store
+prerequisites, not production integration. Before enabling, the caller still
+needs authenticated exact-target/live-preview and post-gesture adapters,
+supported provider result/status projection, coordinated
 revocation/retention startup, production Redis persistence/recovery policy and
 the broader Plans 2/4/6/7 dependency gate. Disposable process restart tests retain
 the Redis service; they do not claim power-loss/failover or Redis AOF qualification.

@@ -108,9 +108,12 @@ operation, denial code and exception type only, never identifiers, amounts or
 authority exception messages. An accepted result preserved across settlement
 failure reports target acceptance, not successful persistence or final shipping.
 
-See [the authority contract and separate implementation prerequisites](execution-grant-authority-contract.md)
-for cancellation, original expiry, reconciliation and required real-store tests.
-Existing fake-backed gate tests do not satisfy issue 51's persistent replay proof.
+See [the authority contract](execution-grant-authority-contract.md) for
+cancellation, original expiry and reconciliation, and the
+[issue 51 qualification record](../control-plane/execution-grant-qualification.md)
+for the real-store prerequisite evidence. Fake-backed gate unit tests alone do
+not establish replay safety; the separate real-authority integrations supply
+that proof within the documented retained-Redis/process-restart boundary.
 
 **Status:** the real grant store/authority is dormant; no approval page, connector, non-status handler or provider export is enabled. `confirmation_artifact_id` and the `INGRESS` family
 remain reserved with no tool consumer.
@@ -123,4 +126,6 @@ and unknown outcomes remain held. New attempt generations preserve original
 purchase/job/deadline identity. Public job-reference/status projection and real
 adapter wiring remain separate enablement obligations. See
 [the real authority implementation](../control-plane/redis-grant-authority.md)
-for bounded I/O, original-expiry audit-only recovery and issue 51's remaining gate.
+for bounded I/O, original-expiry audit-only recovery and the remaining production
+enablement obligations. Closing the prerequisite verification gate does not
+relax those caller obligations or enable hosted execution.
