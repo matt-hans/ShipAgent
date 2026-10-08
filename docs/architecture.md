@@ -18,7 +18,9 @@ The Automated Shipment Creation Agent is a natural language interface for batch 
 
 ### Provider-Neutral Portability Layer
 
-The canonical workflow/tool layer is the product backbone. Provider runtimes are adapters that translate the same registry and workflow services into MCP, OpenAPI, function declarations, manifests, and UI resources. Claude Agent SDK remains supported as one runtime adapter, not as a hard dependency for hosted provider app-store workflows.
+The canonical workflow/tool layer is the product backbone. `ConversationRuntimeSession` owns the conversation loop, history, interruption and tool dispatch for Anthropic, OpenAI and Gemini. Their thin protocol adapters translate provider requests and streamed responses; they do not own shipping decisions. The Claude Agent SDK and its client/hooks have been removed. Registry exports for MCP, OpenAPI, function declarations, manifests and UI resources are separate projections of canonical services. See the [SDK-free runtime guide](runtime/sdk-free-runtime.md).
+
+`WorkflowToolCatalog` supplies declarations and mode/side-effect metadata. `RuntimePolicyEngine` and `LocalToolDispatcher` gate calls before deterministic workflow handlers and gateways run. Raw carrier calls and model-supplied SQL are denied. Models work with closed filter/mapping configuration and provider-safe schema metadata; imported rows, local contacts, labels, credentials and raw carrier payloads stay in deterministic services and owner-facing artifacts. Projection is origin-aware: authored conversation text and specifically allowed current-flow inputs may remain model context, but local data and owner artifacts cannot become model context merely by being wrapped as text.
 
 ---
 
@@ -36,13 +38,13 @@ C4Context
 
     System(agent_system, "Shipment Agent System", "Interprets natural language shipping requests, processes data from various sources, creates shipments via UPS API with full audit trails")
 
-    System_Ext(anthropic, "Anthropic API", "Provides LLM intelligence for intent parsing and mapping generation")
+    System_Ext(model_api, "Model Provider API", "Anthropic / OpenAI / Gemini for intent parsing and mapping configuration")
     System_Ext(ups, "UPS API", "Carrier API for shipping, rating, address validation, and tracking")
     System_Ext(sheets, "Google Sheets", "Cloud spreadsheet data source")
     System_Ext(filesystem, "Local Filesystem", "CSV/Excel files and label output")
 
     Rel(user, agent_system, "Issues commands", "Natural language")
-    Rel(agent_system, anthropic, "Parses intent, generates mappings", "HTTPS")
+    Rel(agent_system, model_api, "Parses intent using provider-safe context", "HTTPS")
     Rel(agent_system, ups, "Creates shipments, gets rates", "HTTPS + OAuth")
     Rel(agent_system, sheets, "Reads/writes order data", "HTTPS + OAuth")
     Rel(agent_system, filesystem, "Reads source files, writes labels", "File I/O")
@@ -53,7 +55,7 @@ C4Context
 | Actor/System | Type | Interaction |
 |--------------|------|-------------|
 | **Shipping User** | Person | Issues natural language commands like "Ship all orders over $100 via Next Day Air." Reviews previews, approves batches, receives tracking numbers. |
-| **Anthropic API** | External System | Provides Claude LLM for parsing user intent into structured queries, generating Jinja2 mapping templates, and self-correcting when validation fails. |
+| **Model provider APIs** | External System | Anthropic, OpenAI and Gemini interpret user-authored intent and safe schema metadata through thin adapters. Deterministic services validate and execute the resulting configuration. |
 | **UPS API** | External System | The carrier backend. Handles address validation, rate quotes, shipment creation (returns tracking + labels), void/cancel, and tracking status. |
 | **Google Sheets** | External System | Optional cloud data source. Users can pull order data from shared spreadsheets and write tracking numbers back. |
 | **Local Filesystem** | External System | Primary data source for prototype. Reads CSV/Excel order files, writes shipping label images (PNG/PDF/ZPL). |
@@ -92,14 +94,14 @@ C4Container
         ContainerDb(state_db, "State Database", "SQLite", "Stores job state, transaction journal, audit logs for crash recovery")
     }
 
-    System_Ext(anthropic, "Anthropic API", "Claude LLM for intent parsing and mapping generation")
+    System_Ext(model_api, "Model Provider API", "Anthropic / OpenAI / Gemini")
     System_Ext(ups_api, "UPS API", "Shipping, Rating, Address Validation, Tracking endpoints")
     System_Ext(sheets_api, "Google Sheets API", "Cloud spreadsheet data source")
     System_Ext(filesystem, "Local Filesystem", "CSV/Excel files (input/output) and shipping labels (output)")
 
     Rel(user, ui, "Interacts via", "HTTPS")
     Rel(ui, agent, "Sends commands and receives events", "HTTP + SSE/EventSource")
-    Rel(agent, anthropic, "Sends prompts, receives responses", "HTTPS")
+    Rel(agent, model_api, "Provider-safe context through protocol adapter", "HTTPS")
     Rel(agent, data_mcp, "Queries data, triggers write-back", "stdio")
     Rel(agent, ups_mcp, "Validates and creates shipments", "stdio")
     Rel(agent, state_db, "Reads/writes job state", "SQL")
@@ -114,7 +116,7 @@ C4Container
 | Container | Technology | Responsibility |
 |-----------|------------|----------------|
 | **Browser UI** | Angular 21, Nx, Native Federation | User-facing interface for entering commands, viewing results, approving batches, and managing settings across the shell and remote apps. |
-| **Orchestration Agent** | Python workflow services with runtime adapters, FastAPI | Coordinates user intent, mapping templates, MCP calls, and deterministic batch execution through canonical workflow services. Claude Agent SDK is one supported runtime adapter. Python chosen to share data structures efficiently with Data MCP and leverage Jinja2's robust templating. |
+| **Orchestration Agent** | Python workflow services with runtime adapters, FastAPI | Coordinates user intent, mapping templates, MCP calls, and deterministic batch execution through canonical workflow services. The shared conversation runtime supports Anthropic, OpenAI and Gemini protocol adapters. Python chosen to share data structures efficiently with Data MCP and leverage Jinja2's robust templating. |
 | **Data Source MCP** | Python with DuckDB, Pandas, openpyxl | "The Librarian." Abstracts heterogeneous data sources behind a SQL interface. Handles file parsing, schema discovery, query execution, row-level checksum computation, and **writing results back to source files** (tracking numbers, status). Owns the integrity of source data. Crashes here don't affect shipping logic. |
 | **UPS Shipping MCP** | TypeScript with Zod validators | "The Gatekeeper." Wraps the UPS API with strict schema validation. Every payload is validated against the UPS OpenAPI spec before submission. Manages OAuth token refresh and API error handling. **Returns label data (Base64/URL) to the Agent**—does not write to filesystem directly. TypeScript chosen for superior OpenAPI/Zod type safety ecosystem. |
 | **State Database** | SQLite (prototype) → PostgreSQL (production) | Stores job metadata, per-row transaction state (Pending → Sent → Confirmed), checksums, and audit logs. Enables crash recovery and "resume failed batch" capability. |
@@ -123,7 +125,7 @@ C4Container
 
 | System | Purpose |
 |--------|---------|
-| **Anthropic API** | Provides the LLM intelligence. The Agent SDK calls this to parse user intent, generate SQL filters, create mapping templates, and handle self-correction loops. |
+| **Model provider APIs** | Anthropic Messages, OpenAI Responses or Gemini, selected by model configuration. Thin adapters send provider-safe context and tool declarations. Models propose structured filter/mapping configuration; shared policy, workflows and deterministic services own validation and execution. |
 | **UPS API** | The carrier API. Endpoints for address validation, rating/quoting, shipment creation, void, tracking. All calls go through the UPS MCP. |
 | **Google Sheets API** | Optional cloud data source. The Data MCP can fetch spreadsheet data via this API when users prefer Sheets over local files. |
 | **Local Filesystem** | Dual purpose: (1) Source for CSV/Excel input files, (2) Destination for generated shipping label images (PNG/PDF/ZPL). |
@@ -214,7 +216,11 @@ C4Component
 
 ### 4.2 UPS Shipping MCP Components
 
-The UPS MCP wraps the UPS API with strict validation and groups tools by domain for optimal LLM performance. Schemas are generated at build time from UPS OpenAPI specs.
+This subsection retains the original conceptual carrier-side design and tool-name
+shorthand. The installed UPS MCP is a pinned Python package, reached only through
+the deterministic gateway. Its exact operation names and current extension
+points are documented in the [UPS integration guide](ups-mcp-integration-guide.md);
+these carrier components are never a model-facing tool catalog.
 
 #### 4.2.1 Component Diagram
 
@@ -231,7 +237,7 @@ C4Component
         Component(tracking_tools, "Tracking Tools", "TypeScript", "tracking_status, tracking_subscribe")
         
         Component(schema_validators, "Schema Validators", "Zod (generated)", "Build-time generated from UPS OpenAPI YAML. Validates all requests/responses.")
-        Component(api_client, "Resilient API Client", "Axios + interceptors", "Handles OAuth refresh, rate limit backoff, retries. Transport-layer concerns.")
+        Component(api_client, "Resilient API Client", "Axios + interceptors", "Handles OAuth refresh and bounded read retries; never replays mutations.")
         Component(mock_handler, "Mock Handler", "TypeScript", "Simulation mode for dev/testing. Returns realistic fake responses without network calls.")
         Component(auth_manager, "Auth Manager", "TypeScript", "Manages OAuth 2.0 tokens, handles refresh before expiry")
         Component(response_mapper, "Response Mapper", "TypeScript", "Extracts label data, tracking numbers, error details from UPS responses")
@@ -273,7 +279,7 @@ C4Component
 | **Address Tools** | Domain group for address operations: `address_validate` (street-level validation with suggestions), `address_classify` (residential vs commercial). |
 | **Tracking Tools** | Domain group for visibility: `tracking_status` (current status + history), `tracking_subscribe` (webhook registration). |
 | **Schema Validators** | Zod schemas generated at build time from UPS OpenAPI YAML using `openapi-zod-client`. Catches schema mismatches at compile time. Validates both outbound requests and inbound responses. |
-| **Resilient API Client** | Axios instance with interceptors for: (1) injecting OAuth bearer token, (2) catching 429 and implementing exponential backoff, (3) retrying transient failures (5xx). Business logic never sees rate limits. |
+| **Resilient API Client** | Conceptual transport boundary for OAuth and bounded read-only retry/backoff. Current `UPSMCPClient` makes one attempt for mutations, including after 5xx or transport failure; uncertain outcomes require status reconciliation. |
 | **Mock Handler** | Simulation mode for development and high-volume testing. Returns realistic fake responses (tracking numbers, label Base64, rates) without network calls. Activated via `SIMULATION_MODE=true` config flag. Essential for testing 1000-row batches without hitting UPS. |
 | **Auth Manager** | Stores OAuth tokens, tracks expiry, proactively refreshes before expiration. Tokens never leak to other components. |
 | **Response Mapper** | Extracts relevant data from verbose UPS responses: tracking number, label image (Base64), estimated cost, error messages. Normalizes into clean objects for Agent consumption. |
@@ -300,7 +306,9 @@ C4Component
     title Component Diagram: Orchestration Agent
 
     Container_Boundary(agent, "Orchestration Agent") {
-        Component(sdk_runtime, "Runtime Adapter (Claude Agent SDK)", "Python", "Manages conversation, tool dispatch, streaming responses")
+        Component(runtime, "Shared Conversation Runtime", "Python", "Owns history, interruption, streaming and normalized tool loop")
+        Component(provider_adapter, "Provider Protocol Adapter", "Anthropic / OpenAI / Gemini", "Translates normalized requests and streamed responses")
+        Component(tool_boundary, "Catalog / Policy / Dispatcher", "Python", "Declares workflow tools, denies raw carrier/SQL calls, projects model-safe results")
         Component(intent_parser, "Intent Parser", "LLM-powered", "Interprets natural language into structured commands: filters, mappings, service selection")
         Component(mapping_generator, "Mapping Generator", "LLM-powered", "Creates Jinja2 templates that transform source rows into UPS payloads")
         
@@ -315,15 +323,18 @@ C4Component
         Component(mcp_coordinator, "MCP Coordinator", "Python", "Manages stdio connections to Data MCP and UPS MCP. Routes tool calls.")
     }
 
-    System_Ext(anthropic, "Anthropic API", "LLM intelligence")
+    System_Ext(model_api, "Model Provider API", "Anthropic / OpenAI / Gemini")
     ContainerDb(state_db, "State Database", "SQLite")
     System_Ext(filesystem, "Local Filesystem", "Label output")
     Container_Ext(data_mcp, "Data Source MCP", "Child process")
     Container_Ext(ups_mcp, "UPS Shipping MCP", "Child process")
 
-    Rel(sdk_runtime, anthropic, "LLM calls", "HTTPS")
-    Rel(sdk_runtime, intent_parser, "User message -> structured intent")
-    Rel(sdk_runtime, mcp_coordinator, "Dispatches tool calls")
+    Rel(runtime, provider_adapter, "Normalized model protocol")
+    Rel(provider_adapter, model_api, "Provider-safe requests", "HTTPS")
+    Rel(runtime, intent_parser, "Authored user message -> structured intent")
+    Rel(runtime, tool_boundary, "Normalized workflow calls")
+    Rel(tool_boundary, approval_gate, "Prepare owner-facing preview")
+    Rel(tool_boundary, mcp_coordinator, "Validated workflow handlers use gateways")
     
     Rel(intent_parser, mapping_generator, "Passes filter criteria")
     Rel(mapping_generator, template_engine, "Produces Jinja2 template")
@@ -347,8 +358,10 @@ C4Component
 
 | Component | Responsibility |
 |-----------|----------------|
-| **Runtime Adapter (Claude Agent SDK)** | Supported provider runtime adapter. Manages conversation state, streams responses, and dispatches canonical workflow tools for Claude-backed conversations. |
-| **Intent Parser** | LLM-powered component that converts natural language ("Ship all California orders via Ground") into structured intent: filter SQL, service code, special handling flags. |
+| **Shared Conversation Runtime** | `ConversationRuntimeSession` owns normalized history, turn/tool lifecycle, interruption and streaming across providers. |
+| **Provider Protocol Adapter** | Anthropic, OpenAI and Gemini adapters translate only their provider wire protocol. They never own carrier dispatch or confirmation authority. |
+| **Catalog / Policy / Dispatcher** | `WorkflowToolCatalog`, `RuntimePolicyEngine` and `LocalToolDispatcher` expose canonical workflow handlers, deny raw carrier/SQL calls, audit decisions and project model-safe results. |
+| **Intent Parser** | LLM-powered component that converts natural language ("Ship all California orders via Ground") into structured intent: closed filter specifications, service code, special handling flags. Deterministic services resolve and compile filters locally. |
 | **Mapping Generator** | LLM-powered component that creates Jinja2 templates mapping source columns to UPS payload fields. Validated against UPS schema before use. |
 | **Batch Executor** | The deterministic heart. Iterates over filtered data rows, applies template, calls UPS MCP. Implements Observer pattern—emits `onRowStart`, `onRowSuccess(tracking_number)`, `onRowFailure(error)` events. On specific schema validation errors (e.g., "String too long", "Invalid state code"), can pause batch and request updated template from Mapping Generator via self-correction loop. Never contains business logic beyond the loop. |
 | **Template Engine** | Jinja2 environment configured with Logistics Filter Library. Renders `{"ShipTo": {"Address": "{{ address | truncate_address }}"}}` into valid JSON. Catches template errors before API call. |
@@ -389,7 +402,7 @@ sequenceDiagram
     autonumber
     participant User
     participant Agent as Orchestration Agent
-    participant LLM as Anthropic API
+    participant LLM as Selected Model API
     participant UPS_MCP as UPS Shipping MCP
     participant UPS as UPS API
     participant FS as Local Filesystem
@@ -408,7 +421,7 @@ sequenceDiagram
     UPS_MCP-->>Agent: {valid: true}
     
     Agent->>User: "Ready to ship 5lb Ground to<br/>John Smith, 90210. Cost: $12.45.<br/>Confirm?"
-    User->>Agent: "Yes"
+    User->>Agent: Press Confirm on priced preview
     
     Agent->>UPS_MCP: shipping_create(payload)
     UPS_MCP->>UPS: POST /shipments/v1/ship
@@ -423,14 +436,16 @@ sequenceDiagram
 
 | Step | Component | Action |
 |------|-----------|--------|
-| 1-3 | Intent Parsing | User's natural language is sent to Anthropic API, which extracts structured shipping data: recipient address, weight, service type. |
+| 1-3 | Intent Parsing | User-authored natural language is sent to the selected model API, which extracts structured shipping data: recipient address, weight, service type. |
 | 4 | Template Engine | Agent builds the UPS JSON payload. For single shipments, this may be direct construction rather than a Jinja2 template. |
 | 5-8 | Validation | Payload is validated against UPS schema (Zod) locally, then against UPS API's validate endpoint. No label purchased yet. |
 | 9-10 | Approval | Agent presents cost estimate and asks for confirmation. User approves. |
 | 11-14 | Execution | Shipment created via UPS API. Label (Base64) returned, decoded, saved to filesystem. |
 | 15 | Confirmation | User receives tracking number and label location. |
 
-**Error Handling (not shown):** If validation fails (e.g., invalid ZIP), Agent asks LLM to correct the data or prompts user for clarification. If UPS API returns an error during creation, Agent reports the error and offers retry options.
+**Boundary:** These sequence diagrams describe deterministic service interactions, not raw carrier tools available to a model. Preview cards and label/row data are owner-facing. Only the trusted confirmation endpoint can execute the prepared shipment; chat text or model approval flags cannot.
+
+**Error Handling (not shown):** If validation fails (e.g., invalid ZIP), the workflow requests corrected configuration using safe error summaries or asks the user for clarification; local row values are never sent to the model. If UPS API returns an error during creation, Agent reports the error. An uncertain carrier outcome requires checking status before requesting a new operation; it never blindly replays the mutation.
 
 ---
 
@@ -445,7 +460,7 @@ sequenceDiagram
     autonumber
     participant User
     participant Agent as Orchestration Agent
-    participant LLM as Anthropic API
+    participant LLM as Selected Model API
     participant Data as Data Source MCP
     participant UPS_MCP as UPS Shipping MCP
     participant UPS as UPS API
@@ -458,8 +473,8 @@ sequenceDiagram
     Agent->>Data: get_schema("orders.csv")
     Data-->>Agent: {columns: [OrderID, Name, Address,<br/>City, State, Zip, Weight]}
     
-    Agent->>LLM: Generate SQL filter + mapping template
-    LLM-->>Agent: SQL: "SELECT * WHERE State='CA'"<br/>Template: {ShipTo: {Address: "{{Address}}"...}}
+    Agent->>LLM: Safe schema metadata + request for filter/mapping configuration
+    LLM-->>Agent: Closed filter intent + mapping configuration<br/>(Agent resolves FilterSpec and compiles locally)
 
     %% Phase 2: Data Extraction
     Agent->>Data: query_data(sql, source)
@@ -482,7 +497,7 @@ sequenceDiagram
     %% Phase 4: Approval Gate
     Agent->>Agent: Prepare summary & sample preview
     Agent->>User: "47 orders to CA via Ground.<br/>Est. cost: $587.25<br/>Preview: [Row 1-3 shown]<br/>Approve?"
-    User->>Agent: "Yes, proceed"
+    User->>Agent: Press Confirm on priced preview
 
     %% Phase 5: Deterministic Execution Loop
     Agent->>DB: Create job record (job_id, status: RUNNING)
@@ -511,7 +526,7 @@ sequenceDiagram
 
 | Phase | Steps | Purpose |
 |-------|-------|---------|
-| **1. Discovery** | 1-4 | User states intent. Agent fetches source schema, LLM generates SQL filter and Jinja2 mapping template. |
+| **1. Discovery** | 1-4 | User states intent. Agent fetches source schema, LLM proposes closed filter/mapping configuration using safe schema metadata. Deterministic services resolve and compile the filter. |
 | **2. Data Extraction** | 5-6 | Filtered data loaded into DuckDB, checksums computed for each row. Deterministic—same query always returns same rows. |
 | **3. Dry Run + Self-Correction** | 7-14 | Template applied to sample row, validated against UPS. On failure, LLM fixes template. Repeats until valid. **Critical:** Errors caught here, not during batch execution. |
 | **4. Approval Gate** | 15-17 | Summary shown: row count, estimated cost, first 3 rows rendered. User must explicitly approve before any labels are purchased. |
@@ -523,7 +538,7 @@ sequenceDiagram
 | Mechanism | Where in Flow | Guarantee |
 |-----------|---------------|-----------|
 | **Row Checksums** | Step 6 | SHA-256 hash computed at extraction. If source file changes mid-batch, checksum mismatch detected. |
-| **Pre-Loop State Write** | Step 19 | Row marked PENDING before API call. If crash occurs, we know this row needs retry. |
+| **Pre-Loop State Write** | Step 19 | Row marked PENDING before API call. A crash leaves an incomplete outcome to reconcile; PENDING alone never authorizes replay. |
 | **Post-Success State Write** | Step 25 | Row marked SUCCESS with tracking number only after UPS confirms. No false positives. |
 | **Atomic Write-Back** | Step 28 | Tracking numbers written to source only after all rows processed. *Ideally writes to a new file (e.g., `orders_processed_20260122.csv`) or versioned copy to prevent source corruption. Never overwrite original in place.* |
 | **Job-Level Status** | Steps 18, 30 | Job record tracks overall progress. On restart, query "RUNNING" jobs to find incomplete batches. |
@@ -556,7 +571,7 @@ Quick reference for all technology choices. Each decision was made to optimize f
 | Component | Technology | Rationale |
 |-----------|------------|-----------|
 | **Orchestration Agent** | Python 3.11+ | Shares ecosystem with Data MCP (Pandas/DuckDB). Enables efficient data structure passing and canonical workflow services. |
-| **Runtime Adapter** | Claude Agent SDK adapter, extensible provider adapters | Provides provider-specific planning, dispatch, streaming, packaging, and manifest translation over the canonical workflow/tool layer. |
+| **Conversation Runtime / Adapters** | ShipAgent-owned shared runtime; Anthropic Messages, OpenAI Responses and Gemini protocol adapters | Shared catalog, policy, dispatcher and workflow services own tool behavior and safety; adapters translate only model protocol. |
 | **Web Framework** | FastAPI | Async-native HTTP and SSE/EventSource support for the Angular UI, automatic OpenAPI docs. Pairs well with runtime adapters. |
 | **Data Source MCP** | Python 3.11+ | Required for Pandas, DuckDB, openpyxl. Data science ecosystem is Python-native. |
 | **UPS Shipping MCP** | TypeScript 5.x | Superior type safety with Zod. OpenAPI tooling (`openapi-zod-client`) is more mature in TS ecosystem. |

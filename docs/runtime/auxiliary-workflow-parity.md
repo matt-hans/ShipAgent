@@ -37,8 +37,11 @@ expiry and session teardown invalidate pending authority. Previews expire after
 Carrier exceptions, interrupted calls and unrecognized success responses have
 an unconfirmed outcome. Check carrier status before trying a new operation.
 The original confirmation cannot be retried, and the client disables that card.
-The auxiliary gateway operations also reject the historical 503/upstream retry exception. They make exactly one carrier attempt; pre-existing shipment-only retry policy is unchanged. Confirmation
-and outcome events are recorded in the redaction-aware decision audit.
+All carrier mutations, including shipment creation and voiding, make exactly
+one carrier attempt. A 503/upstream failure cannot establish non-acceptance and
+does not permit automatic replay. Read-only operations retain their bounded
+retry/reconnection behavior. Confirmation and outcome events are recorded in the
+redaction-aware decision audit.
 
 ## Local data and continued workflows
 
@@ -70,9 +73,10 @@ content. Provider histories still exclude owner-only artifacts.
   Older token-only pickup cards require a fresh preview.
 - Pickup prices remain carrier estimates. No new carrier service or pricing
   capability is added.
-- The legacy SDK remains a compatibility path until issue #40. It shares these
-  handlers, and its generic hook now also denies raw document mutations; this
-  change does not claim SDK-free packaging.
+- The Claude Agent SDK compatibility path and hooks have been removed. All
+  supported providers use the shared catalog, policy and dispatcher; see the
+  [SDK-free runtime guide](sdk-free-runtime.md). Release qualification is tracked
+  separately in the [release evidence](sdk-free-release-evidence.md).
 - Acceptance uses real workflow handlers and local synthetic carrier seams on
   every supported adapter's actual serialized protocol, including a dynamic
   upload-to-attachment chain driven by the returned handle. No live purchases,
