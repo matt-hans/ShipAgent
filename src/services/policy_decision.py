@@ -16,6 +16,7 @@ from enum import Enum
 class PolicyDenialCode(str, Enum):
     """Stable, provider-neutral reasons a tool call can be denied."""
 
+    TOOL_NOT_ADMITTED = "tool_not_admitted"
     RAW_SQL_NOT_ALLOWED = "raw_sql_not_allowed"
     INVALID_FILTER_STRUCTURE = "invalid_filter_structure"
     RAW_CARRIER_CALL_NOT_ALLOWED = "raw_carrier_call_not_allowed"

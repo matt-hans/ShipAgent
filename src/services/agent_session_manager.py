@@ -12,13 +12,18 @@ Example:
     history = mgr.get_history("conv-123")
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import os
 import threading
 from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from src.services.source_free_conversation import SourceFreeConversationConfig
 
 logger = logging.getLogger(__name__)
 current_conversation_turn: ContextVar[str | None] = ContextVar(
@@ -45,13 +50,28 @@ class AgentSession:
         prewarm_task: Optional best-effort background task for agent prewarm.
     """
 
-    def __init__(self, session_id: str) -> None:
+    def __init__(
+        self,
+        session_id: str,
+        *,
+        source_free_config: SourceFreeConversationConfig | None = None,
+    ) -> None:
         """Initialize a new session.
 
         Args:
             session_id: Unique conversation identifier.
         """
+        if source_free_config is not None:
+            from src.services.source_free_conversation import (
+                SourceFreeConversationConfig,
+            )
+
+            if not isinstance(source_free_config, SourceFreeConversationConfig):
+                raise TypeError("Invalid source-free execution profile.")
         self.session_id = session_id
+        self._source_free_config = source_free_config
+        self._source_free_agent_config = None
+        self._source_free_owned_agent = None
         self.history: list[dict] = []
         self.created_at = datetime.now(UTC)
         self.last_active = datetime.now(UTC)
@@ -74,6 +94,11 @@ class AgentSession:
         self.message_tasks: set[asyncio.Task[Any]] = set()
         self._turn_generation = 0
         self._invalid_turn_generations: set[int] = set()
+
+    @property
+    def source_free_config(self) -> SourceFreeConversationConfig | None:
+        """The trusted execution profile is fixed for this session's lifetime."""
+        return self._source_free_config
 
     def add_message(
         self,
@@ -158,7 +183,12 @@ class AgentSessionManager:
         """
         return self._sessions.get(session_id)
 
-    def get_or_create_session(self, session_id: str) -> AgentSession:
+    def get_or_create_session(
+        self,
+        session_id: str,
+        *,
+        source_free_config: SourceFreeConversationConfig | None = None,
+    ) -> AgentSession:
         """Get an existing session or create a new one.
 
         Args:
@@ -168,9 +198,17 @@ class AgentSessionManager:
             The AgentSession for this conversation.
         """
         if session_id not in self._sessions:
-            self._sessions[session_id] = AgentSession(session_id)
+            self._sessions[session_id] = AgentSession(
+                session_id, source_free_config=source_free_config
+            )
             logger.info("Created new agent session: %s", session_id)
-        return self._sessions[session_id]
+        session = self._sessions[session_id]
+        if (
+            source_free_config is not None
+            and session.source_free_config is not source_free_config
+        ):
+            raise ValueError("An existing session's execution profile cannot change.")
+        return session
 
     def remove_session(self, session_id: str) -> None:
         """Remove a session from tracking (sync).
