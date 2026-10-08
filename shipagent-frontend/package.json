@@ -4,7 +4,8 @@
   "license": "MIT",
   "scripts": {
     "smoke:authenticated-production": "node scripts/smoke-authenticated-production.mjs",
-    "smoke:development-proxy": "node scripts/smoke-development-proxy.mjs"
+    "smoke:development-proxy": "node scripts/smoke-development-proxy.mjs",
+    "smoke:shipment-settings-layout": "node scripts/smoke-shipment-settings-layout.mjs"
   },
   "private": true,
   "devDependencies": {

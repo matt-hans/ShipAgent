@@ -203,16 +203,16 @@ import type { AppSettings } from '@shipagent/shared-types';
                 name="shipperCity"
                 placeholder="City"
                 (input)="markShipperDirty()"
-                class="rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground"
+                class="col-span-2 rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground"
               />
-              <div class="flex gap-2">
+              <div class="col-span-2 flex min-w-0 gap-2">
                 <input
                   type="text"
                   [(ngModel)]="shipperState"
                   name="shipperState"
                   placeholder="State"
                   (input)="markShipperDirty()"
-                  class="w-16 rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground"
+                  class="w-16 shrink-0 rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground"
                 />
                 <input
                   type="text"
@@ -220,7 +220,7 @@ import type { AppSettings } from '@shipagent/shared-types';
                   name="shipperZip"
                   placeholder="ZIP"
                   (input)="markShipperDirty()"
-                  class="flex-1 rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground"
+                  class="min-w-0 flex-1 rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground"
                 />
               </div>
             </div>
