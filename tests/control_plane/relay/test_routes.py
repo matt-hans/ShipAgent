@@ -382,9 +382,35 @@ class _TokenVerifier:
         if token == "near-future-relay-device-manage-token":
             scopes.add("relay:device:manage")
             auth_time = datetime.now(UTC) + timedelta(minutes=1)
+        management_tokens = {
+            "relay-manage-token",
+            "relay-device-manage-no-auth-time-token",
+            "stale-relay-device-manage-token",
+            "future-relay-device-manage-token",
+            "near-future-relay-device-manage-token",
+        }
+        client_id = "desktop-client" if token in management_tokens else "chatgpt-client"
+        if token in {"provider-with-management-scope", "claude-with-management-scope"}:
+            scopes.add("relay:device:manage")
+            auth_time = datetime.now(UTC)
+            if token.startswith("claude"):
+                client_id = "claude-client"
+        subject = "auth0|owner-1"
+        if token.startswith("operator-"):
+            client_id = "operator-client"
+            scopes.add("relay:device:manage")
+            auth_time = datetime.now(UTC)
+            if token == "operator-stale":
+                auth_time -= timedelta(minutes=11)
+            elif token == "operator-future":
+                auth_time += timedelta(minutes=1)
+            elif token == "operator-missing-auth-time":
+                auth_time = None
+            elif token == "operator-other-account":
+                subject = "auth0|owner-2"
         return TokenPrincipal(
-            subject="auth0|owner-1",
-            client_id="chatgpt-client",
+            subject=subject,
+            client_id=client_id,
             scopes=frozenset(scopes),
             auth_time=auth_time,
         )
@@ -400,9 +426,9 @@ class _AuthorizationService(AuthorizationService):
         auth_time: datetime | None = None,
     ) -> AuthorizationContext:
         return AuthorizationContext(
-            account_id="acct-1",
+            account_id="acct-2" if subject == "auth0|owner-2" else "acct-1",
             provider_connection_id="pc-1",
-            provider_surface="chatgpt",
+            provider_surface=self.clients.surface_for(client_id),
             subject=subject,
             client_id=client_id,
             scopes=frozenset(scopes),
@@ -1674,9 +1700,9 @@ async def test_rotate_during_final_handshake_cannot_leave_old_key_session_live(
     context = AuthorizationContext(
         account_id="acct-1",
         provider_connection_id="pc-1",
-        provider_surface="chatgpt",
+        provider_surface="desktop",
         subject="auth0|owner-1",
-        client_id="chatgpt-client",
+        client_id="desktop-client",
         scopes=frozenset({"relay:device:manage"}),
         auth_time=datetime.now(UTC),
     )
@@ -1790,9 +1816,9 @@ async def test_rotation_holds_device_guard_across_commit_and_disconnect(
         AuthorizationContext(
             account_id="acct-1",
             provider_connection_id="pc-1",
-            provider_surface="chatgpt",
+            provider_surface="desktop",
             subject="auth0|owner-1",
-            client_id="chatgpt-client",
+            client_id="desktop-client",
             scopes=frozenset({"relay:device:manage"}),
             auth_time=datetime.now(UTC),
         )
@@ -2393,3 +2419,139 @@ def test_connect_websocket_rejects_claims_for_different_device_than_hello(
                 websocket.receive_json()
 
     assert exc_info.value.code == 1008
+
+
+def test_provider_management_scope_cannot_register_target(monkeypatch) -> None:
+    app, _redis = _build_app(monkeypatch)
+    with TestClient(app) as client:
+        response = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer provider-with-management-scope"},
+            json={
+                "device_name": "Synthetic headless target",
+                "public_key_pem": PUBLIC_KEY,
+            },
+        )
+        inventory = client.get(
+            "/relay/devices", headers={"Authorization": "Bearer relay-manage-token"}
+        )
+    assert response.status_code == 403
+    assert response.json() == {"detail": "management_client_required"}
+    assert inventory.json() == []
+
+
+@pytest.mark.parametrize(
+    "provider_token", ["provider-with-management-scope", "claude-with-management-scope"]
+)
+@pytest.mark.parametrize(
+    "operation", ["register", "list", "set-active", "rotate-key", "revoke", "unlink"]
+)
+def test_provider_cannot_manage_targets_even_with_scope(
+    monkeypatch, provider_token, operation
+):
+    app, _redis = _build_app(monkeypatch)
+    owner_headers = {"Authorization": "Bearer relay-manage-token"}
+    with TestClient(app) as client:
+        first = client.post(
+            "/relay/devices/register",
+            headers=owner_headers,
+            json={"device_name": "First", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        second = client.post(
+            "/relay/devices/register",
+            headers=owner_headers,
+            json={
+                "device_name": "Second",
+                "public_key_pem": OTHER_KEYPAIR.public_key_pem,
+            },
+        ).json()
+        before = client.get("/relay/devices", headers=owner_headers).json()
+        provider_headers = {"Authorization": f"Bearer {provider_token}"}
+        if operation == "list":
+            response = client.get("/relay/devices", headers=provider_headers)
+        elif operation == "register":
+            response = client.post(
+                "/relay/devices/register",
+                headers=provider_headers,
+                json={
+                    "device_name": "Third",
+                    "public_key_pem": THIRD_KEYPAIR.public_key_pem,
+                },
+            )
+        else:
+            response = client.post(
+                f"/relay/devices/{second['device_id']}/{operation}",
+                headers=provider_headers,
+                json={"public_key_pem": THIRD_KEYPAIR.public_key_pem},
+            )
+        after = client.get("/relay/devices", headers=owner_headers).json()
+    assert response.status_code == 403
+    assert response.json() == {"detail": "management_client_required"}
+    assert after == before
+    assert first["device_id"] not in response.text
+    assert second["device_id"] not in response.text
+
+
+def test_trusted_operator_can_register_and_read_own_target(monkeypatch):
+    app, _redis = _build_app(monkeypatch)
+    headers = {"Authorization": "Bearer operator-valid"}
+    with TestClient(app) as client:
+        response = client.post(
+            "/relay/devices/register",
+            headers=headers,
+            json={
+                "device_name": "Synthetic headless target",
+                "public_key_pem": PUBLIC_KEY,
+            },
+        )
+        inventory = client.get("/relay/devices", headers=headers)
+    assert response.status_code == 200
+    assert inventory.json() == [response.json()]
+    assert "private_key" not in response.text
+
+
+@pytest.mark.parametrize(
+    "operator_token",
+    ["operator-stale", "operator-future", "operator-missing-auth-time"],
+)
+def test_operator_purpose_does_not_replace_recent_login(monkeypatch, operator_token):
+    app, _redis = _build_app(monkeypatch)
+    with TestClient(app) as client:
+        response = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": f"Bearer {operator_token}"},
+            json={
+                "device_name": "Synthetic headless target",
+                "public_key_pem": PUBLIC_KEY,
+            },
+        )
+    assert response.status_code == 401
+    assert response.json() == {"detail": "recent_auth_required"}
+
+
+@pytest.mark.parametrize("operation", ["set-active", "rotate-key", "revoke", "unlink"])
+def test_trusted_operator_cannot_manage_another_accounts_target(monkeypatch, operation):
+    app, _redis = _build_app(monkeypatch)
+    owner_headers = {"Authorization": "Bearer operator-valid"}
+    with TestClient(app) as client:
+        device = client.post(
+            "/relay/devices/register",
+            headers=owner_headers,
+            json={
+                "device_name": "Synthetic headless target",
+                "public_key_pem": PUBLIC_KEY,
+            },
+        ).json()
+        response = client.post(
+            f"/relay/devices/{device['device_id']}/{operation}",
+            headers={"Authorization": "Bearer operator-other-account"},
+            json={"public_key_pem": OTHER_KEYPAIR.public_key_pem},
+        )
+        inventory = client.get("/relay/devices", headers=owner_headers)
+        other_inventory = client.get(
+            "/relay/devices", headers={"Authorization": "Bearer operator-other-account"}
+        )
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Relay device not found"}
+    assert inventory.json() == [device]
+    assert other_inventory.json() == []

@@ -22,6 +22,7 @@ from src.control_plane.relay.registry import (
 )
 
 RELAY_DEVICE_MANAGE_SCOPE = "relay:device:manage"
+RELAY_MANAGEMENT_SURFACES = frozenset({"desktop", "operator"})
 RECENT_AUTH_WINDOW = timedelta(minutes=10)
 RELAY_POLICY_CLOSE_CODE = 1008
 RELAY_POLICY_CLOSE_REASON = "relay device policy changed"
@@ -68,6 +69,11 @@ def _require_relay_manage_account_id() -> str:
         raise HTTPException(status_code=401, detail="Unauthorized")
     if RELAY_DEVICE_MANAGE_SCOPE not in context.scopes:
         raise HTTPException(status_code=403, detail="Insufficient relay scope")
+    # The surface is resolved from the server's trusted OAuth client registry.
+    # A provider token must not gain account-management authority merely because
+    # the issuer accidentally included a management scope.
+    if context.provider_surface not in RELAY_MANAGEMENT_SURFACES:
+        raise HTTPException(status_code=403, detail="management_client_required")
     if context.auth_time is None:
         raise HTTPException(status_code=401, detail="recent_auth_required")
     auth_time = context.auth_time
