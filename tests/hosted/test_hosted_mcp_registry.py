@@ -914,6 +914,26 @@ async def test_real_mcp_rejects_prefixed_compact_canaries_for_every_id_family(
 ):
     canary = f"{shipagent_id_prefix(family)}{canary_body}"
     cases = {
+        ShipAgentIdFamily.AGENT_RUN: (
+            "read_shipagent_run",
+            {"run_reference": canary},
+            {},
+            False,
+        ),
+        ShipAgentIdFamily.CONVERSATION: (
+            "read_shipagent_run",
+            {"run_reference": f"sa_agent_run_{VALID_HEX_BODY}"},
+            {
+                "run_reference": f"sa_agent_run_{VALID_HEX_BODY}",
+                "conversation_reference": canary,
+                "revision": 1,
+                "state": "completed",
+                "outcome": "planning_completed",
+                "expires_at": "2026-10-09T00:00:00Z",
+                "poll_after_seconds": 0,
+            },
+            True,
+        ),
         ShipAgentIdFamily.CORRELATION: (
             "get_shipagent_status",
             {"correlation_id": canary},

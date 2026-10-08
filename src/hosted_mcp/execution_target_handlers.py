@@ -40,4 +40,25 @@ def build_execution_target_tool_handlers(
         )
         return project_status_for_provider(status)
 
-    return {"get_shipagent_status": get_shipagent_status}
+    def run_handler(tool_name: str) -> ToolHandler:
+        async def invoke(
+            context: AuthorizationContext, arguments: dict[str, Any]
+        ) -> dict[str, Any]:
+            return await execution_target.invoke(
+                TargetToolRequest(
+                    account_id=context.account_id,
+                    provider_connection_id=context.provider_connection_id,
+                    provider_surface=context.provider_surface,
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    correlation_id=tool_name,
+                )
+            )
+
+        return invoke
+
+    return {
+        "get_shipagent_status": get_shipagent_status,
+        "submit_shipagent_task": run_handler("submit_shipagent_task"),
+        "read_shipagent_run": run_handler("read_shipagent_run"),
+    }

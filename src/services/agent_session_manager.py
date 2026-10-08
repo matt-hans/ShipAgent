@@ -72,6 +72,7 @@ class AgentSession:
         self._source_free_config = source_free_config
         self._source_free_agent_config = None
         self._source_free_owned_agent = None
+        self.source_free_completed_turn: str | None = None
         self.history: list[dict] = []
         self.created_at = datetime.now(UTC)
         self.last_active = datetime.now(UTC)

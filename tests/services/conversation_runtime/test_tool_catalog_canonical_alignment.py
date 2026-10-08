@@ -27,6 +27,8 @@ LOCAL_TO_CANONICAL = {
 }
 # Canonical public tools with no local read-only counterpart, and why.
 PUBLIC_ONLY = {
+    "submit_shipagent_task": "outer task admission must never be an inner model tool",
+    "read_shipagent_run": "outer accepted-run status is owned by the durable facade",
     "prepare_shipments": "local equivalent is the preview pipeline, not a tool name",
     "execute_shipments": "local execution is confirmJob(), never a model tool",
     "create_label_download": "labels are served by the local API, not the model",

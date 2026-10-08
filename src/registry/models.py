@@ -38,6 +38,7 @@ class Availability(StrEnum):
 class SideEffectClass(StrEnum):
     read = "read"
     estimate = "estimate"
+    agent_work = "agent_work"
     write = "write"
     purchase = "purchase"
     external_mutation = "external_mutation"
@@ -103,6 +104,19 @@ class ToolContract(BaseModel):
     signed_download_fields: list[str] = Field(default_factory=list)
     minimum_capabilities: dict[str, str] = Field(default_factory=dict)
     rate_limit_class: str = "default"
+    call_repetition: Literal["guarded", "poll", "idempotent"] = "guarded"
+
+    @model_validator(mode="after")
+    def _validate_call_repetition(self) -> "ToolContract":
+        if self.call_repetition == "poll" and (
+            self.side_effect != SideEffectClass.read or self.requires_confirmation
+        ):
+            raise ValueError("poll repetition requires a non-confirming read tool")
+        if self.call_repetition == "idempotent" and (
+            self.side_effect != SideEffectClass.agent_work or self.requires_confirmation
+        ):
+            raise ValueError("idempotent repetition requires agent-work admission")
+        return self
 
     @field_validator("availability", "provider_exports")
     @classmethod

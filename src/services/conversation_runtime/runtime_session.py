@@ -4,7 +4,7 @@ import asyncio
 import itertools
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from copy import copy
 from dataclasses import asdict
 from typing import Any
@@ -69,17 +69,20 @@ class ConversationRuntimeSession:
         prior_conversation: list[dict[str, Any]] | None = None,
         allowed_tool_names: frozenset[str] | None = None,
         decision_audit_enabled: bool = True,
+        is_dispatch_allowed: Callable[[], bool] | None = None,
     ) -> None:
         self._provider = provider
         self._allowed_tool_names = (
             None if allowed_tool_names is None else frozenset(allowed_tool_names)
         )
         self._decision_audit_enabled = decision_audit_enabled
+        self._is_dispatch_allowed = is_dispatch_allowed
         self._system_prompt = system_prompt or ""
         self._interactive_shipping = interactive_shipping
         self._max_turns = max_turns
         self._started = False
         self._last_turn_count = 0
+        self.last_turn_completed = False
         self._turn_generation = itertools.count(1)
         self._active_generation = 0
         self._provider_tasks: dict[int, asyncio.Task[None]] = {}
@@ -137,6 +140,7 @@ class ConversationRuntimeSession:
         generation = next(self._turn_generation)
         self._active_generation = generation
         self._last_turn_count = 0
+        self.last_turn_completed = False
         return self._process_message_stream(user_input, generation)
 
     async def _process_message_stream(
@@ -212,6 +216,7 @@ class ConversationRuntimeSession:
                 assistant_parts: list[ProviderContentPart] = []
                 tool_calls: list[ProviderToolCall] = []
                 text_block = PublicTextBlock()
+                stream_completed = False
                 stream = None
                 try:
                     stream = self._provider_events(
@@ -287,6 +292,7 @@ class ConversationRuntimeSession:
                             }
                             return
                         elif event.type == ProviderStreamEventType.STREAM_COMPLETE:
+                            stream_completed = True
                             break
                     if self._is_generation_interrupted(generation):
                         return
@@ -367,6 +373,7 @@ class ConversationRuntimeSession:
                         turn_history_messages.append(assistant_message)
                     self._append_history(turn_history_messages)
                     history_committed = True
+                    self.last_turn_completed = stream_completed
                     return
 
                 assistant_message = ProviderInputMessage(
@@ -454,6 +461,8 @@ class ConversationRuntimeSession:
         async def read_request() -> None:
             stream = None
             try:
+                if self._is_generation_interrupted(generation):
+                    return
                 stream = self._provider.stream_turn(**kwargs)
                 async for event in stream:
                     await queue.put(event)
@@ -520,10 +529,20 @@ class ConversationRuntimeSession:
         return self._last_turn_count
 
     def _is_generation_interrupted(self, generation: int) -> bool:
-        return (
+        if (
             generation != self._active_generation
             or generation in self._interrupted_generations
-        )
+        ):
+            return True
+        if self._is_dispatch_allowed is not None:
+            try:
+                allowed = self._is_dispatch_allowed() is True
+            except Exception:
+                allowed = False
+            if not allowed:
+                self._interrupted_generations.add(generation)
+                return True
+        return False
 
     def _append_history(self, messages: list[ProviderInputMessage]) -> None:
         if not messages:

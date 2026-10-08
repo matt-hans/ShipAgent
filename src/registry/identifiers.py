@@ -11,6 +11,8 @@ SHIPAGENT_ID_HEX_LENGTH = 32
 
 class ShipAgentIdFamily(StrEnum):
     CORRELATION = "correlation"
+    CONVERSATION = "conversation"
+    AGENT_RUN = "agent_run"
     DEVICE = "device"
     INGRESS = "ingress"
     INPUT = "input"
@@ -29,6 +31,8 @@ APPROVAL_REQUEST_ID_FIELD = "approval_request_id"
 
 PROVIDER_VISIBLE_FIELD_FAMILIES = {
     "correlation_id": ShipAgentIdFamily.CORRELATION,
+    "conversation_reference": ShipAgentIdFamily.CONVERSATION,
+    "run_reference": ShipAgentIdFamily.AGENT_RUN,
     "active_device_id": ShipAgentIdFamily.DEVICE,
     "ingress_reference": ShipAgentIdFamily.INGRESS,
     "input_reference": ShipAgentIdFamily.INPUT,

@@ -10,6 +10,7 @@
         "hosted",
         "local"
       ],
+      "call_repetition": "guarded",
       "confirmation_policy": null,
       "contract_version": "1.0.0",
       "description": "Return operational status for the active account execution target.",
@@ -120,6 +121,7 @@
         "hosted",
         "local"
       ],
+      "call_repetition": "guarded",
       "confirmation_policy": null,
       "contract_version": "1.0.0",
       "description": "Validate a destination and return canonical address guidance.",
@@ -224,6 +226,7 @@
         "hosted",
         "local"
       ],
+      "call_repetition": "guarded",
       "confirmation_policy": null,
       "contract_version": "1.0.0",
       "description": "Generate rate options for a validated shipment request.",
@@ -374,6 +377,7 @@
         "hosted",
         "local"
       ],
+      "call_repetition": "guarded",
       "confirmation_policy": null,
       "contract_version": "1.0.0",
       "description": "Create immutable preview artifacts for a shipment batch.",
@@ -467,6 +471,7 @@
         "hosted",
         "local"
       ],
+      "call_repetition": "guarded",
       "confirmation_policy": "provider_and_shipagent",
       "contract_version": "1.0.0",
       "description": "Execute a prepared preview and return immutable execution artifacts.",
@@ -558,6 +563,7 @@
         "hosted",
         "local"
       ],
+      "call_repetition": "guarded",
       "confirmation_policy": null,
       "contract_version": "1.0.0",
       "description": "Get the status and progress summary for a ShipAgent job.",
@@ -641,6 +647,7 @@
         "hosted",
         "local"
       ],
+      "call_repetition": "guarded",
       "confirmation_policy": null,
       "contract_version": "1.0.0",
       "description": "Create a short-lived signed label download reference for the account.",
@@ -727,6 +734,259 @@
       "visibility": "public"
     },
     {
+      "audit_level": "basic",
+      "auth_scopes": [
+        "shipagent.preview"
+      ],
+      "availability": [
+        "hosted",
+        "local"
+      ],
+      "call_repetition": "idempotent",
+      "confirmation_policy": null,
+      "contract_version": "1.0.0",
+      "description": "Accept a source-free ShipAgent planning task. This creates durable state and may use the configured model budget; it cannot buy shipping or run workflow tools.",
+      "execution_target_required": true,
+      "hosted_readiness": "not_ready",
+      "implementation_status": "implemented",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "enum": [
+              "source_free"
+            ],
+            "type": "string"
+          },
+          "request_key": {
+            "maxLength": 128,
+            "minLength": 8,
+            "pattern": "^[A-Za-z0-9_.-]{8,128}$",
+            "type": "string"
+          },
+          "task": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "pattern": "^[\\s\\S]{1,8192}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task",
+          "mode",
+          "request_key"
+        ],
+        "type": "object"
+      },
+      "max_result_bytes": 65536,
+      "max_sync_seconds": 30,
+      "minimum_capabilities": {},
+      "name": "submit_shipagent_task",
+      "notes": "Synthetic source-free tracer only. No production export or complete lifecycle qualification.",
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "conversation_reference": {
+            "description": "Opaque reference to the owning conversation.",
+            "maxLength": 48,
+            "minLength": 48,
+            "pattern": "^sa_conversation_[0-9a-f]{32}$",
+            "type": "string"
+          },
+          "expires_at": {
+            "maxLength": 20,
+            "minLength": 20,
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "pending",
+              "planning_completed",
+              "provider_failed",
+              "interrupted",
+              "model_timeout"
+            ],
+            "type": "string"
+          },
+          "poll_after_seconds": {
+            "maximum": 60,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "revision": {
+            "maximum": 2147483647,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "run_reference": {
+            "description": "Opaque reference to one accepted agent run.",
+            "maxLength": 45,
+            "minLength": 45,
+            "pattern": "^sa_agent_run_[0-9a-f]{32}$",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "queued",
+              "running",
+              "completed",
+              "failed"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_reference",
+          "conversation_reference",
+          "revision",
+          "state",
+          "outcome",
+          "expires_at",
+          "poll_after_seconds"
+        ],
+        "type": "object"
+      },
+      "prepare_tool": null,
+      "provider_export_enabled": false,
+      "provider_exports": [
+        "openai_apps_public",
+        "claude_remote_mcp_public",
+        "generic_mcp"
+      ],
+      "provider_originated_fields": [],
+      "rate_limit_class": "write",
+      "requires_confirmation": false,
+      "result_profile": "aggregate",
+      "result_sensitivity": "business",
+      "side_effect": "agent_work",
+      "signed_download_fields": [],
+      "tenant_safe": true,
+      "title": "Start a ShipAgent planning task",
+      "ui_resource": null,
+      "visibility": "public"
+    },
+    {
+      "audit_level": "basic",
+      "auth_scopes": [
+        "shipagent.status"
+      ],
+      "availability": [
+        "hosted",
+        "local"
+      ],
+      "call_repetition": "poll",
+      "confirmation_policy": null,
+      "contract_version": "1.0.0",
+      "description": "Read one authorized accepted run's bounded status. This never starts a model turn, creates a shipping job or retries an interrupted operation.",
+      "execution_target_required": true,
+      "hosted_readiness": "not_ready",
+      "implementation_status": "implemented",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "run_reference": {
+            "description": "The accepted Agent Run Reference.",
+            "maxLength": 45,
+            "minLength": 45,
+            "pattern": "^sa_agent_run_[0-9a-f]{32}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_reference"
+        ],
+        "type": "object"
+      },
+      "max_result_bytes": 65536,
+      "max_sync_seconds": 30,
+      "minimum_capabilities": {},
+      "name": "read_shipagent_run",
+      "notes": "Reference-scoped synthetic tracer. Production export remains disabled.",
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "conversation_reference": {
+            "description": "Opaque reference to the owning conversation.",
+            "maxLength": 48,
+            "minLength": 48,
+            "pattern": "^sa_conversation_[0-9a-f]{32}$",
+            "type": "string"
+          },
+          "expires_at": {
+            "maxLength": 20,
+            "minLength": 20,
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "pending",
+              "planning_completed",
+              "provider_failed",
+              "interrupted",
+              "model_timeout"
+            ],
+            "type": "string"
+          },
+          "poll_after_seconds": {
+            "maximum": 60,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "revision": {
+            "maximum": 2147483647,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "run_reference": {
+            "description": "Opaque reference to one accepted agent run.",
+            "maxLength": 45,
+            "minLength": 45,
+            "pattern": "^sa_agent_run_[0-9a-f]{32}$",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "queued",
+              "running",
+              "completed",
+              "failed"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_reference",
+          "conversation_reference",
+          "revision",
+          "state",
+          "outcome",
+          "expires_at",
+          "poll_after_seconds"
+        ],
+        "type": "object"
+      },
+      "prepare_tool": null,
+      "provider_export_enabled": false,
+      "provider_exports": [
+        "openai_apps_public",
+        "claude_remote_mcp_public",
+        "generic_mcp"
+      ],
+      "provider_originated_fields": [],
+      "rate_limit_class": "read",
+      "requires_confirmation": false,
+      "result_profile": "aggregate",
+      "result_sensitivity": "business",
+      "side_effect": "read",
+      "signed_download_fields": [],
+      "tenant_safe": true,
+      "title": "Read a ShipAgent planning run",
+      "ui_resource": null,
+      "visibility": "public"
+    },
+    {
       "audit_level": "full",
       "auth_scopes": [
         "debug:carrier"
@@ -734,6 +994,7 @@
       "availability": [
         "local"
       ],
+      "call_repetition": "guarded",
       "confirmation_policy": "private_debug",
       "contract_version": "1.0.0",
       "description": "Private diagnostic access to raw UPS MCP primitives for trusted deployments.",
