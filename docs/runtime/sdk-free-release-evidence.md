@@ -38,6 +38,7 @@ changes do not silently become newly tested executable source.
 | Committed layout regression | All **14 states** passed on the final production assets; 7.852 s, peak 804.184 MiB; default/minimum window, keyboard/caret, validation/retry, scrolling and reopen |
 | Prior equivalent-input full backend | **5,251 passed, 29 skipped, 19 warnings** at `9a5021d69ec72f40741626227815e4ea39296d38`; its tree equals `1616278`. Backend source/tests/dependency and packaging inputs remain unchanged through `04a4bba`. This is **not a fresh final-commit full-suite rerun** |
 | Additional prior smoke/docs evidence | The 119-test `1616278` integration smoke and PR #73's 341 guarded checks are separate records; neither is added to the 752 fresh checks |
+| Native macOS build and static inspection | **Passed on ARM64**: native locked install, type/lint, a separate **199-test** frontend run, seven builds, native freeze and app-only Tauri packaging. Native manifests, linkage and SDK absence checked; this is not a runtime pass |
 | Native macOS wrapper | **Pending**: actual final ARM64 `.app`, its own bundled sidecar, real window/local workflows and normal owned-process shutdown |
 
 All successful guarded stages ended with verified cleanup and zero owned
@@ -168,14 +169,101 @@ scrolling, header/close hit-testing and reopen. The postal field fits at both
 window sizes. Finite animations were settled before pixel review; full raw PNG
 checks confirm the header is drawn, rather than relying on a scaled image view.
 
+### Native ARM64 build and static evidence
+
+The exact `04a4bba` source was fetched into an isolated native checkout and
+verified clean. Backend, Python lock/spec, Tauri and frontend dependency inputs
+were compared with the prepared environment. The native Python 3.12.12
+environment contains **128 platform-specific distributions**, matched to the
+lockfile and rechecked for SDK absence; the Linux count of 129 is not imposed
+on macOS. Build tools were Rust/Cargo 1.92.0, Tauri CLI 2.12.1 and the existing
+Command Line Tools SDK 15.4, selected per process on macOS 15.3. No global Xcode
+selection or security settings were changed.
+
+The first attempt under installed ARM64 Node 22.17.0/npm 11.9.0 passed install,
+type/lint, 199 tests and shared-state, then failed inside
+`ModuleLoader.getModuleJobForRequire` with an undefined `getStatus` during the
+shell build. It exceeded no resource cap and remains a failed build attempt.
+A task-local official **Node 24.19.0 / npm 11.17.0** retry used a fresh dependency
+directory and fresh outputs, preserving the first attempt. The official ARM64
+archive checksum was checked before extraction. No source or dependency-version
+patch was used, and the native npm version is not relabeled as cloud npm 11.9.0.
+
+| Native stage | Retained result |
+| --- | --- |
+| Fresh `npm ci --no-audit --foreground-scripts` | Exit 0; 172.955 s, peak 399.266 MiB |
+| Typecheck/lint | Exit 0; 9.311 s, peak 662.203 MiB |
+| Frontend tests | **199 passed**, exit 0; 18.241 s, peak 2,089.172 MiB; separate from the cloud run |
+| Seven separate production targets | Passed; maximum target peak 1,436.109 MiB; all four staged remotes byte-equal their native build outputs |
+| PyInstaller plus first inspection | PyInstaller completed successfully; the combined wrapper exited **1** after inspection-helper false positives; 26.725 s, peak 402.016 MiB |
+| Corrected static reinspection | Exit 0; 1.201 s, peak 112.188 MiB; unchanged frozen artifact, no refreeze |
+| App-only Tauri build/inspection | Exit 0; 153.658 s, peak 1,624.953 MiB; Cargo lock unchanged |
+
+The first inspector mistakenly treated Mach-O `LC_ID_DYLIB` self-identifiers
+as load dependencies and only recognized `dist-info`, missing valid project
+`egg-info/PKG-INFO`. Retained `otool` records and metadata support the two helper
+corrections. Original failures, helper diff and reinspection are preserved;
+the failed wrapper is not reported as exit 0. Every stage's owned-process
+cleanup was verified with no remaining owned processes. RSS was sampled over
+the owned tree; ordinary macOS scheduling was used, with no CPU-affinity claim.
+
+The app-only command was `cargo tauri build --bundles app --ci --no-sign --
+--locked --jobs 2`, with per-command CLT selection, no inherited `TAURI_CONFIG`
+and no build-hook override. The actual committed config has no frontend build
+hook. Existing verified frontend/sidecar inputs were packaged without rerunning
+`bundle_backend.sh`.
+
+Native inspection found **5,099 distinct outer/inner frozen archive names**,
+all three provider adapters and no Claude Agent SDK. The retained full inventory
+also has no pytest, `_pytest`, project tests, offline harness or `sitecustomize`.
+All **85 native sidecar Mach-O files** contain ARM64; actual load dependencies
+resolve within the bundle or to macOS system libraries. Four Python-framework
+symlinks in the standalone freeze resolve internally. The Tauri copy contains
+**915 regular files / 156,445,257 bytes** and no symlinks. Its packaged sidecar
+resources match the native freeze; all **593 shell/staged-remote files** match
+the native frontend manifest. The seven UPS YAML hashes also match the pinned
+source-package hashes already retained in cloud evidence.
+
+- Native frontend manifest SHA-256:
+  `9ddaa6c44a81be8d31d756747d20b52baf43cdb2f722525667e7e0d0d1542222`
+- Native app manifest SHA-256:
+  `3cf8b286b01cc4eb7344d3aa200b82b200a03fa8f46cff2344e81f5d23519997`
+- Native app executable SHA-256:
+  `8e205475de4b620f8cfbd4fa0322dcc137a83ce1dedd316dc364c4a4a58f8ed8`
+- Native sidecar SHA-256:
+  `8072fa9ea38163cba50181d4532ecc9c6637081332a6c95c4d7519da58aba5b9`
+- Retained static evidence: `shipagent-native-static-evidence-04a4bba-20261008.zip`,
+  **282,636 bytes**, SHA-256
+  `8884fbc41a1c6035d2f7557c3f1ede450a2c5a82b2dab7166b5a6d358bec2a7e`.
+  Its 98 archive members include 97 independently hash-checked payload files
+  plus the manifest. Binaries, dependencies, credentials and real profile
+  contents are excluded.
+
+**The native app has not been opened.** Read-only preflight proved that temporary
+`HOME` does not redirect macOS Foundation home/Library/Application Support;
+existing ShipAgent-specific persistent WebKit/cache locations are present.
+Their contents were not inspected or changed. The production wrapper uses
+the default persistent WebKit store. The reviewed next step is a QA-only
+one-key bundle-identifier overlay, preserving that store type and every other
+configuration field, with fresh identity-specific paths checked before launch.
+The original production artifact stays unopened. The QA rebuild and GUI checks
+have not run; production-identifier behavior, profile migration, signing and
+distribution will remain outside the derivative's acceptance claim.
+
+Backend runtime isolation additionally needs explicit task-local data/SQLite,
+audit and credential-key paths, disabled dotenv/keyring access, a synthetic
+filter secret, empty working directory and no provider credentials or hot-folder
+configuration. This controls backend state; it does not prove WebKit isolation.
+Native startup, local imports/export, persistence/relaunch, real fallback-font
+layout and normal app/sidecar/MCP shutdown remain **not run**.
+
 ### Remaining native gate and residual limitations
 
-1. Build the exact candidate natively on ARM64 macOS from the authorized source
-   checkout and locked inputs. A native source build may produce different
-   browser hashes from Linux: bind its own frontend, staged remotes and bundled
-   app resources byte-for-byte, rather than requiring cross-toolchain identity.
-   Do not use a Linux binary or environment on macOS.
-2. Launch the real `.app`, verify that it starts its own native sidecar, inspect
+1. The exact candidate's native build/static checks above are complete. Preserve
+   its own frontend, staged-remote and app-resource identities; do not require
+   cross-toolchain equality with Linux or substitute a Linux binary/environment.
+   Resolve the existing persistent-profile isolation gate before GUI launch.
+2. Launch the reviewed `.app`, verify that it starts its own native sidecar, inspect
    its real window/default and minimum size, exercise synthetic local workflows,
    then verify normal quit stops the exact owned sidecar and MCP children.
 3. Record native source, architecture, toolchain, commands, artifact hashes,
