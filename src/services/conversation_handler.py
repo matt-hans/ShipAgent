@@ -405,6 +405,12 @@ async def ensure_agent(
     Returns:
         True if a new agent was created, False if reused existing.
     """
+    from src.services.source_free_conversation import SourceFreeConversationConfig
+
+    if isinstance(
+        getattr(session, "source_free_config", None), SourceFreeConversationConfig
+    ):
+        raise ValueError("Use process_message for this execution profile.")
     from src.orchestrator.agent.system_prompt import build_system_prompt
 
     generation = getattr(session, "turn_generation", None)
@@ -543,6 +549,27 @@ async def process_message(
     Yields:
         Event dicts with 'event' and 'data' keys.
     """
+    from src.services.source_free_conversation import (
+        SourceFreeConversationConfig,
+        process_source_free_message,
+    )
+
+    if isinstance(
+        getattr(session, "source_free_config", None), SourceFreeConversationConfig
+    ):
+        source_free_stream = process_source_free_message(
+            session,
+            content,
+            turn_id=turn_id,
+            turn_generation_callback=turn_generation_callback,
+        )
+        try:
+            async for event in source_free_stream:
+                yield event
+        finally:
+            await source_free_stream.aclose()
+        return
+
     turn_token = current_conversation_turn.set(turn_id)
     existing_run_id = get_decision_run_id()
     active_run_id = existing_run_id
@@ -946,11 +973,18 @@ async def decide_workflow_action(
     """Trusted UI boundary for session-bound auxiliary workflow confirmations."""
     import asyncio
 
+    from src.services.source_free_conversation import SourceFreeConversationConfig
     from src.services.workflow_confirmation import (
         WorkflowConfirmationError,
         decide_action,
     )
 
+    if isinstance(
+        getattr(session, "source_free_config", None), SourceFreeConversationConfig
+    ):
+        raise WorkflowConfirmationError(
+            "No workflow approval is available in this execution profile."
+        )
     async with session.lock:
         if session.terminating:
             raise WorkflowConfirmationError("Conversation is no longer active.")
