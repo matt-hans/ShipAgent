@@ -16,7 +16,7 @@ The Redis sweeper checks the shared allowlisted ephemeral patterns every **300 s
 
 `AuthorizationLedgerService.record` accepts only the frozen, validated metadata type plus closed event, transition and result codes. IDs follow existing canonical grammars; hashes are lowercase SHA-256; amounts are strict nonnegative signed-64-bit minor units paired with the canonical registry currency. Account existence and Provider Connection ownership are checked under account/connection row locks. No arbitrary payload column, raw subject, rows, labels, tracking number, token, URL, prompt or executable credential is accepted. Ledger rows cannot reconstruct a grant or resurrect approval.
 
-The caller owns the SQL transaction. `record` flushes, **it does not commit**. The future authority must:
+The caller owns the SQL transaction. `record` flushes, **it does not commit**. The dormant issue 67 authority implements these required obligations:
 
 1. Commit required ledger evidence before publishing an enabling Redis change
 2. Deny on SQL validation/write/commit failure, Redis failure, or uncertain publication
