@@ -1,5 +1,207 @@
 # SDK-free release verification
 
+## Current qualification at 04a4bba
+
+Updated 2026-10-08 for [issue #41](https://github.com/matt-hans/ShipAgent/issues/41)
+and the unchanged [parent specification](../superpowers/specs/2026-10-01-provider-neutral-runtime-convergence.md).
+
+**Cloud/Linux qualification passes; native macOS acceptance remains open.**
+The current executable candidate is
+`04a4bbaee3b00ed57115367477a7578216c06a21`, tree
+`1fa25ce299522665c4bffbaf642fdc0e0f4e1897`. It includes the SDK cutover in
+[PR #62](https://github.com/matt-hans/ShipAgent/pull/62), packaging repairs in
+[PR #63](https://github.com/matt-hans/ShipAgent/pull/63), the postal-field layout
+repair in [PR #72](https://github.com/matt-hans/ShipAgent/pull/72), and active-guide
+reconciliation in [PR #73](https://github.com/matt-hans/ShipAgent/pull/73).
+
+Anthropic, OpenAI and Gemini remain supported through the same ShipAgent-owned
+runtime. Removing the Claude Agent SDK does not remove Anthropic support.
+Local CSV/Excel operation still requires no Redis, PostgreSQL, Auth0 or hosted
+grant service. The separate connector roadmap, live providers/carriers,
+marketplace publication and deployment are not qualified by this work.
+
+### Evidence identities and test accounting
+
+All 1,187 original candidate source files were inventoried and independently
+matched against the exact Git blobs. Source, dependency and artifact evidence
+was retained before any later documentation reconciliation. Documentation-only
+changes do not silently become newly tested executable source.
+
+| Gate | Evidence and scope |
+| --- | --- |
+| Fresh shared acceptance and protocol checks | **752 passed, zero skips, one warning** on `04a4bba`; shared workflows, adapters, privacy/lifecycle, API/CLI entrypoints, packaging-source checks and provider-artifact drift. Pytest 68.63 s; guarded wall 74.623 s, peak 584.105 MiB |
+| Fresh backend lint | Ruff passed on `04a4bba` |
+| Fresh frontend checks | Ordinary Nx typecheck/lint and **199 tests across six projects** passed on `04a4bba`; guarded wall 57.807 s, peak 1,255.930 MiB |
+| Fresh production frontend | **Seven individually guarded targets** passed and all four remotes were staged; maximum per-target peak 1,732.754 MiB |
+| Fresh frozen backend | Production PyInstaller spec passed on `04a4bba`; 35.199 s, peak 237.098 MiB; actual archive inspected without SDK/test instrumentation |
+| Actual frozen runtime and rendered UI | Read-only-install local workflows and six settled Chromium layouts passed; 17.468 s, peak 1,152.539 MiB |
+| Committed layout regression | All **14 states** passed on the final production assets; 7.852 s, peak 804.184 MiB; default/minimum window, keyboard/caret, validation/retry, scrolling and reopen |
+| Prior equivalent-input full backend | **5,251 passed, 29 skipped, 19 warnings** at `9a5021d69ec72f40741626227815e4ea39296d38`; its tree equals `1616278`. Backend source/tests/dependency and packaging inputs remain unchanged through `04a4bba`. This is **not a fresh final-commit full-suite rerun** |
+| Additional prior smoke/docs evidence | The 119-test `1616278` integration smoke and PR #73's 341 guarded checks are separate records; neither is added to the 752 fresh checks |
+| Native macOS wrapper | **Pending**: actual final ARM64 `.app`, its own bundled sidecar, real window/local workflows and normal owned-process shutdown |
+
+All successful guarded stages ended with verified cleanup and zero owned
+survivors. The 29 inherited full-suite skips remain accounted for: one
+non-loopback LAN-listener case outside the local-only harness, one unconfigured
+PostgreSQL migration target, 12 inapplicable public-tool field-family cases,
+eight unconfigured live Shopify checks, four opt-in live UPS checks and three
+absent legacy XML/fixed-width fixtures. None is reported as a pass.
+
+### Final installation and build environment
+
+Linux x86_64; Python 3.12.14, uv 0.12.19, PyInstaller 6.19.0,
+hooks-contrib 2026.1, Node 24.19.0, npm 11.9.0, Nx 22.6.1, Angular core 21.2.5,
+Angular CLI/build 21.2.3, Native Federation 21.2.2, Vitest 4.1.1,
+pytest 9.0.2, Ruff 0.14.14 and Chromium 154.0.8037.57.
+
+Fresh virtualenv and frontend dependency directories were populated from
+unchanged locked inputs and previously validated download caches. **These final
+runs do not claim empty download caches.** All 129 installed Python
+distributions match `uv.lock`; no dependency-package symlinks or
+`claude_agent_sdk` module / `claude-agent-sdk` distribution exist. The project
+retains its normal editable installation. PEP 517 build requirements remain
+constrained by the project, not permanently bit-reproducible.
+
+`npm ci --offline --no-audit --foreground-scripts` installed 1,728 packages
+with a 768 MiB Node heap. An optional development-browser postinstall warned
+that `pnpm` was absent; the actual browser checks used installed Chromium and
+passed. Supported `NX_DAEMON=false` and `NX_ISOLATE_PLUGINS=false` settings avoided
+this executor's unavailable Unix-domain worker sockets. No product source,
+lockfile or network guard was changed to obtain a pass.
+
+Builds used two CPUs, one Angular worker and a 2,048 MiB process-tree watchdog.
+The first cached npm attempt exceeded that guard at 2,097.848 MiB; the first
+production loop reached 2,050.234 MiB. Both were stopped with zero survivors and
+remain failed attempts. Serial lifecycle scripts and a separate guarded Nx
+invocation for each production target, with a 768 MiB per-Node heap, passed
+under the same cap. An Nx success line before guard termination is not a stage
+pass. Full commands, resource receipts and failed-attempt logs are retained.
+
+### Reproduction boundary
+
+Use an isolated exact-source checkout, the recorded locked dependency versions,
+no operator `.env` or credentials, and bounded serial jobs with retained exit
+and cleanup receipts. An empty cache requires an ordinary locked install;
+`--offline` is appropriate only when the required cache is already complete.
+Do not infer a full-suite pass from a focused command or a successful build.
+
+The frontend production path used the supported local Nx settings and separate
+invocations below, rather than a memory-accumulating combined production job:
+
+```sh
+export NX_DAEMON=false NX_ISOLATE_PLUGINS=false NG_BUILD_MAX_WORKERS=1
+npm exec -- nx run-many -t typecheck lint --all --parallel=1 --skip-nx-cache
+npm exec -- nx run-many -t test --all --parallel=1 --skip-nx-cache
+for project in shared-state provider-widget settings-remote sidebar-remote domain-remote chat-remote shell; do
+  NODE_OPTIONS=--max-old-space-size=768 npm exec -- nx build "$project" --configuration=production --parallel=1 --skip-nx-cache
+done
+./scripts/link-remotes.sh
+npm run smoke:shipment-settings-layout
+```
+
+The browser regression needs an installed compatible Chromium, selected with
+`PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` when necessary. Run the production
+`shipagent-core.spec` through the locked native Python environment after staging
+assets. The normal `bundle_backend.sh` includes its own npm install/build, so
+native qualification of already verified staged inputs invokes PyInstaller
+directly before the app-only Tauri build. Inspect the actual final package;
+source scans alone are insufficient.
+
+### Actual frozen artifact
+
+PyInstaller ran in an explicit clean environment with no `PYTHONPATH`,
+`LD_PRELOAD`, test hook, runtime mock or operator credentials. Actual inspection
+found 5,103 PYZ modules plus 11 outer archive entries, all three provider
+adapters, and no SDK, tests, pytest, `_pytest`, offline instrumentation or
+`sitecustomize`. All seven UPS YAMLs match the pinned package, and all 593
+packaged shell/staged-remote files match the final production frontend.
+
+- Source files: **1,187**, byte-verified against the candidate
+- Full frontend: **1,202 files / 38,379,939 bytes**
+- Frontend manifest SHA-256:
+  `8632ddd316fc1d763cc58cfbf78313a55eff81a2a97cea3dd0167f20a70db448`
+- Frozen folder: **852 regular files**, no external dependency symlinks
+- Executable SHA-256:
+  `34d01e72af8c33cc213edf35fa3962608b832038e59e63180ff2b4e331134081`
+- Retained Linux test archive: `shipagent-linux-test-sidecar-04a4bba.tar.gz`,
+  **67,222,304 bytes**, SHA-256
+  `ea6e89b3b984cec4d91c92df20fdd0577a01a4f4a3e850295e83e40a94edab6b`
+- Retained cloud evidence: `shipagent-cloud-qualified-evidence-04a4bba.zip`,
+  **2,268,301 bytes**, SHA-256
+  `15204b9a0cb47686600f8e5d659c8ed63912d2052e31e2de1fa1b050e4a1a844`
+
+The executable hash matches the previous candidate because backend code is
+unchanged; separately bundled frontend bytes changed. It is not sufficient to
+compare only the executable when qualifying the corrected UI. Archives and
+complete manifests were independently checked. No binary was published as a
+release.
+
+### Actual local workflows and pixels
+
+With all 948 bundle files/directories unwritable, the unchanged binary passed
+CLI version/help, dynamic-port startup, health/settings/readiness diagnostics,
+real DataSource MCP child startup, all four remote manifests/exposed chunks,
+two-row CSV/XLSX multipart imports, conversation JSON export, and raw frozen
+CSV/XLSX import plus atomic write-back of synthetic tracking values. Sibling,
+sensitive-name, traversal, symlink and symlink-overwrite requests were denied
+without replacing the active source. Bundle modes were restored and every hash
+remained unchanged.
+
+The tests used empty temporary HOME/CWD/data/SQLite storage, disabled dotenv
+and keyring, and no real provider/carrier/commerce credentials. Data/UPS/external
+MCP startup/list probes exposed 23/18/8 tools and each exited 0 on EOF. Only the
+UPS listing probe received obvious synthetic client credentials; it made no
+`tools/call` request. No real shipment or live service call was made.
+
+The actual frozen-origin browser rendered shell, populated chat/composer and
+Shipment Behaviour settings at 1200×800 and 900×600, including scrolled
+minimum-size settings. Actual local fallback fonts were Noto Sans and DejaVu
+Sans Mono. All six layouts had no page/control horizontal overflow, browser
+page/console error or external request. Repeated settings close/reopen,
+history navigation from Data and from a collapsed sidebar, and unsent-draft
+preservation passed.
+
+The separate committed production-layout regression used synthetic API fixtures
+and passed 14 states: practical postal width, ancestor clipping, long
+labels/values/errors, Tab order, visible focus/caret, rejected-save/retry,
+scrolling, header/close hit-testing and reopen. The postal field fits at both
+window sizes. Finite animations were settled before pixel review; full raw PNG
+checks confirm the header is drawn, rather than relying on a scaled image view.
+
+### Remaining native gate and residual limitations
+
+1. Build the exact candidate natively on ARM64 macOS from the authorized source
+   checkout and locked inputs. A native source build may produce different
+   browser hashes from Linux: bind its own frontend, staged remotes and bundled
+   app resources byte-for-byte, rather than requiring cross-toolchain identity.
+   Do not use a Linux binary or environment on macOS.
+2. Launch the real `.app`, verify that it starts its own native sidecar, inspect
+   its real window/default and minimum size, exercise synthetic local workflows,
+   then verify normal quit stops the exact owned sidecar and MCP children.
+3. Record native source, architecture, toolchain, commands, artifact hashes,
+   screenshots and cleanup. Until those observations exist, #41 and #30 remain
+   open and no complete desktop qualification is claimed.
+4. `/readyz` is intentionally degraded because UPS credentials are absent;
+   database/filter-secret checks are healthy. This is not live carrier readiness.
+   Frozen MCP shutdown still logs the known closed-stdio `ValueError` after
+   successful work. EOF probes exit 0, server SIGTERM completes lifespan cleanup,
+   and owned-process supervision finds no survivors. The diagnostic is retained,
+   not suppressed or claimed fixed; upstream causality is not proven here.
+5. Optional PyInstaller warnings for pycparser tables, unused alternate database
+   drivers and Windows `user32` on Linux remain in the logs. DMG,
+   signing/notarization, updater, Intel and other native targets remain unverified.
+   No hosted deployment or separate connector-roadmap completion is implied.
+
+The previous 71995b7 candidate's clipped postal control and all failed attempts
+are preserved separately; they are not retroactively described as passes.
+
+## Historical qualification record
+
+The following 2026-10-07 report is retained as originally recorded for its
+source/artifact identities. Its earlier test counts, then-open visual gate and
+PR status are historical. The current qualification and remaining native gate
+above supersede its status summary.
+
 Recorded 2026-10-07 for [issue #41](https://github.com/matt-hans/ShipAgent/issues/41)
 and [draft PR #63](https://github.com/matt-hans/ShipAgent/pull/63).
 
