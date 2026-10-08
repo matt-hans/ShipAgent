@@ -74,7 +74,7 @@ class AgentRunStore:
         self._identity = require_private_file(self.path)
         self.account_id = account_id
         self.execution_target_id = execution_target_id
-        with self._connection() as db:
+        with self._connection(initialize=create) as db:
             if create:
                 db.executescript("""
                 CREATE TABLE IF NOT EXISTS target_owner (
@@ -104,21 +104,24 @@ class AgentRunStore:
                 )
                 db.execute("PRAGMA application_id=1396785746")
                 db.execute("PRAGMA user_version=1")
-            if (
-                db.execute("PRAGMA application_id").fetchone()[0] != 1396785746
-                or db.execute("PRAGMA user_version").fetchone()[0] != 1
-            ):
-                raise PermissionError("Target store format is unavailable.")
-            owner = db.execute(
-                "SELECT account_id, target_id FROM target_owner WHERE singleton = 1"
-            ).fetchone()
-            if owner is None or tuple(owner) != (account_id, execution_target_id):
-                raise PermissionError("Target store ownership does not match.")
+            self._require_store_identity(db)
         if create:
             sync_directory(self.path.parent)
 
+    def _require_store_identity(self, db: sqlite3.Connection) -> None:
+        if (
+            db.execute("PRAGMA application_id").fetchone()[0] != 1396785746
+            or db.execute("PRAGMA user_version").fetchone()[0] != 1
+        ):
+            raise PermissionError("Target store format is unavailable.")
+        owner = db.execute(
+            "SELECT account_id, target_id FROM target_owner WHERE singleton = 1"
+        ).fetchone()
+        if owner is None or tuple(owner) != (self.account_id, self.execution_target_id):
+            raise PermissionError("Target store ownership does not match.")
+
     @contextmanager
-    def _connection(self):
+    def _connection(self, *, initialize: bool = False):
         require_private_directory(self.path.parent)
         require_private_file(self.path, identity=self._identity)
         self._require_private_sidecars()
@@ -127,6 +130,8 @@ class AgentRunStore:
         )
         connection.row_factory = sqlite3.Row
         try:
+            if not initialize:
+                self._require_store_identity(connection)
             if connection.execute("PRAGMA journal_mode=WAL").fetchone()[0] != "wal":
                 raise RuntimeError("Target storage durability mode is unavailable.")
             connection.execute("PRAGMA synchronous=FULL")

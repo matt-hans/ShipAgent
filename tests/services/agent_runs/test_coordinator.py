@@ -85,6 +85,10 @@ async def test_completion_storage_failure_cleans_owned_runtime_and_denies_new_wo
             ).state
             == "running"
         )
+        with pytest.raises(RuntimeError, match="unavailable"):
+            service.read(
+                connection_id="connection-a", run_reference=accepted["run_reference"]
+            )
         assert len(provider.requests) == 1
     finally:
         with suppress(Exception):
@@ -504,4 +508,90 @@ async def test_truncated_provider_stream_cannot_publish_completion(tmp_path):
         assert result["outcome"] == "interrupted"
         assert len(provider.requests) == 1
     finally:
+        await service.close()
+
+
+async def test_old_activity_guard_cannot_interrupt_a_later_owned_run(
+    tmp_path, monkeypatch
+):
+    import asyncio
+
+    from src.services.agent_runs import service as service_module
+    from tests.services.conversation_acceptance import text_turn
+
+    guards = []
+    original_config = service_module.SourceFreeConversationConfig
+
+    def capture_config(**kwargs):
+        guards.append(kwargs["is_run_active"])
+        return original_config(**kwargs)
+
+    monkeypatch.setattr(service_module, "SourceFreeConversationConfig", capture_config)
+
+    class BlockedProvider(FakeProviderClient):
+        def __init__(self):
+            super().__init__(script=[text_turn("Second private result")])
+            self.opened = asyncio.Event()
+            self.release = asyncio.Event()
+
+        def stream_turn(self, **kwargs):
+            inner = super().stream_turn(**kwargs)
+
+            async def events():
+                self.opened.set()
+                await self.release.wait()
+                async for event in inner:
+                    yield event
+
+            return events()
+
+    first_provider = FakeProviderClient(script=[text_turn("First private result")])
+    second_provider = BlockedProvider()
+    providers = iter([first_provider, second_provider])
+    store = AgentRunStore(
+        tmp_path / "runs.sqlite3",
+        account_id="account-a",
+        execution_target_id="target-a",
+        create=True,
+    )
+    service = AgentRunService(store=store, provider_factory=lambda _: next(providers))
+    await service.start()
+    try:
+        first = service.submit(
+            connection_id="connection-a",
+            arguments={
+                "task": "First",
+                "mode": "source_free",
+                "request_key": "first-guard",
+            },
+        )
+        async with asyncio.timeout(2):
+            while service.read(
+                connection_id="connection-a", run_reference=first["run_reference"]
+            )["state"] in {"queued", "running"}:
+                await asyncio.sleep(0.01)
+        second = service.submit(
+            connection_id="connection-b",
+            arguments={
+                "task": "Second",
+                "mode": "source_free",
+                "request_key": "second-guard",
+            },
+        )
+        await asyncio.wait_for(second_provider.opened.wait(), 2)
+        assert len(guards) == 2
+        assert guards[0]() is False
+        assert guards[1]() is True
+        second_provider.release.set()
+        async with asyncio.timeout(2):
+            while True:
+                result = service.read(
+                    connection_id="connection-b", run_reference=second["run_reference"]
+                )
+                if result["state"] not in {"queued", "running"}:
+                    break
+                await asyncio.sleep(0.01)
+        assert result["state"] == "completed"
+    finally:
+        second_provider.release.set()
         await service.close()

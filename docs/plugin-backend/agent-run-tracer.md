@@ -54,7 +54,9 @@ required for success; partial text is not evidence of completion.
 - Lease loss or any failed activity check is latched for the accepted turn and
   fences subsequent model dispatch as well as publication. A completion-write
   failure still cleans the owned runtime and makes the worker unavailable for
-  new submissions. Recovery retains the original acceptance identity.
+  new submissions and nonterminal reads. Completed records remain readable;
+  no unhealthy worker advertises continuing progress. Recovery retains the
+  original acceptance identity.
 - Each run has at most three provider turns and a 30-second model deadline
   (trusted test/operator configuration may choose a positive deadline up to
   120 seconds). Timeout is reported as a closed `model_timeout` outcome.
@@ -68,7 +70,8 @@ missing or replaced storage is not silently recreated. A pre-provisioned,
 owned 0700 directory and owned 0600 single-link files are required. Symlinked
 paths and broad permissions fail closed; code does not change an operator's
 permissions or provision encryption. SQLite opens in existing-file mode,
-checks WAL plus synchronous FULL, records a schema/application identity, and
+validates schema/account/target identity before journal-mode changes, checks
+WAL plus synchronous FULL, and
 syncs the containing directory on initialization. The lease uses non-following
 open plus exclusive `flock`. Filesystem identity checks are defense in depth,
 not protection against a malicious operator sharing the process's OS identity.

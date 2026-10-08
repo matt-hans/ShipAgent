@@ -10,7 +10,7 @@ from collections.abc import Callable
 from contextlib import aclosing, suppress
 
 from src.services.agent_runs.coordinator import CoordinatorLease
-from src.services.agent_runs.store import AgentRunStore
+from src.services.agent_runs.store import AgentRun, AgentRunStore
 from src.services.agent_session_manager import AgentSessionManager
 from src.services.conversation_handler import process_message
 from src.services.conversation_runtime.models import ModelProviderClient
@@ -80,8 +80,7 @@ class AgentRunService:
                 self._lease = None
 
     def submit(self, *, connection_id: str, arguments: dict) -> dict[str, object]:
-        if self._worker is None or self._worker.done() or self._unhealthy:
-            raise RuntimeError("Agent run coordinator is unavailable.")
+        self._require_worker()
         self._require_coordinator()
         run = self.store.accept(
             connection_id=connection_id,
@@ -94,9 +93,15 @@ class AgentRunService:
         return run.public_result()
 
     def read(self, *, connection_id: str, run_reference: str) -> dict[str, object]:
-        return self.store.read(
-            connection_id=connection_id, run_reference=run_reference
-        ).public_result()
+        run = self.store.read(connection_id=connection_id, run_reference=run_reference)
+        if run.state in {"queued", "running"}:
+            self._require_worker()
+            self._require_coordinator()
+        return run.public_result()
+
+    def _require_worker(self) -> None:
+        if self._worker is None or self._worker.done() or self._unhealthy:
+            raise RuntimeError("Agent run coordinator is unavailable.")
 
     def _require_coordinator(self) -> None:
         if self._lease is None:
@@ -105,12 +110,23 @@ class AgentRunService:
         if not self.store.is_current_generation(self._generation):
             raise RuntimeError("Agent run coordinator is unavailable.")
 
-    def _run_active(self, run) -> bool:
+    def _run_active(self, run: AgentRun) -> bool:
         try:
             self._require_coordinator()
             return self.store.is_active(run)
         except Exception:
             return False
+
+    def _activity_guard(self, run: AgentRun) -> Callable[[], bool]:
+        authority_lost = False
+
+        def active() -> bool:
+            nonlocal authority_lost
+            if not authority_lost and not self._run_active(run):
+                authority_lost = True
+            return not authority_lost
+
+        return active
 
     async def _drain(self) -> None:
         while True:
@@ -122,13 +138,7 @@ class AgentRunService:
                 continue
             session = None
             outcome = "provider_failed"
-            authority_lost = False
-
-            def active(run=run) -> bool:
-                nonlocal authority_lost
-                if not authority_lost and not self._run_active(run):
-                    authority_lost = True
-                return not authority_lost
+            active = self._activity_guard(run)
 
             try:
                 async with asyncio.timeout(self._model_timeout_seconds):

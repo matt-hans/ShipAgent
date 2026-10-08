@@ -21,6 +21,8 @@ def project_status_for_provider(status: dict[str, Any]) -> dict[str, Any]:
 
 def build_execution_target_tool_handlers(
     execution_target: ExecutionTarget,
+    *,
+    include_agent_runs: bool = False,
 ) -> dict[str, ToolHandler]:
     async def get_shipagent_status(
         context: AuthorizationContext,
@@ -57,8 +59,12 @@ def build_execution_target_tool_handlers(
 
         return invoke
 
-    return {
-        "get_shipagent_status": get_shipagent_status,
-        "submit_shipagent_task": run_handler("submit_shipagent_task"),
-        "read_shipagent_run": run_handler("read_shipagent_run"),
-    }
+    handlers: dict[str, ToolHandler] = {"get_shipagent_status": get_shipagent_status}
+    if include_agent_runs:
+        handlers.update(
+            {
+                "submit_shipagent_task": run_handler("submit_shipagent_task"),
+                "read_shipagent_run": run_handler("read_shipagent_run"),
+            }
+        )
+    return handlers

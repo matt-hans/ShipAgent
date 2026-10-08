@@ -242,3 +242,25 @@ def test_broad_directory_or_sidecar_permissions_fail_closed(tmp_path):
     with pytest.raises(PermissionError):
         AgentRunStore(path, account_id="account-a", execution_target_id="target-a")
     assert sidecar.is_symlink()
+
+
+def test_reopen_rejects_foreign_sqlite_without_modifying_it(tmp_path):
+    import hashlib
+    import sqlite3
+
+    path = tmp_path / "unrelated.sqlite3"
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE unrelated (value TEXT)")
+        db.execute("INSERT INTO unrelated VALUES ('PRIVATE_FOREIGN_CANARY')")
+        assert db.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+    path.chmod(0o600)
+    original = hashlib.sha256(path.read_bytes()).hexdigest()
+    with pytest.raises(PermissionError, match="format"):
+        AgentRunStore(path, account_id="account-a", execution_target_id="target-a")
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == original
+    with sqlite3.connect(path) as db:
+        assert db.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+        assert (
+            db.execute("SELECT value FROM unrelated").fetchone()[0]
+            == "PRIVATE_FOREIGN_CANARY"
+        )

@@ -42,7 +42,9 @@ async def synthetic_mcp(store, provider_factory, *, context=OWNER, controls_now=
     service = AgentRunService(store=store, provider_factory=provider_factory)
     target = AgentRunExecutionTarget(service)
     mcp = build_server(
-        tool_handlers=build_execution_target_tool_handlers(target),
+        tool_handlers=build_execution_target_tool_handlers(
+            target, include_agent_runs=True
+        ),
         tools=[
             tool.model_copy(
                 update={"provider_export_enabled": True, "hosted_readiness": "ready"}
