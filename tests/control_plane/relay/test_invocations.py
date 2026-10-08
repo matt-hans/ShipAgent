@@ -614,3 +614,62 @@ async def test_broker_ignores_nonmatching_result_and_times_out_cleanly() -> None
 
     with pytest.raises(RelayInvocationTimeout):
         await invocation_task
+
+
+async def test_status_broker_wire_is_readable_by_exact_legacy_desktop_decoder():
+    from tests.control_plane.relay.legacy_wire import (
+        RelayInvocationEnvelope as LegacyInvocationEnvelope,
+    )
+
+    websocket = FakeRelayWebSocket()
+    broker = RelayInvocationBroker()
+    await broker.register("legacy-session", websocket)
+    pending = asyncio.create_task(
+        broker.invoke(
+            relay_session_id="legacy-session",
+            tool_name="get_shipagent_status",
+            arguments={},
+            audit_correlation_id="legacy-correlation",
+            timeout_seconds=1,
+        )
+    )
+    try:
+        for _ in range(20):
+            if websocket.sent:
+                break
+            await asyncio.sleep(0)
+        assert websocket.sent
+        payload = websocket.sent[0]
+        legacy = LegacyInvocationEnvelope.model_validate(payload)
+        assert set(payload) == set(LegacyInvocationEnvelope.model_fields)
+        assert "attempt_generation" not in payload
+        await broker.accept_result(
+            RelayInvocationResultFrame(
+                relay_session_id="legacy-session",
+                relay_invocation_id=legacy.relay_invocation_id,
+                status="ok",
+                result={"status": "ok"},
+            )
+        )
+        assert (await pending).result == {"status": "ok"}
+    finally:
+        await broker.unregister("legacy-session")
+        await asyncio.gather(pending, return_exceptions=True)
+
+
+def test_dormant_target_envelope_retains_explicit_attempt_generation():
+    from datetime import UTC, datetime, timedelta
+
+    frame = RelayInvocationEnvelope(
+        relay_session_id="durable-session",
+        sequence=1,
+        relay_invocation_id="durable-invocation",
+        tool_name="execute_shipments",
+        arguments={},
+        input_hash="sha256:" + "a" * 64,
+        deadline_at=datetime.now(UTC) + timedelta(seconds=1),
+        idempotency_key="server-owned-key",
+        audit_correlation_id="durable-correlation",
+        attempt_generation=1,
+    )
+    assert frame.model_dump(mode="json")["attempt_generation"] == 1

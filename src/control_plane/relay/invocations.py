@@ -334,7 +334,12 @@ class RelayInvocationBroker:
             audit_correlation_id=audit_correlation_id,
         )
         try:
-            await connection.send_json(frame.model_dump(mode="json"))
+            # This legacy broker does not implement durable attempt dispatch.
+            # Older desktops reject unknown fields; keep their status wire exact.
+            # Explicit durable adapters serialize the generation separately.
+            await connection.send_json(
+                frame.model_dump(mode="json", exclude={"attempt_generation"})
+            )
         except Exception as exc:
             await self.unregister(relay_session_id, connection=connection)
             raise NoLiveRelaySession("relay session send failed") from exc

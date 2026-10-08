@@ -112,6 +112,11 @@ the first call's total budget. Retry keeps this conservative initial window and
 rechecks it after asynchronous callbacks; accepted evidence must precede it.
 Existing serialized dormant records lacking this required deadline fail closed.
 
+The existing non-durable `RelayInvocationBroker` omits the new generation field
+from its legacy wire format, preserving older desktops' strict status decoder.
+Explicit durable-target envelopes retain their generation; default status traffic
+does not silently opt into the new protocol.
+
 The target authenticates generation in envelope, query and proof, durably rejects
 old attempts forever, requires proof-backed sequencing for new generations, and
 keeps one accepted effect per purchase key. A retry never deletes/reset records,
