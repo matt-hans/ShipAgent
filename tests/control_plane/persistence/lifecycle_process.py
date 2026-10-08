@@ -56,6 +56,7 @@ class ProtocolTarget:
             input_hash=identity.arguments_hash,
             deadline_at=deadline_at,
             idempotency_key=identity.idempotency_key,
+            attempt_generation=identity.attempt_generation,
             audit_correlation_id="sa_correlation_" + secrets.token_hex(16),
         )
         await self.request(
@@ -85,7 +86,7 @@ class ProtocolTarget:
 def target_server(args):
     with sqlite3.connect(args.journal) as db:
         db.execute(
-            "CREATE TABLE IF NOT EXISTS evidence (key TEXT PRIMARY KEY, identity TEXT NOT NULL, proof TEXT NOT NULL)"
+            "CREATE TABLE IF NOT EXISTS evidence (key TEXT NOT NULL, generation INTEGER NOT NULL, identity TEXT NOT NULL, proof TEXT NOT NULL, PRIMARY KEY (key, generation))"
         )
         db.execute(
             "CREATE TABLE IF NOT EXISTS effects (job TEXT PRIMARY KEY, key TEXT UNIQUE NOT NULL)"
@@ -104,15 +105,46 @@ def target_server(args):
                 with sqlite3.connect(args.journal, timeout=2) as db:
                     db.execute("BEGIN IMMEDIATE")
                     row = db.execute(
-                        "SELECT identity, proof FROM evidence WHERE key=?",
-                        (identity.idempotency_key,),
+                        "SELECT identity, proof FROM evidence WHERE key=? AND generation=?",
+                        (identity.idempotency_key, identity.attempt_generation),
                     ).fetchone()
                     if (
                         row
                         and InvocationIdentity.model_validate_json(row[0]) != identity
                     ):
                         raise ValueError("wrong identity")
+                    purchase = db.execute(
+                        "SELECT identity FROM evidence WHERE key=? LIMIT 1",
+                        (identity.idempotency_key,),
+                    ).fetchone()
+                    if (
+                        purchase
+                        and InvocationIdentity.model_validate_json(
+                            purchase[0]
+                        ).model_copy(
+                            update={"attempt_generation": identity.attempt_generation}
+                        )
+                        != identity
+                    ):
+                        raise ValueError("changed purchase binding")
                     operation = message["operation"]
+                    if (
+                        not row
+                        and operation in {"send", "fence"}
+                        and identity.attempt_generation
+                    ):
+                        previous = db.execute(
+                            "SELECT proof FROM evidence WHERE key=? AND generation=?",
+                            (identity.idempotency_key, identity.attempt_generation - 1),
+                        ).fetchone()
+                        if (
+                            not previous
+                            or TargetAcceptanceEvidence.model_validate_json(
+                                previous[0]
+                            ).outcome
+                            != "not_accepted"
+                        ):
+                            raise ValueError("prior attempt not permanently rejected")
                     if operation == "send":
                         envelope = RelayInvocationEnvelope.model_validate(
                             message["envelope"]
@@ -128,6 +160,8 @@ def target_server(args):
                                 envelope.tool_name, envelope.arguments
                             )
                             or envelope.idempotency_key != identity.idempotency_key
+                            or envelope.attempt_generation
+                            != identity.attempt_generation
                             or envelope.deadline_at.tzinfo is None
                             or envelope.deadline_at > identity.authorization_expires_at
                         ):
@@ -155,9 +189,10 @@ def target_server(args):
                                 accepted_at=datetime.now(UTC),
                             )
                             db.execute(
-                                "INSERT INTO evidence VALUES (?,?,?)",
+                                "INSERT INTO evidence VALUES (?,?,?,?)",
                                 (
                                     identity.idempotency_key,
+                                    identity.attempt_generation,
                                     identity.model_dump_json(),
                                     proof.model_dump_json(),
                                 ),
@@ -175,9 +210,10 @@ def target_server(args):
                             proof_id="sha256:" + secrets.token_hex(32),
                         )
                         db.execute(
-                            "INSERT INTO evidence VALUES (?,?,?)",
+                            "INSERT INTO evidence VALUES (?,?,?,?)",
                             (
                                 identity.idempotency_key,
+                                identity.attempt_generation,
                                 identity.model_dump_json(),
                                 proof.model_dump_json(),
                             ),

@@ -120,6 +120,7 @@ class RelayInvocationEnvelope(RelayProtocolModel):
     deadline_at: datetime
     idempotency_key: str
     audit_correlation_id: str
+    attempt_generation: int = Field(default=0, ge=0, le=2_147_483_647, strict=True)
 
 
 class RelayInvocationResult(RelayProtocolModel):
@@ -335,6 +336,13 @@ class InvocationIdentity(RelayProtocolModel):
     arguments_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     idempotency_key: str = Field(pattern=r"^[A-Za-z0-9_-]{16,128}$", repr=False)
     authorization_expires_at: datetime
+    purchase_scope_hash: str | None = Field(
+        default=None, pattern=r"^sha256:[0-9a-f]{64}$", strict=True
+    )
+    preview_hash: str | None = Field(
+        default=None, pattern=r"^sha256:[0-9a-f]{64}$", strict=True
+    )
+    attempt_generation: int = Field(default=0, ge=0, le=2_147_483_647, strict=True)
 
     @model_validator(mode="after")
     def validate_identity(self):
@@ -348,6 +356,10 @@ class InvocationIdentity(RelayProtocolModel):
         require_account_id(self.account_id)
         require_connection_id(self.provider_connection_id)
         require_reference(self.approval_request_id, ShipAgentIdFamily.APPROVAL_REQUEST)
+        if (self.purchase_scope_hash is None) != (self.preview_hash is None):
+            raise ValueError(
+                "purchase scope and preview hashes must be supplied together"
+            )
         if self.authorization_expires_at.tzinfo is None:
             raise ValueError("authorization expiry must be timezone aware")
         return self
@@ -365,7 +377,9 @@ class InvocationIdentity(RelayProtocolModel):
 class TargetAcceptanceEvidence(RelayProtocolModel):
     """Trusted target-owned evidence, scoped to the exact original identity.
 
-    ``not_accepted`` requires a durable target rejection fence. Absence from a
+    ``not_accepted`` requires a permanent durable target rejection fence for
+    the exact ``identity.attempt_generation``. Purchase idempotency is shared
+    across all generations; a later attempt must never enable an earlier one. Absence from a
     lookup, a disconnect or a local timeout is only ``unknown``. An adapter must
     authenticate the target and validate the evidence; these types alone are
     not cryptographic proof or authorization.

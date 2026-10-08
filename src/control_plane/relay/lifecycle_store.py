@@ -8,6 +8,7 @@ not construct these stores or require Redis.
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -81,6 +82,7 @@ class InvocationRecord(BaseModel):
     job_ref: str = Field(pattern=shipagent_id_pattern(ShipAgentIdFamily.JOB))
     created_at_ms: int = Field(gt=0, strict=True)
     expires_at_ms: int = Field(gt=0, strict=True)
+    dispatch_deadline_at: datetime
     state: InvocationState = InvocationState.QUEUED
     revision: int = Field(default=0, ge=0, strict=True)
 
@@ -94,6 +96,12 @@ class InvocationRecord(BaseModel):
             <= RedisTtl.INVOCATION_SECONDS * 1000
         ):
             raise ValueError("invalid original invocation lifetime")
+        if (
+            self.dispatch_deadline_at.tzinfo is None
+            or self.dispatch_deadline_at > self.identity.authorization_expires_at
+            or int(self.dispatch_deadline_at.timestamp() * 1000) <= self.created_at_ms
+        ):
+            raise ValueError("invalid original dispatch deadline")
         accepted_states = {
             InvocationState.ACCEPTED,
             InvocationState.RUNNING,
@@ -105,12 +113,35 @@ class InvocationRecord(BaseModel):
         if self.state in accepted_states:
             if self.evidence is None or self.evidence.outcome != "accepted":
                 raise ValueError("accepted state requires durable evidence")
+            if self.evidence.accepted_at >= self.dispatch_deadline_at:
+                raise ValueError("acceptance exceeds original dispatch deadline")
         elif self.state == InvocationState.TARGET_OFFLINE_BEFORE_ACCEPT:
             if self.evidence is None or self.evidence.outcome != "not_accepted":
                 raise ValueError("preaccept failure requires durable rejection fence")
         elif self.evidence is not None:
             raise ValueError("evidence conflicts with invocation state")
         return self
+
+    def next_attempt(self) -> InvocationRecord:
+        """Derive metadata only; a fenced authority must separately permit send."""
+        if (
+            self.state != InvocationState.TARGET_OFFLINE_BEFORE_ACCEPT
+            or self.evidence is None
+            or self.evidence.outcome != "not_accepted"
+            or not self.evidence.rejection_fenced
+        ):
+            raise LifecycleUnavailable()
+        updated = self.model_copy(
+            update={
+                "identity": self.identity.model_copy(
+                    update={"attempt_generation": self.identity.attempt_generation + 1}
+                ),
+                "state": InvocationState.QUEUED,
+                "evidence": None,
+                "revision": self.revision + 1,
+            }
+        )
+        return InvocationRecord.model_validate_json(updated.model_dump_json())
 
     @property
     def local_job_id(self) -> str | None:
@@ -159,6 +190,7 @@ if tonumber(ARGV[3]) > now or tonumber(ARGV[4]) <= now then return -1 end
 if tonumber(ARGV[4]) - tonumber(ARGV[3]) > {RedisTtl.INVOCATION_SECONDS * 1000} then return -1 end
 if tonumber(ARGV[5]) <= now or tonumber(ARGV[5]) - now > {RedisTtl.EXECUTION_GRANT_SECONDS * 1000} then return -1 end
 if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
+if tonumber(ARGV[6]) ~= 0 or tonumber(ARGV[7]) <= now then return -1 end
 if redis.call('EXISTS', KEYS[2]) == 1 then return -1 end
 redis.call('SET', KEYS[1], ARGV[1], 'PXAT', ARGV[4])
 redis.call('SET', KEYS[2], ARGV[2], 'PXAT', ARGV[4])
@@ -182,6 +214,11 @@ _REPLACE = """
 if redis.call('PTTL', KEYS[1]) <= 0 or redis.call('PTTL', KEYS[2]) <= 0 then return 0 end
 if redis.call('GET', KEYS[1]) ~= ARGV[1] or redis.call('GET', KEYS[2]) ~= ARGV[3] then return 0 end
 if redis.call('PEXPIRETIME', KEYS[1]) > tonumber(ARGV[4]) or redis.call('PEXPIRETIME', KEYS[2]) > tonumber(ARGV[4]) then return 0 end
+if ARGV[5] then
+    local t = redis.call('TIME')
+    local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+    if tonumber(ARGV[5]) <= now then return 0 end
+end
 redis.call('SET', KEYS[1], ARGV[2], 'XX', 'KEEPTTL')
 return 1
 """
@@ -202,7 +239,10 @@ class InvocationLifecycleStore:
             raise LifecycleUnavailable() from None
 
     async def create(
-        self, identity: InvocationIdentity
+        self,
+        identity: InvocationIdentity,
+        *,
+        dispatch_deadline_at: datetime | None = None,
     ) -> tuple[InvocationRecord, bool]:
         from redis.exceptions import RedisError
 
@@ -224,6 +264,8 @@ class InvocationLifecycleStore:
                 ("shipagent-job-reference:" + identity.idempotency_key).encode()
             ).hexdigest()[:SHIPAGENT_ID_HEX_LENGTH],
             created_at_ms=now,
+            dispatch_deadline_at=dispatch_deadline_at
+            or identity.authorization_expires_at,
             expires_at_ms=now + RedisTtl.INVOCATION_SECONDS * 1000,
         )
         outcome = await self._eval(
@@ -237,6 +279,8 @@ class InvocationLifecycleStore:
             candidate.created_at_ms,
             candidate.expires_at_ms,
             int(identity.authorization_expires_at.timestamp() * 1000),
+            identity.attempt_generation,
+            int(candidate.dispatch_deadline_at.timestamp() * 1000),
         )
         if outcome == -1:
             raise LifecycleUnavailable()
@@ -278,6 +322,31 @@ class InvocationLifecycleStore:
         except (ValueError, TypeError, KeyError, OverflowError):
             raise LifecycleUnavailable() from None
 
+    async def begin_reattempt(
+        self, original: InvocationRecord
+    ) -> InvocationRecord | None:
+        """Exact rejected-attempt CAS. This metadata never authorizes dispatch.
+
+        The caller must acquire the next fenced grant owner first. Positive
+        target proof permanently excludes the previous generation; ordinary
+        transition cannot reopen it. Keep both original key deadlines intact.
+        """
+        original = InvocationRecord.model_validate_json(original.model_dump_json())
+        updated = original.next_attempt()
+        outcome = await self._eval(
+            _REPLACE,
+            [
+                RedisKey.invocation(original.relay_invocation_id),
+                RedisKey.job_reference(original.job_ref),
+            ],
+            original.model_dump_json(),
+            updated.model_dump_json(),
+            _JobReferencePointer.for_record(original).model_dump_json(),
+            original.expires_at_ms,
+            int(original.dispatch_deadline_at.timestamp() * 1000),
+        )
+        return updated if outcome else None
+
     async def transition(
         self, original: InvocationRecord, state: InvocationState
     ) -> InvocationRecord | None:
@@ -301,6 +370,11 @@ class InvocationLifecycleStore:
         evidence = TargetAcceptanceEvidence.model_validate_json(
             evidence.model_dump_json()
         )
+        if (
+            evidence.outcome == "accepted"
+            and evidence.accepted_at >= original.dispatch_deadline_at
+        ):
+            raise LifecycleUnavailable()
         current = await self.get(
             original.relay_invocation_id,
             account_id=original.identity.account_id,
