@@ -2,7 +2,7 @@
 
 **Supporting New UPS MCP Tools in ShipAgent**
 
-The UPS MCP server (`ups-mcp`) is an external dependency that provides UPS API operations as MCP tools. ShipAgent consumes these tools through two distinct paths. This document details every file that must be updated when the UPS MCP server adds new tools, changes response formats, or expands its API coverage.
+The UPS MCP server (`ups-mcp`) is an external dependency that provides UPS API operations as MCP tools. ShipAgent consumes these tools through deterministic gateways shared by interactive and batch workflows. New MCP operations are not automatically exposed to a model. This guide identifies the workflow, policy and projection changes required when UPS capabilities expand.
 
 ---
 
@@ -17,7 +17,7 @@ The UPS MCP server (`ups-mcp`) is an external dependency that provides UPS API o
 7. [Payload Construction Pipeline](#7-payload-construction-pipeline)
 8. [Configuration and Environment](#8-configuration-and-environment)
 9. [Label Handling Pipeline](#9-label-handling-pipeline)
-10. [Agent Hooks and Safety Gates](#10-agent-hooks-and-safety-gates)
+10. [Shared Policy and Safety Gates](#10-shared-policy-and-safety-gates)
 11. [File Reference Matrix](#11-file-reference-matrix)
 12. [Hard-Won UPS API Lessons](#12-hard-won-ups-api-lessons)
 13. [Testing Checklist](#13-testing-checklist)
@@ -27,69 +27,72 @@ The UPS MCP server (`ups-mcp`) is an external dependency that provides UPS API o
 
 ## 1. Two-Path Architecture
 
-ShipAgent consumes UPS MCP tools through two independent paths:
+Interactive and batch flows use the same ShipAgent-owned safety boundary:
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                         PATH A: Interactive                         │
-│                                                                      │
-│  User ─→ Agent (Claude SDK) ──stdio──→ UPS MCP Server               │
-│                                                                      │
-│  The agent calls UPS MCP tools directly during conversation.         │
-│  Tool definitions are auto-discovered from the MCP server.           │
-│  Used for: ad-hoc rating, address validation, tracking, voiding.     │
-│  Tool names appear as: mcp__ups__rate_shipment, etc.                 │
-└──────────────────────────────────────────────────────────────────────┘
+```text
+Anthropic / OpenAI / Gemini protocol adapter
+    ↕ normalized requests, declarations and projected results
+ConversationRuntimeSession
+    → WorkflowToolCatalog → RuntimePolicyEngine → LocalToolDispatcher
+    → deterministic workflow handler
+        → interactive/auxiliary service → UPSMCPClient → UPS MCP
+        → BatchEngine                  → UPSMCPClient → UPS MCP
 
-┌──────────────────────────────────────────────────────────────────────┐
-│                       PATH B: Batch Processing                       │
-│                                                                      │
-│  Agent ─→ batch tools ─→ BatchEngine ─→ UPSMCPClient ──stdio──→ UPS │
-│                                                                      │
-│  The agent calls ShipAgent's deterministic batch tools.              │
-│  Those tools use UPSMCPClient, which programmatically calls          │
-│  UPS MCP tools via a separate stdio connection.                      │
-│  Used for: bulk rating (preview), bulk shipping (execute).           │
-└──────────────────────────────────────────────────────────────────────┘
+Owner preview → explicit Confirm endpoint → prepared workflow execution
 ```
+
+The adapter never calls raw `mcp__ups__*` tools. The catalog exposes only registered
+workflow tools; policy denies raw carrier calls and model-initiated execution.
+The dispatcher keeps imported rows, local contacts, credentials, labels, document
+bytes and raw carrier payloads out of model results. Schema metadata and results
+use closed projections. Authored chat and specifically allowed current-flow
+inputs are distinct from owner-only local data; a handler's origin flag or text
+wrapper does not make local data safe for the model.
 
 ### Impact on New Tools
 
-| Path | Discovery | ShipAgent Changes Required |
-|------|-----------|--------------------------|
-| **Interactive** | Automatic — SDK reads tool list from MCP server on connect | **Minimal.** System prompt guidance only. |
-| **Batch** | Manual — each tool must be explicitly wrapped in `UPSMCPClient` | **Significant.** Client method, response normalizer, retry policy, batch engine integration. |
+| Path | Registration | ShipAgent Changes Required |
+|------|--------------|----------------------------|
+| **Interactive** | Explicit deterministic workflow definition and catalog metadata | Gateway method/normalizer, handler, policy and model-result projection review, confirmation if mutating, and tests. |
+| **Batch** | Explicit deterministic gateway and workflow integration | Same gateway/safety boundary, plus `BatchEngine` integration when needed. |
+
+See the [SDK-free runtime](runtime/sdk-free-runtime.md) and
+[auxiliary workflow confirmation](runtime/auxiliary-workflow-parity.md) contracts.
 
 ---
 
 ## 2. Current Tool Inventory
 
-Eighteen tools are available from the UPS MCP server (v2):
+The following carrier operation names describe the UPS integration surface, not
+model-callable permissions. Availability to a conversation is determined by
+`get_all_tool_definitions()` and `WorkflowToolCatalog`, with policy and workflow
+gates applied at dispatch.
 
-| # | Tool | Domain | Interactive | Batch | UPSMCPClient Method | Purpose |
-|---|------|--------|:-----------:|:-----:|---------------------|---------|
-| 1 | `rate_shipment` | Rating | Yes | Yes | `get_rate()` | Get shipping cost estimate |
-| 2 | `create_shipment` | Shipping | Yes | Yes | `create_shipment()` | Create shipment + generate label |
-| 3 | `void_shipment` | Shipping | Yes | Yes | `void_shipment()` | Cancel an existing shipment |
-| 4 | `validate_address` | Address | Yes | Yes | `validate_address()` | Validate/correct addresses |
-| 5 | `track_package` | Tracking | Yes | No | — | Track shipment status |
-| 6 | `recover_label` | Shipping | Yes | No | — | Recover previously generated labels |
-| 7 | `get_time_in_transit` | Transit | Yes | No | — | Estimate delivery timeframes |
-| 8 | `get_landed_cost_quote` | Landed Cost | Yes | Yes | `get_landed_cost()` | Calculate duties/taxes/fees for international shipments |
-| 9 | `upload_paperless_document` | Paperless | Yes | Yes | `upload_document()` | Upload customs/trade documents |
-| 10 | `push_document_to_shipment` | Paperless | Yes | Yes | `push_document()` | Attach document to shipment |
-| 11 | `delete_paperless_document` | Paperless | Yes | Yes | `delete_document()` | Remove document from Forms History |
-| 12 | `find_locations` | Locator | Yes | Yes | `find_locations()` | Find UPS Access Points and retail stores |
-| 13 | `rate_pickup` | Pickup | Yes | Yes | `rate_pickup()` | Get pickup cost estimate |
-| 14 | `schedule_pickup` | Pickup | Yes | Yes | `schedule_pickup()` | Schedule carrier pickup |
-| 15 | `cancel_pickup` | Pickup | Yes | Yes | `cancel_pickup()` | Cancel a scheduled pickup |
-| 16 | `get_pickup_status` | Pickup | Yes | Yes | `get_pickup_status()` | Check pending pickup status |
-| 17 | `get_political_divisions` | Pickup | Yes | Yes | `get_political_divisions()` | List states/provinces for a country |
-| 18 | `get_service_center_facilities` | Pickup | Yes | Yes | `get_service_center_facilities()` | Find service center drop-off locations |
+| Carrier operation | `UPSMCPClient` method | Conversation path |
+|-------------------|-----------------------|-------------------|
+| `rate_shipment` | `get_rate()` | `rate_shipment` workflow |
+| `create_shipment` | `create_shipment()` | Interactive or batch priced preview, then trusted job confirmation; no direct model execution |
+| `void_shipment` | `void_shipment()` | No provider-neutral void workflow; raw void remains denied (accepted capability gap under issue #37) |
+| `validate_address` | `validate_address()` | `validate_address` workflow |
+| `track_package` | `track_package()` | `track_package` workflow with owner-facing result card |
+| `recover_label` | No named wrapper | Not exposed by the shared workflow catalog |
+| `get_time_in_transit` | `get_time_in_transit()` | `get_time_in_transit` workflow |
+| `get_landed_cost_quote` | `get_landed_cost()` | `get_landed_cost` workflow |
+| `upload_paperless_document` | `upload_document()` | Explicit upload form and one-shot attachment grant |
+| `push_document_to_shipment` | `push_document()` | Prepare card, then trusted workflow confirmation |
+| `delete_paperless_document` | `delete_document()` | Prepare card, then trusted workflow confirmation |
+| `find_locations` | `find_locations()` | `find_locations` workflow |
+| `rate_pickup` | `rate_pickup()` | Validated quote and pickup preview |
+| `schedule_pickup` | `schedule_pickup()` | Trusted confirmation of pickup preview; model calls are denied |
+| `cancel_pickup` | `cancel_pickup()` | Prepare cancellation card, then trusted workflow confirmation |
+| `get_pickup_status` | `get_pickup_status()` | `get_pickup_status` workflow |
+| `get_political_divisions` | No named wrapper | Not exposed by the shared workflow catalog |
+| `get_service_center_facilities` | `get_service_center_facilities()` | `get_service_center_facilities` workflow |
 
-**Tool availability (AD-1 updated):** V2 tools (8–18) plus `track_package` are registered in the orchestrator and available in **both batch and interactive modes**. These tools work independently of data sources (tracking, pickup, location, landed cost, paperless). The interactive mode registry includes all v2 tools alongside the original 3 tools. Hooks enforce that direct MCP calls (`mcp__ups__track_package`, `mcp__ups__create_shipment`, etc.) route through orchestrator wrappers for event emission and safety gates.
-
-**Batch path:** Tools 8–18 are wrapped in `UPSMCPClient` with named methods, response normalizers, and retry policies. The orchestrator tool registry includes 11 new tool definitions (10 v2 + track_package).
+The read-only and auxiliary workflow definitions are available in both session
+modes where allowed by the canonical mode filter. Their presence does not grant
+mutation authority. In particular, a model `approved`/`confirmed` flag, copied
+token or chat message cannot substitute for the trusted confirmation endpoint.
 
 ---
 
@@ -121,7 +124,7 @@ UPS-specific wrapper providing:
 - Error translation (UPS error codes → ShipAgent E-codes)
 - Transport reconnection on connection failure
 
-**When to modify:** Every time a new UPS MCP tool needs batch/programmatic access.
+**When to modify:** Every time a new UPS MCP operation needs programmatic access, including interactive workflow handlers.
 
 ### Layer 3: Payload Construction
 
@@ -163,12 +166,12 @@ Orchestrates concurrent per-row UPS operations:
 
 Deterministic tool handlers invoked by the agent:
 - `ship_command_pipeline_tool` — fast path (fetch → create job → preview)
-- `batch_preview_tool` — rate all job rows
-- `batch_execute_tool` — ship all job rows (requires `approved=True`)
+- `BatchEngine.preview()` — rate job rows inside the prepared workflow
+- `batch_execute_tool` — deterministic batch execution behind trusted job confirmation; model calls are denied even with `approved=True`
 - `preview_interactive_shipment_tool` — single shipment preview
 - `_get_ups_client()` — lazy singleton for UPSMCPClient
 
-**When to modify:** When a new UPS operation should be available as an agent-callable tool in the batch path.
+**When to modify:** When a new UPS operation should be available through a conversation workflow. Also update catalog metadata and review shared policy/projection; registration alone is insufficient.
 
 ### Layer 7: System Prompt
 
@@ -204,16 +207,21 @@ Spawns the UPS MCP server as a stdio child process:
 
 **When to modify:** When new environment variables are required by the UPS MCP server.
 
-### Layer 10: Agent Hooks
+### Layer 10: Shared Policy and Projection
 
-**File:** `src/orchestrator/agent/hooks.py`
+**Files:** `src/services/conversation_runtime/tool_catalog.py`, `policy.py`,
+`dispatcher.py`; `src/services/workflow_confirmation.py`
 
-Safety gates on tool calls:
-- Pre-tool validation (e.g., `create_shipment` must have valid input)
-- Post-tool logging
-- Mode-aware blocking (interactive mode blocks direct `create_shipment`)
+- Catalog metadata classifies mode, side effects, retry class and artifact events.
+- Policy denies raw UPS calls and model-supplied purchase authority before effects.
+- The dispatcher applies policy and catalog availability checks, records redacted
+  decisions and projects results; deterministic handlers validate their inputs.
+- Workflow services bind explicit user confirmation to a prepared payload and
+  gateway; upload grants bind the user-selected attachment bytes and metadata.
 
-**When to modify:** When a new tool needs safety validation or mode-aware blocking.
+**When to modify:** Every new workflow needs metadata and a safety/privacy review.
+Mutating workflows must enforce explicit authority in deterministic code, not
+just a prompt instruction or a catalog flag. See [Section 10](#10-shared-policy-and-safety-gates).
 
 ---
 
@@ -221,15 +229,20 @@ Safety gates on tool calls:
 
 ### Scenario A: New Read-Only Interactive Tool
 
-**Example:** UPS MCP adds `get_shipping_documents` (retrieve customs forms, invoices, etc.)
+**Example:** A future UPS operation retrieves shipping documents.
 
-**ShipAgent changes required:**
+1. Add a named `UPSMCPClient` method, normalize the result, and explicitly classify
+   its retry behavior. Do not assume an unknown operation is read-only.
+2. Add a deterministic handler and definition in `src/orchestrator/agent/tools/`.
+3. Add mode/side-effect metadata to `WorkflowToolCatalog`; review shared policy
+   and implement a closed model-result projection in `LocalToolDispatcher`.
+4. Keep document bytes, URLs and raw carrier responses in owner-local services
+   and artifacts. Use an opaque handle if the model needs a continuation token.
+5. Add gateway, handler, catalog, policy and serialized-provider privacy tests;
+   update system-prompt guidance only after the boundary is covered.
 
-| # | File | Change | Required? |
-|---|------|--------|:---------:|
-| 1 | `src/orchestrator/agent/system_prompt.py` | Add usage guidance for the agent | Recommended |
-
-**That's it.** The SDK auto-discovers the tool from the MCP server. The agent can call `mcp__ups__get_shipping_documents` immediately.
+MCP discovery alone never exposes the operation to the model. Do not call
+`mcp__ups__get_shipping_documents` from a provider adapter.
 
 ---
 
@@ -243,7 +256,7 @@ Safety gates on tool calls:
 |---|------|--------|:---------:|
 | 1 | `src/services/ups_mcp_client.py` | Add `validate_address_v2()` method | Yes |
 | 2 | `src/services/ups_mcp_client.py` | Add `_normalize_address_v2_response()` | Yes |
-| 3 | `src/services/ups_mcp_client.py` | Add to retry policy (read-only = 2 retries) | Yes |
+| 3 | `src/services/ups_mcp_client.py` | Review read-only classification and bounded retry policy | Yes |
 | 4 | `src/services/batch_engine.py` | Add pre-flight validation step in `preview()` | Yes |
 | 5 | `src/errors/ups_translation.py` | Map any new error codes | If applicable |
 | 6 | `src/orchestrator/agent/tools/pipeline.py` | Expose as agent tool if needed | Optional |
@@ -252,7 +265,9 @@ Safety gates on tool calls:
 | 9 | `tests/services/test_ups_mcp_client.py` | Test response normalization | Yes |
 | 10 | `tests/services/test_batch_engine.py` | Test pre-flight integration | Yes |
 
-**Implementation in UPSMCPClient:**
+**Implementation sketch in UPSMCPClient:** Classify `validate_address_v2` in
+`_READ_ONLY_TOOLS` only after verifying it is read-only. `_call()` owns retry
+options; callers do not pass `max_retries` or `base_delay`.
 
 ```python
 async def validate_address_v2(self, address: dict[str, Any]) -> dict[str, Any]:
@@ -261,8 +276,6 @@ async def validate_address_v2(self, address: dict[str, Any]) -> dict[str, Any]:
         raw = await self._call(
             "validate_address_v2",
             address,
-            max_retries=2,      # Read-only — safe to retry
-            base_delay=0.2,
         )
     except MCPToolError as e:
         raise self._translate_error(e) from e
@@ -333,7 +346,7 @@ If these paths change, update `_normalize_rate_response()` accordingly. The rest
 | 7 | `src/orchestrator/agent/tools/pipeline.py` | Add `create_return_tool` handler | Yes |
 | 8 | `src/orchestrator/agent/tools/__init__.py` | Register tool definition | Yes |
 | 9 | `src/orchestrator/agent/system_prompt.py` | Document return workflow | Yes |
-| 10 | `src/orchestrator/agent/hooks.py` | Add safety gate (returns need confirmation) | Recommended |
+| 10 | `src/services/conversation_runtime/tool_catalog.py`, `policy.py`, `dispatcher.py` and the workflow confirmation service | Classify effects, project safe results, and enforce prepared-payload confirmation before mutation | Yes |
 | 11 | `src/errors/ups_translation.py` | Map return-specific error codes | If applicable |
 | 12 | `tests/services/test_ups_payload_builder.py` | Test return payload construction | Yes |
 | 13 | `tests/services/test_ups_mcp_client.py` | Test return response normalization | Yes |
@@ -374,30 +387,28 @@ def get_ups_mcp_config() -> MCPServerConfig:
 
 ### Scenario F: New Tool for Agent-Only Interactive Use
 
-**Example:** UPS MCP adds `estimate_duties_and_taxes` for international shipments.
+Interactive-only operations still require a named gateway method and registered
+workflow with shared catalog metadata, policy, safe result projection and tests.
+Use [Scenario A](#scenario-a-new-read-only-interactive-tool) for a read-only
+operation; require preview and explicit confirmation for mutations.
 
-**ShipAgent changes required:**
-
-| # | File | Change | Required? |
-|---|------|--------|:---------:|
-| 1 | `src/orchestrator/agent/system_prompt.py` | Add guidance for when to use the tool | Recommended |
-| 2 | `src/orchestrator/agent/hooks.py` | Add pre-tool validation if needed | Optional |
-
-No UPSMCPClient wrapper needed — the agent calls it directly via `mcp__ups__estimate_duties_and_taxes`.
+For landed cost, reuse the existing `get_landed_cost` workflow and
+`UPSMCPClient.get_landed_cost()` rather than adding a raw carrier call. Prompt
+wording never replaces the deterministic wrapper or privacy boundary.
 
 ---
 
 ### Scenario G: Wrapping an Existing Interactive Tool for Batch Use
 
-**Example:** ShipAgent wants to use `track_package` (currently interactive-only) in batch mode to check delivery status of all shipped orders.
+**Example:** A future batch tracking workflow can reuse the existing `track_package` handler and gateway method. Both already exist; do not re-add them. The following checklist applies when adapting another existing workflow to batch use.
 
 **ShipAgent changes required:**
 
 | # | File | Change | Required? |
 |---|------|--------|:---------:|
-| 1 | `src/services/ups_mcp_client.py` | Add `track_package()` method | Yes |
-| 2 | `src/services/ups_mcp_client.py` | Add `_normalize_tracking_response()` | Yes |
-| 3 | `src/services/ups_mcp_client.py` | Add to retry policy (read-only = 2 retries) | Yes |
+| 1 | `src/services/ups_mcp_client.py` | Reuse `track_package()`; add a wrapper only for an operation not already supported | As needed |
+| 2 | `src/services/ups_mcp_client.py` | Review existing normalized output; add normalization only for a new response shape | As needed |
+| 3 | `src/services/ups_mcp_client.py` | Review read-only classification and bounded retry policy | Yes |
 | 4 | `src/orchestrator/agent/tools/pipeline.py` | Add `batch_track_tool` handler | Yes |
 | 5 | `src/orchestrator/agent/tools/__init__.py` | Register `batch_track` definition | Yes |
 | 6 | `src/orchestrator/agent/system_prompt.py` | Document batch tracking workflow | Yes |
@@ -584,7 +595,11 @@ Business logic catches UPSServiceError
 | Read-only | 2 | 0.2s | `rate_shipment`, `validate_address`, `track_package` |
 | Mutating | 0 | 1.0s | `create_shipment`, `void_shipment` |
 
-**Exception:** `create_shipment` gets ONE retry if the error is a 503 with "no healthy upstream" (UPS infrastructure issue, not a duplicate-shipment risk).
+**No mutation exception:** `create_shipment`, `void_shipment`, pickup mutations
+and document mutations make one carrier attempt. A 503 with "no healthy upstream"
+or a transport failure cannot establish non-acceptance. Reconnection must not
+replay a mutation. Report an uncertain outcome and check carrier status before
+requesting a new operation.
 
 ### Retryable Error Patterns
 
@@ -824,48 +839,44 @@ If a new UPS MCP tool returns documents (customs forms, commercial invoices, etc
 
 ---
 
-## 10. Agent Hooks and Safety Gates
+## 10. Shared Policy and Safety Gates
 
-**File:** `src/orchestrator/agent/hooks.py`
+The removed SDK hook/client modules are not extension points. The current
+boundary is implemented by:
 
-Hooks intercept tool calls before and after execution:
+| File | Responsibility |
+|------|----------------|
+| `src/services/conversation_runtime/tool_catalog.py` | Canonical handler declarations plus mode, side-effect, retry, confirmation and artifact metadata |
+| `src/services/conversation_runtime/policy.py` | `RuntimePolicyEngine` denies raw carrier calls, raw SQL and model-initiated purchase execution |
+| `src/services/conversation_runtime/dispatcher.py` | `LocalToolDispatcher` checks policy and catalog availability, invokes a registered input-validating handler, audits and projects provider-safe results |
+| `src/services/conversation_privacy.py` | Authored text/history boundary; owner-only artifacts never become model history |
+| `src/services/workflow_confirmation.py` | One-shot prepared auxiliary actions bound to immutable payloads and the original gateway |
+| `src/services/conversation_handler.py` | Session/generation ownership, pending actions and upload authority |
 
-### Pre-Tool Hooks (Validation)
+### Adding a Workflow Safely
 
-| Hook | Tool | Purpose |
-|------|------|---------|
-| `validate_shipping_input` | `create_shipment` | Validates input is a dict |
-| `validate_void_shipment` | `void_shipment` | Ensures shipment ID present |
-| `validate_data_query` | `query_data` | Warns on unfiltered queries |
+1. Use closed input schemas and explicit deterministic validation. Add the handler
+   to the canonical definitions, then classify it in `WorkflowToolCatalog`.
+2. Review pre-tool policy. An allowed `PolicyDecision` is permission to reach the
+   handler, not proof of user confirmation. New carrier operations must never
+   bypass the raw-call denial.
+3. For a mutation, prepare an owner-visible preview and bind explicit confirmation
+   to the exact payload and gateway. Consume authority before dispatch; never
+   recreate it from model flags, copied tokens, persisted prose or provider changes.
+4. Uploads must consume the user-selected one-shot attachment grant; model-provided
+   bytes, filenames or substitutions do not create upload authority.
+5. Keep rows, local contacts, credentials, labels, documents and raw carrier data
+   out of provider payloads. Add a closed result projection and safe fixed error
+   text; do not return raw exception strings to the model. Authored chat/current-flow
+   inputs are handled by origin-aware rules, not blanket permission to echo local data.
+6. Use the generation-bound event bridge for owner artifacts. Verify stale or
+   interrupted turns cannot emit into a newer conversation turn.
+7. Test all supported provider protocols, denial-before-effect, consumed/expired
+   confirmations, uncertain outcomes and owner/model privacy separation.
 
-### Mode-Aware Blocking
-
-```python
-# Interactive mode: blocks direct create_shipment, directs to preview_interactive_shipment
-# Batch mode: blocks direct create_shipment, directs to batch_preview/batch_execute
-create_shipping_hook(interactive_shipping=True|False)
-```
-
-### Post-Tool Hooks
-
-- `log_post_tool()` — logs all tool executions
-- `detect_error_response()` — detects error indicators in responses
-
-### Adding Hooks for New Tools
-
-```python
-# In hooks.py
-def validate_new_tool(tool_name: str, tool_input: dict) -> dict | None:
-    """Validate new_tool input before execution."""
-    if not tool_input.get("required_field"):
-        return {"error": "required_field is missing"}
-    return None  # Allow execution
-
-# In create_hook_matchers()
-matchers["mcp__ups__new_tool"] = HookMatcher(
-    pre_tool=validate_new_tool,
-)
-```
+For concrete contracts, see [auxiliary workflow confirmation](runtime/auxiliary-workflow-parity.md)
+and [conversation lifecycle](conversation-lifecycle.md). Raw shipment void remains
+an explicit capability gap; adding a gateway method or prompt does not close it.
 
 ---
 
@@ -907,6 +918,8 @@ Complete matrix of all files involved in UPS integration, organized by when they
 | `src/orchestrator/agent/tools/{module}.py` | Add tool handler |
 | `src/orchestrator/agent/tools/__init__.py` | Register tool definition |
 | `src/orchestrator/agent/system_prompt.py` | Add usage guidance |
+| `src/services/conversation_runtime/tool_catalog.py` | Classify mode, effects, retry and artifacts |
+| `src/services/conversation_runtime/dispatcher.py` | Review/add closed model-result projection |
 
 ### Update If New Error Codes
 
@@ -922,11 +935,12 @@ Complete matrix of all files involved in UPS integration, organized by when they
 | `src/orchestrator/agent/config.py` | Pass to MCP subprocess env |
 | `.env.example` | Document variable |
 
-### Update If Safety Gate Needed
+### Review Safety for Every Workflow
 
 | File | Specific Change |
 |------|----------------|
-| `src/orchestrator/agent/hooks.py` | Add pre-tool validator + hook matcher |
+| `src/services/conversation_runtime/policy.py` | Deny unsafe/model-initiated execution before effects |
+| `src/services/workflow_confirmation.py` | Enforce exact prepared action and explicit one-shot authority for auxiliary mutations |
 
 ### Rarely Update
 
@@ -934,7 +948,7 @@ Complete matrix of all files involved in UPS integration, organized by when they
 |------|------|
 | `src/services/mcp_client.py` | Only for MCP protocol changes |
 | `src/services/gateway_provider.py` | Only if new singleton MCP client needed |
-| `src/orchestrator/agent/client.py` | Only if adding a new MCP server (not tool) |
+| `src/orchestrator/agent/config.py` | Add gateway-owned MCP configuration for a new server, not provider-owned dispatch |
 | `src/services/ups_specs.py` | Only if new OpenAPI spec files needed |
 
 ---
@@ -951,7 +965,7 @@ These are critical implementation details discovered through debugging. They app
 | **Negotiated rates** | Always include `NegotiatedRatesIndicator: ""` and prefer `NegotiatedRateCharges` in responses. | `ups_payload_builder.py`, `ups_mcp_client.py` |
 | **Units are hardcoded** | Weight: LBS. Dimensions: IN. No metric support currently. Shopify weight in grams requires conversion (÷ 453.592). | `ups_payload_builder.py` |
 | **Account number required** | Empty account number causes silent billing failures. Validated in `build_ups_api_payload()`. | `ups_payload_builder.py` |
-| **Mutating tools: no retry** | `create_shipment` must NOT be retried (duplicate shipment risk). Exception: 503 "no healthy upstream". | `ups_mcp_client.py` |
+| **Mutating tools: no retry** | All mutations make one attempt, including on 503 "no healthy upstream". Check status after an uncertain result; no automatic replay. | `ups_mcp_client.py` |
 | **MCP preflight errors** | Error codes like `ELICITATION_UNSUPPORTED` come from the MCP layer, not UPS itself. Map separately. | `ups_translation.py` |
 
 ---
@@ -1005,46 +1019,52 @@ When adding support for a new UPS MCP tool, verify all items:
 
 - [ ] End-to-end test with real UPS test environment (manual)
 - [ ] System prompt updated if tool is user-facing
-- [ ] Hooks added if tool needs safety gates
+- [ ] Catalog mode/side-effect metadata, policy and model-result projection covered
+- [ ] Mutations require trusted explicit confirmation or the bound upload grant
+- [ ] Raw carrier calls denied and uncertain mutations never replayed
+- [ ] Imported/local data remains absent from all serialized provider payloads
 
 ---
 
 ## 14. Potential UPS MCP Expansions
 
-The following tools could be added to the UPS MCP server. For each, the table indicates what ShipAgent changes would be needed:
+These are illustrative expansion ideas, not a current availability matrix; some
+capabilities already have wrappers listed in Section 2. Reuse existing workflows
+where available. Every model-facing extension requires the shared safety boundary,
+regardless of the per-layer changes listed below. No MCP operation is auto-exposed.
 
 ### High Priority
 
 | Tool | Description | Interactive | Batch Client | Payload Builder | Batch Engine | Agent Tool | System Prompt |
 |------|-------------|:-----------:|:------------:|:---------------:|:------------:|:----------:|:-------------:|
-| `create_return_shipment` | Generate return labels | Auto | New method | New function | New mode | New handler | New workflow |
-| `rate_shipment_multi` | Rate multiple services at once | Auto | New method | New function | Replace per-service loop | Update existing | Update guidance |
-| `create_pickup` | Schedule carrier pickup | Auto | New method | New function | — | New handler | New section |
-| `get_proof_of_delivery` | Retrieve POD documents | Auto | Optional | — | — | Optional | Optional |
+| `create_return_shipment` | Generate return labels | Workflow | New method | New function | New mode | New handler | New workflow |
+| `rate_shipment_multi` | Rate multiple services at once | Workflow | New method | New function | Replace per-service loop | Update existing | Update guidance |
+| `create_pickup` | Schedule carrier pickup | Workflow | New method | New function | — | New handler | New section |
+| `get_proof_of_delivery` | Retrieve POD documents | Workflow | Optional | — | — | Optional | Optional |
 
 ### Medium Priority
 
 | Tool | Description | Interactive | Batch Client | Payload Builder | Batch Engine | Agent Tool | System Prompt |
 |------|-------------|:-----------:|:------------:|:---------------:|:------------:|:----------:|:-------------:|
-| `create_international_shipment` | Ship with customs forms | Auto | New method | New function (customs) | New mode | New handler | New workflow |
-| `estimate_duties_taxes` | Landed cost calculator | Auto | Optional | New function | Pre-flight step | Optional | New section |
-| `validate_address_international` | Non-US address validation | Auto | New method | — | Pre-flight step | Optional | Update rules |
-| `get_shipping_documents` | Retrieve customs docs | Auto | Optional | — | Post-execute step | Optional | Optional |
+| `create_international_shipment` | Ship with customs forms | Workflow | New method | New function (customs) | New mode | New handler | New workflow |
+| `estimate_duties_taxes` | Landed cost calculator | Workflow | Optional | New function | Pre-flight step | Optional | New section |
+| `validate_address_international` | Non-US address validation | Workflow | New method | — | Pre-flight step | Optional | Update rules |
+| `get_shipping_documents` | Retrieve customs docs | Workflow | Optional | — | Post-execute step | Optional | Optional |
 
 ### Lower Priority
 
 | Tool | Description | Interactive | Batch Client | Payload Builder | Batch Engine | Agent Tool | System Prompt |
 |------|-------------|:-----------:|:------------:|:---------------:|:------------:|:----------:|:-------------:|
-| `create_freight_shipment` | LTL/freight shipping | Auto | New method | New function | New mode | New handler | New section |
-| `manage_subscription` | Tracking notifications | Auto | — | — | — | — | Optional |
-| `get_accessorials` | List available surcharges | Auto | — | — | — | Optional | Optional |
-| `calculate_density` | Freight density calc | Auto | — | — | — | — | — |
+| `create_freight_shipment` | LTL/freight shipping | Workflow | New method | New function | New mode | New handler | New section |
+| `manage_subscription` | Tracking notifications | Workflow | — | — | — | — | Optional |
+| `get_accessorials` | List available surcharges | Workflow | — | — | — | Optional | Optional |
+| `calculate_density` | Freight density calc | Workflow | — | — | — | — | — |
 
 ### Legend
 
 | Cell Value | Meaning |
 |-----------|---------|
-| Auto | SDK auto-discovers, no code change |
+| Workflow | Explicit handler/catalog registration, gateway, policy/projection review and tests; confirmation required for mutations |
 | New method | Add method to `UPSMCPClient` |
 | New function | Add function to `ups_payload_builder.py` |
 | New mode | Add execution path to `BatchEngine` |

@@ -15,9 +15,10 @@ A rebuild snapshots the selected model, effective default model, and runtime at
 the turn boundary. Source, contact, model/runtime, or mode changes replace the
 agent. Failed/unavailable or superseded starts cannot be reused as a healthy
 agent. A replacement receives authored user/assistant history, never persisted
-owner artifacts or another provider's private continuation. Shared runtimes use
-role messages once; legacy Claude SDK prompt-based resume remains explicit until
-its separate cutover.
+owner artifacts or another provider's private continuation. All supported providers
+receive neutral role messages once through `ConversationRuntimeSession`; the
+Claude Agent SDK prompt-resume path has been removed. See the
+[SDK-free runtime guide](runtime/sdk-free-runtime.md).
 
 ## History budget
 
