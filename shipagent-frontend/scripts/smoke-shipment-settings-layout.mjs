@@ -91,7 +91,26 @@ try {
       for (const animation of document.getAnimations()) {
         if (animation.effect?.getComputedTiming().iterations !== Infinity) animation.finish();
       }
+      // Let focus/scroll and animation changes reach the compositor before capture.
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     });
+  }
+
+  async function checkHeader(name) {
+    const controls = await page.locator('.settings-flyout > div:first-child').evaluate((header) =>
+      [...header.querySelectorAll('h2, button')].map((element) => {
+        const r = element.getBoundingClientRect();
+        return { name: element.getAttribute('aria-label') ?? element.textContent.trim(),
+          top: r.top, bottom: r.bottom, left: r.left, right: r.right,
+          hit: element.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)) };
+      }));
+    assert.equal(controls.length, 2, `${name}: missing settings header controls`);
+    for (const control of controls) {
+      assert.ok(control.top >= 0 && control.bottom <= page.viewportSize().height &&
+        control.left >= 0 && control.right <= page.viewportSize().width && control.hit,
+      `${name}: settings header is not visible/reachable: ${JSON.stringify(control)}`);
+    }
+    return controls;
   }
 
   async function checkBounds(name) {
@@ -110,8 +129,10 @@ try {
       }
       return { name: element.getAttribute('name') ?? element.textContent?.trim(), left: r.left, right: r.right, width: r.width, clippedBy };
     }));
-    report.screens.push({ name, viewport: page.viewportSize(), controls: measurements });
-    if (output) await page.screenshot({ path: path.join(output, `${name}.png`), animations: 'disabled' });
+    const headerBefore = await checkHeader(name);
+    report.screens.push({ name, viewport: page.viewportSize(), controls: measurements, headerBefore });
+    if (output) await page.screenshot({ path: path.join(output, `${name}.png`) });
+    report.screens.at(-1).headerAfter = await checkHeader(name);
     assert.ok(measurements.some((control) => control.name === 'shipperZip' && control.width >= 140),
       `${name}: postal control was not measured at a usable width`);
     for (const control of measurements) {
