@@ -44,11 +44,21 @@ from validated existing caches. Failed resource-bound attempts and the earlier
 postal-field failure are retained separately. See the
 [exact source/artifact hashes, test accounting and residual gates](runtime/sdk-free-release-evidence.md).
 
+The exact candidate now also has a successful **native ARM64 macOS build and
+static package inspection**: a separate 199-test frontend run, all seven native
+production builds, native PyInstaller freeze and app-only Tauri package. The
+task-local Node 24.19.0/npm 11.17.0 retry passed after an installed Node 22
+module-loader failure. That failed attempt and two corrected inspection-helper
+false positives remain recorded. Native artifact/linkage/resource identities
+are separate from Linux; no native runtime pass is inferred from the build.
+
 **Issue #41 remains open.** Actual final ARM64 macOS Tauri app startup, its own
 native sidecar, the real window/local workflows and normal owned-process
 shutdown are still unverified. Cloud Chromium layout and Linux-sidecar evidence
-do not establish those native results. Source-based native qualification is
-being prepared; no complete desktop release, signing/notarization, updater,
+do not establish those native results. The app remains unopened while the
+existing persistent WebKit profile is protected and an isolated test route is
+reviewed; changing HOME alone does not redirect Foundation storage. No complete
+desktop release, signing/notarization, updater,
 Intel qualification, live shipment or offline model inference is claimed.
 The separate dormant authority/store qualification below does not enable hosted
 mutations or complete the connector roadmap. The parent issue #30/spec is unchanged.
