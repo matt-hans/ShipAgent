@@ -1,7 +1,7 @@
 # Dormant invocation acceptance and recovery (issue 66)
 
 This is the bounded acceptance/recovery prerequisite for issues 67 and 51. It
-implements neither a real Execution Grant authority nor hosted handler wiring,
+does not itself implement an Execution Grant authority or hosted handler wiring,
 approval UI, provider exports, shipment execution, deployment, or native desktop
 qualification. Local API, CLI, desktop startup and shipping acquire no Redis,
 PostgreSQL, Auth0 or hosted-grant requirement.
@@ -33,36 +33,23 @@ PostgreSQL, Auth0 or hosted-grant requirement.
   Target failures, unknown lookup and lost acknowledgements never trigger
   redispatch or a new purchase key.
 
-### Authority and gate integration is still disabled
+### Dormant authority and gate integration
 
-`GrantCallbacks` is mandatory and not implemented by a production authority in
-this slice. It accepts an immutable invocation record in `reserve`,
-`consume_on_accept`, `release`, and `hold_for_reconciliation`. The future
-implementation must validate live bindings, commit its required SQL ledger,
-atomically reserve non-reusably, preserve the original reservation fence, and
-make settlement idempotent. Redis lifecycle metadata is not purchase authority.
+Issue 67 provides an explicitly constructed real Redis authority and a single-
+owner callback adapter; see [redis-grant-authority.md](redis-grant-authority.md).
+`GrantCallbacks` remains mandatory. A hidden server-only token in the exact gate
+binding pins its original reservation, so callbacks do not independently reserve
+or opportunistically adopt a later owner. `invoke_bound` returns through the
+accepted handler path only after exact persisted acceptance; pending/unavailable
+results remain ambiguous failures. Nothing is injected into a default app.
 
-`consume_on_accept` is ordinary fenced consumption inside the original expiry;
-it is attempted again on recovery, including a process crash after evidence
-persistence but before settlement. It must recheck expiry and ownership itself.
-After expiry the coordinator only calls `hold_for_reconciliation`; it may still
-return the original accepted job, without renewing authorization. Issue 67 must
-implement privileged expired-acceptance reconciliation/evidence recording.
-
-`release` is privileged evidence-backed reconciliation under the original held
-reservation generation. It must not be implemented as an unchecked alias for an
-ordinary `ExecutionGrantReservation.release()`, which cannot reopen held state.
-Delayed consume, release and hold operations must never downgrade consumed state
-or affect replacement ownership. Callback failures do not prove rollback.
-
-The current `BoundRegistryTool` separately reserves and consumes on a successful
-handler return. **Do not register the coordinator directly as a confirming
-handler:** its pending/unavailable result envelopes do not mean acceptance, and
-its callbacks must not create an independent second reservation. Issue 67/Plan 7
-must reconcile gate ownership and translate outcomes before any handler wiring.
-Only verified accepted outcomes may return through the gate's accepted path;
-positive preaccept evidence and unknown outcomes retain their distinct gate
-semantics.
+Ordinary consumption is lease/expiry-bound. Positive persisted evidence may
+privileged-settle the same current owner within original authorization expiry;
+expired accepted work records hashed SQL evidence without restoring a grant.
+Ordinary release cannot reopen held or dispatch-claimed state. Privileged release
+requires a durable exact-attempt rejection fence and is idempotent; it permits a
+new generation only inside original expiry. Late callbacks cannot affect a new
+owner, and failed writes never prove rollback.
 
 ## Durable evidence and immutable storage
 
@@ -108,20 +95,30 @@ not cryptographic proof. Target acceptance remains true if consuming the grant
 fails. Recovery queries the exact original target and key, never an active
 replacement target or a newly generated key.
 
-### Explicit retry boundary
+### Explicit safe retry boundary
 
-This slice returns positive rejection evidence and invokes the release callback,
-but its rejected invocation remains terminal. **Release does not make this
-coordinator redispatchable.** Repeating it returns the same terminal rejection;
-there is no automatic retry, record deletion, replacement purchase key or expiry
-extension. This conservative restriction is intentional for dormant issue 66.
+`InvocationIdentity.attempt_generation` starts at zero and increases only through
+explicit `InvocationLifecycleCoordinator.reattempt(target, rejected_record,
+arguments, grant_callbacks)`. The method validates the current exact persisted
+rejection proof, snapshots arguments, validates the next candidate with the same
+newly authorized reservation, then performs `begin_reattempt` exact CAS. After
+SENT it validates that owner again before dispatch. Lost reservation/CAS replies
+or interruption hold the candidate and never implicitly resume a queued attempt.
 
-ADR 0003's authorized preaccept retry inside the original expiry remains an
-explicit **issue 67 / issue 51 enablement requirement**. That integration must
-supply a safe fenced attempt-generation protocol, preserving purchase identity,
-job reference and original deadlines while excluding delayed earlier attempts.
-The current target rejection fence covers the original logical invocation. This
-slice does not claim complete Plan 2 retry/desktop/async-status integration.
+Purchase key, logical invocation ID, original job reference, immutable purchase
+fields and retention/authorization deadlines do not change. The initial invoke
+persists `dispatch_deadline_at`, the earlier of original authorization expiry and
+the first call's total budget. Retry keeps this conservative initial window and
+rechecks it after asynchronous callbacks; accepted evidence must precede it.
+Existing serialized dormant records lacking this required deadline fail closed.
+
+The target authenticates generation in envelope, query and proof, durably rejects
+old attempts forever, requires proof-backed sequencing for new generations, and
+keeps one accepted effect per purchase key. A retry never deletes/reset records,
+mints a new key or extends deadlines. Ordinary invoke with a stale identity
+denies; reconcile by original job reference reads the current generation. The
+optional paired `purchase_scope_hash`/`preview_hash` identity fields are immutable
+hashed evidence (required by the real authority), never new public inputs.
 
 ## Bounded operations and interruption
 
@@ -163,5 +160,7 @@ Redis clients; tests cover response loss, reconnect, application restart, abrupt
 kill after acceptance before consumption, cross-process races and delayed sends
 following a rejection fence. Tests also inject failures **after real Redis Lua
 writes complete**, so a lost reply is not confused with a rolled-back write.
-Grant callbacks remain explicit test doubles; these results do not qualify the
-real authority/SQL fencing requirements in issue 67 or close issue 51.
+The issue 66 suites still use explicit callback test doubles. Separate issue 67
+`test_grant_*` suites exercise the real authority and PostgreSQL ledger with
+independent processes. Neither test group enables hosted execution or closes
+issue 51 without its separate evidence review.

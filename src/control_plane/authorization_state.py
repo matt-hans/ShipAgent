@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from src.control_plane.audit.authorization_ledger import AuthorizationMetadata
+from src.control_plane.grant_models import GrantRecord
 from src.control_plane.redis_keys import RedisTtl
 
 
@@ -15,6 +16,7 @@ class AuthorizationState:
     created_at: datetime
     expires_at: datetime
     revision: int = 0
+    grant: GrantRecord | None = None
 
     def __post_init__(self) -> None:
         if type(self.metadata) is not AuthorizationMetadata:
@@ -32,6 +34,21 @@ class AuthorizationState:
             raise ValueError("invalid original authorization lifetime")
         if type(self.revision) is not int or not 0 <= self.revision < 2**31:
             raise ValueError("invalid authorization revision")
+
+        if self.grant is not None:
+            grant = GrantRecord.model_validate_json(self.grant.model_dump_json())
+            if (
+                grant.purchase.account_id != self.metadata.account_id
+                or grant.purchase.provider_connection_id
+                != self.metadata.provider_connection_id
+                or grant.purchase.preview_hash != self.metadata.preview_hash
+                or grant.purchase.scope_hash != self.metadata.purchase_scope_hash
+                or (
+                    grant.lease_expires_at is not None
+                    and grant.lease_expires_at > self.expires_at
+                )
+            ):
+                raise ValueError("grant metadata mismatch")
 
     @classmethod
     def new(
@@ -64,6 +81,11 @@ def _encode(state: AuthorizationState) -> str:
             "created_at": state.created_at.isoformat(),
             "expires_at": state.expires_at.isoformat(),
             "revision": state.revision,
+            **(
+                {"grant": state.grant.model_dump(mode="json")}
+                if state.grant is not None
+                else {}
+            ),
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -74,13 +96,17 @@ def _decode(raw: bytes | str) -> AuthorizationState:
     import json
 
     value = json.loads(raw)
-    if set(value) != {"metadata", "created_at", "expires_at", "revision"}:
+    if set(value) not in (
+        {"metadata", "created_at", "expires_at", "revision"},
+        {"metadata", "created_at", "expires_at", "revision", "grant"},
+    ):
         raise ValueError("invalid authorization state")
     return AuthorizationState(
         metadata=AuthorizationMetadata(**value["metadata"]),
         created_at=datetime.fromisoformat(value["created_at"]),
         expires_at=datetime.fromisoformat(value["expires_at"]),
         revision=value["revision"],
+        grant=GrantRecord.model_validate(value["grant"]) if "grant" in value else None,
     )
 
 
@@ -107,6 +133,9 @@ local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
 return {value, redis.call('PEXPIRETIME', KEYS[1]), now}
 """
 _REPLACE = """
+local t = redis.call('TIME')
+local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+if now >= tonumber(ARGV[4]) then return 0 end
 if redis.call('PTTL', KEYS[1]) <= 0 then return 0 end
 if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
 if redis.call('PEXPIRETIME', KEYS[1]) > tonumber(ARGV[3]) then return 0 end
@@ -194,7 +223,12 @@ class AuthorizationStateStore:
             raise AuthorizationStateError() from None
 
     async def replace_existing(
-        self, kind: str, *, original: AuthorizationState, updated: AuthorizationState
+        self,
+        kind: str,
+        *,
+        original: AuthorizationState,
+        updated: AuthorizationState,
+        not_after: datetime | None = None,
     ) -> bool:
         if (
             original.created_at != updated.created_at
@@ -216,6 +250,11 @@ class AuthorizationStateStore:
                 _encode(original),
                 _encode(updated),
                 _milliseconds(original.expires_at),
+                _milliseconds(
+                    min(not_after, original.expires_at)
+                    if not_after
+                    else original.expires_at
+                ),
             )
         )
 

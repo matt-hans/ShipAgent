@@ -136,6 +136,11 @@ class DurableExecutionTarget(Protocol):
     (datetime deadline_at, canonical input hash), preserve the supplied server
     invocation/idempotency identity, and never retry a dispatch automatically.
     No current production relay or desktop target opts into this protocol.
+    Adapters authenticate attempt_generation in dispatch, lookup and evidence.
+    Durable nonacceptance fences are permanent per generation; a later generation
+    requires positive prior rejection, while idempotent acceptance is unique
+    across every generation of the original purchase key.
+
     """
 
     execution_target_id: str
