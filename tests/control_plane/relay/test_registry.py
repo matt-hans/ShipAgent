@@ -996,9 +996,9 @@ async def test_concurrent_set_active_disconnects_authoritative_replaced_device(
         context = AuthorizationContext(
             account_id="acct-transition",
             provider_connection_id="pc-1",
-            provider_surface="chatgpt",
+            provider_surface="desktop",
             subject="auth0|owner-1",
-            client_id="chatgpt-client",
+            client_id="desktop-client",
             scopes=frozenset({"relay:device:manage"}),
             auth_time=datetime.now(UTC),
         )
