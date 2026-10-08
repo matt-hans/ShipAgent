@@ -25,20 +25,52 @@ startup-probe and packaging coupling are removed. Issues #36–#40 are integrate
 See [runtime setup and migration](runtime/sdk-free-runtime.md) and the
 [coverage migration](runtime/sdk-removal-coverage.md).
 
-[Draft PR #63](https://github.com/matt-hans/ShipAgent/pull/63) records issue #41's
-current verification and package repairs. Runtime/artifact-tested source is
-`15422b911a3018ed1625d20dc341598651bc715e`: a genuine clean SDK-free installation,
-384 shared/adapter acceptance tests, 4,986 full-backend passes (29 accounted
-skips), 160 frontend tests, all seven production targets, and actual read-only
-Linux frozen-sidecar startup/CSV+Excel uploads/owned-process shutdown. See the
-[exact evidence, artifact hashes and reproduction notes](runtime/sdk-free-release-evidence.md).
+The current cloud/Linux-qualified executable candidate is
+`04a4bbaee3b00ed57115367477a7578216c06a21`, including the packaging repairs in
+[PR #63](https://github.com/matt-hans/ShipAgent/pull/63), postal-field layout fix in
+[PR #72](https://github.com/matt-hans/ShipAgent/pull/72), and active SDK-free guide
+reconciliation in [PR #73](https://github.com/matt-hans/ShipAgent/pull/73).
+Fresh final-candidate evidence includes **752 shared/protocol/API/CLI/package
+checks with no skips**, backend lint, **199 frontend tests** with typecheck/lint,
+all **seven production targets**, actual read-only Linux frozen-sidecar
+CSV/Excel import/export/write-back and clean owned-process shutdown, **six
+settled cloud layouts**, and all **14 shipment-settings regression states**.
+The SDK is absent from fresh dependencies and the actual frozen module inventory.
 
-**Issue #41 remains open.** Native macOS Tauri startup and actual rendered
-shell/chat/settings fallback-font layout are mandatory unverified gates. Linux
-sidecar evidence, source tests and successful builds do not establish those
-results. No desktop release, cloud connector completion, live shipment or
-offline model inference is implied. The separate dormant authority/store
-qualification is recorded below; hosted mutation enablement remains blocked.
+The prior **5,251-pass full backend** and 119-test integration smoke remain
+explicitly equivalent-unchanged-backend-input evidence, not fresh full-suite
+runs on this candidate. Final dependency directories were fresh but populated
+from validated existing caches. Failed resource-bound attempts and the earlier
+postal-field failure are retained separately. See the
+[exact source/artifact hashes, test accounting and residual gates](runtime/sdk-free-release-evidence.md).
+
+The exact candidate now also has a successful **native ARM64 macOS build and
+static package inspection**: a separate 199-test frontend run, all seven native
+production builds, native PyInstaller freeze and app-only Tauri package. The
+task-local Node 24.19.0/npm 11.17.0 retry passed after an installed Node 22
+module-loader failure. That failed attempt and two corrected inspection-helper
+false positives remain recorded. Native artifact/linkage/resource identities
+are separate from Linux; no native runtime pass is inferred from the build.
+
+The **actual app-bundled native sidecar** has since passed a separate 8.093-second
+local-only gate: CLI, two dynamic-port starts, served-asset hashes, CSV/XLSX
+imports/write-back, source escape denials, JSON export, database/settings
+persistence, MCP EOF and intended standalone SIGTERM. Both listeners and all
+observed owned children retired without fallback; packaged bytes stayed unchanged.
+A reviewed QA app differs only in bundle identity/wrapper metadata, preserving
+the production artifact and all resources. Neither Tauri app has been opened.
+
+**Issue #41 remains open.** Actual final ARM64 macOS Tauri app startup, its
+app-owned sidecar lifecycle, the real window/local workflows and normal owned-process
+shutdown are still unverified. Cloud Chromium layout and Linux-sidecar evidence
+do not establish those native results. The existing persistent WebKit profile
+is protected through a reviewed QA identity because HOME alone does not redirect
+Foundation storage. Native GUI control is currently blocked by the Accessibility
+environment prerequisite, not a product test failure. No complete
+desktop release, signing/notarization, updater,
+Intel qualification, live shipment or offline model inference is claimed.
+The separate dormant authority/store qualification below does not enable hosted
+mutations or complete the connector roadmap. The parent issue #30/spec is unchanged.
 
 ## Dormant grant and recovery prerequisite qualification
 
@@ -146,8 +178,8 @@ Earlier statements about commit `a4a4bd1` are superseded by this baseline.
 
 | Capability | Evidence-backed state | Remaining work |
 | --- | --- | --- |
-| Desktop shipping application | API/CLI workflows and Linux frozen sidecar verified at `15422b9`; configured Tauri targets remain macOS | Native wrapper startup and rendered layout under #41 |
-| Shared conversation runtime | Anthropic/OpenAI/Gemini share orchestration, policy, history, lifecycle and deterministic tools; SDK cutover merged in PR #62 | Finish the explicit native/visual release gates |
+| Desktop shipping application | Cloud/Linux candidate `04a4bba` qualified, including actual local workflows and six rendered cloud layouts; configured Tauri targets remain macOS | Actual final ARM64 app/window/local-workflow/owned-shutdown gate under #41 |
+| Shared conversation runtime | Anthropic/OpenAI/Gemini share orchestration, policy, history, lifecycle and deterministic tools; SDK cutover merged in PR #62 | Finish the explicit native desktop release gate |
 | OpenAI and Gemini adapters | Implemented on main; runtime milestone merged in PR #25 | Maintain common behavior and adapter contract coverage |
 | Anthropic adapter | Direct Messages translation, shared default selection and SDK removal implemented and tested | Preserve adapter conformance as providers evolve |
 | Provider contracts and control plane | Foundation and Auth0 authorization merged, with reconciliation integrated | Finish production workflow wiring and separate connector foundations |
