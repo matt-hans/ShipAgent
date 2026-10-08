@@ -95,6 +95,8 @@ try {
   }
 
   async function checkBounds(name) {
+    // Reopening inserts the accordion body asynchronously; never measure an empty header.
+    await section.locator('[name="shipperZip"]').waitFor({ state: 'visible' });
     await settled();
     const measurements = await section.locator('input, select, button, label, p, .text-destructive').evaluateAll((elements) => elements.map((element) => {
       const r = element.getBoundingClientRect();
@@ -110,6 +112,8 @@ try {
     }));
     report.screens.push({ name, viewport: page.viewportSize(), controls: measurements });
     if (output) await page.screenshot({ path: path.join(output, `${name}.png`), animations: 'disabled' });
+    assert.ok(measurements.some((control) => control.name === 'shipperZip' && control.width >= 140),
+      `${name}: postal control was not measured at a usable width`);
     for (const control of measurements) {
       assert.ok(control.left >= 0 && control.right <= page.viewportSize().width && control.clippedBy.length === 0,
         `${name}: clipped control ${JSON.stringify(control)}`);
