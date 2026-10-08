@@ -102,10 +102,26 @@ class RuntimePolicyEngine:
         ),
     }
 
-    def __init__(self, interactive_shipping: bool) -> None:
+    def __init__(
+        self,
+        interactive_shipping: bool,
+        *,
+        allowed_tool_names: frozenset[str] | None = None,
+    ) -> None:
         self.interactive_shipping = interactive_shipping
+        self.allowed_tool_names = (
+            None if allowed_tool_names is None else frozenset(allowed_tool_names)
+        )
 
     async def check_pre_tool(self, call: ProviderToolCall) -> PolicyDecision:
+        if (
+            self.allowed_tool_names is not None
+            and call.tool_name not in self.allowed_tool_names
+        ):
+            return _deny(
+                PolicyDenialCode.TOOL_NOT_ADMITTED,
+                "This tool is not admitted by the execution profile.",
+            )
         raw_sql_decision = self._deny_raw_sql(call)
         if raw_sql_decision is not None:
             return raw_sql_decision
@@ -154,7 +170,9 @@ class RuntimePolicyEngine:
             "filter_spec instead.",
         )
 
-    def _validate_filter_structure(self, call: ProviderToolCall) -> PolicyDecision | None:
+    def _validate_filter_structure(
+        self, call: ProviderToolCall
+    ) -> PolicyDecision | None:
         if call.tool_name == "resolve_filter_intent":
             intent = call.parsed_input.get("intent")
             if not isinstance(intent, dict):
