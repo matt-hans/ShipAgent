@@ -595,3 +595,47 @@ async def test_old_activity_guard_cannot_interrupt_a_later_owned_run(
     finally:
         second_provider.release.set()
         await service.close()
+
+
+async def test_truncated_tool_batch_does_not_launch_another_provider_turn(tmp_path):
+    import asyncio
+
+    from tests.services.conversation_acceptance import text_turn, tool_call_turn
+
+    provider = FakeProviderClient(
+        script=[
+            tool_call_turn("incomplete-tool", "get_schema", {})[:-1],
+            text_turn("UNEXPECTED_SECOND_MODEL_TURN"),
+        ]
+    )
+    store = AgentRunStore(
+        tmp_path / "runs.sqlite3",
+        account_id="account-a",
+        execution_target_id="target-a",
+        create=True,
+    )
+    service = AgentRunService(store=store, provider_factory=lambda _: provider)
+    await service.start()
+    try:
+        accepted = service.submit(
+            connection_id="connection-a",
+            arguments={
+                "task": "Plan",
+                "mode": "source_free",
+                "request_key": "truncated-batch",
+            },
+        )
+        async with asyncio.timeout(2):
+            while True:
+                result = service.read(
+                    connection_id="connection-a",
+                    run_reference=accepted["run_reference"],
+                )
+                if result["state"] not in {"queued", "running"}:
+                    break
+                await asyncio.sleep(0.01)
+        assert result["state"] == "failed"
+        assert result["outcome"] == "interrupted"
+        assert len(provider.requests) == 1
+    finally:
+        await service.close()

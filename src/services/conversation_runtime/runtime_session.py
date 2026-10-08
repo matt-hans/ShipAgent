@@ -329,6 +329,12 @@ class ConversationRuntimeSession:
                 if self._is_generation_interrupted(generation):
                     return
 
+                # Individual text/tool blocks do not prove the provider finished
+                # the batch. An interrupted stream cannot dispatch partial calls
+                # or spend another model turn to manufacture a completion.
+                if not stream_completed:
+                    return
+
                 # Nothing runs until every call in the batch is vetted: a call
                 # without an ID cannot be paired with its result, a repeated ID
                 # with a different request is ambiguous, and a repeat of a call

@@ -31,7 +31,9 @@ private persistence and a separate provider instance per conversation. No local
 API database, ambient source, settings or audit sink participates. Empty tool
 admission plus runtime policy blocks invented shipping and setup calls before
 dispatch. A positive completed-stream marker, bound to the accepted turn, is
-required for success; partial text is not evidence of completion.
+required for success; partial text is not evidence of completion. Every model
+stream must finish positively before its tool batch can dispatch or another
+model turn can begin.
 
 ## Acceptance and recovery invariants
 
