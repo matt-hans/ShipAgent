@@ -183,6 +183,7 @@ try {
     rejectSave = true;
     await save.press('Enter');
     await section.getByText('Failed to save shipper address.', { exact: true }).waitFor({ state: 'visible' });
+    await section.getByText('Failed to save shipper address.', { exact: true }).scrollIntoViewIfNeeded();
     await checkBounds(`validation-${viewport.width}`);
     await section.getByText('Failed to save shipper address.', { exact: true }).evaluate((message) => {
       message.textContent = 'The synthetic shipping address could not be validated. Review the postal code and municipality, then retry saving the complete address.';
