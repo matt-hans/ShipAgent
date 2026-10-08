@@ -168,5 +168,7 @@ following a rejection fence. Tests also inject failures **after real Redis Lua
 writes complete**, so a lost reply is not confused with a rolled-back write.
 The issue 66 suites still use explicit callback test doubles. Separate issue 67
 `test_grant_*` suites exercise the real authority and PostgreSQL ledger with
-independent processes. Neither test group enables hosted execution or closes
-issue 51 without its separate evidence review.
+independent processes. The separate
+[issue 51 qualification record](execution-grant-qualification.md) maps the
+combined evidence to its four prerequisites. Neither test group nor that bounded
+qualification enables hosted execution.

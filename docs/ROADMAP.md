@@ -1,6 +1,6 @@
 # ShipAgent development roadmap
 
-Updated 2026-10-07. This is the entry point for current development priorities,
+Updated 2026-10-08. This is the entry point for current development priorities,
 implemented milestones, and the specifications that govern remaining work.
 ShipAgent owns conversation orchestration and deterministic shipping workflows;
 model providers and client surfaces connect through adapters.
@@ -37,7 +37,38 @@ Linux frozen-sidecar startup/CSV+Excel uploads/owned-process shutdown. See the
 shell/chat/settings fallback-font layout are mandatory unverified gates. Linux
 sidecar evidence, source tests and successful builds do not establish those
 results. No desktop release, cloud connector completion, live shipment or
-offline model inference is implied. Issue #51 remains independently deferred.
+offline model inference is implied. The separate dormant authority/store
+qualification is recorded below; hosted mutation enablement remains blocked.
+
+## Dormant grant and recovery prerequisite qualification
+
+The following connector-foundation slices are merged and remain opt-in:
+
+- Issue #64, [PR #68](https://github.com/matt-hans/ShipAgent/pull/68), main
+  `e305d3a5959a235549fe678d4d8c3a4efc2a4322`: immutable Redis lifetimes,
+  hashed PostgreSQL authorization ledger, retention and account cleanup
+- Issue #66, [PR #69](https://github.com/matt-hans/ShipAgent/pull/69), main
+  `6982504853e63c0385dd41446f1ddf4ec808a442`: bounded durable invocation
+  acceptance/recovery, original Job References and proof-backed retry seam
+- Issue #67, [PR #70](https://github.com/matt-hans/ShipAgent/pull/70), main
+  `1616278768ec6d1774801979494d06287279782f`: fenced real Redis authority,
+  commit-before-enable PostgreSQL evidence and single-owner lifecycle bridge
+
+[Issue #51's qualification record](control-plane/execution-grant-qualification.md)
+maps all four prerequisites to their design and real-store tests. On pinned main
+`1616278`, the focused acceptance/default-wiring smoke passed **119 tests, zero
+skips**, and Docker smoke/artifact CI succeeded. Earlier candidate `9a5021d` has
+the identical Git tree: its full guarded backend run passed **5,251 tests with
+29 accounted skips**, and independent review ran **450 tests with 12 reserved-ID
+skips**. Those candidate runs are not relabeled as fresh-main full-suite runs.
+
+This qualifies the dormant prerequisite scope only. Production authenticated
+post-gesture approval and live-preview/exact-target adapters, provider-safe
+job/status projection, coordinated revocation/retention startup, Redis
+persistence/failure policy and broader Plans 2/4/6/7 integration remain required.
+The restart proof retains Redis; Redis AOF/power-loss/failover is unverified.
+No non-status handler/export is enabled, and local API/CLI/desktop/shipping still
+needs no Redis, PostgreSQL, Auth0 or hosted grant service.
 
 ## Historical baseline evidence
 
@@ -95,16 +126,16 @@ databases, isolated data directories and worktree-local locked environments:
   there is no automatic parent-death cleanup. DMG, code signing and other
   machines are not verified. Auto-update remains off until a real Ed25519 key is
   provisioned; `capabilities/default.json` still grants `updater:default`.
-- Deferred: issue #51 (hosted grant authority/store) stays deferred and blocks
-  enabling the dormant public mutation tools.
+- At this historical baseline, issue #51 was deferred. Its current bounded
+  prerequisite qualification is recorded above; public mutations remain dormant.
 
 Issue #33 (neutral policy decisions) is implemented on branch
 `codex/issue33-neutral-policy` from baseline `ccaf0e9` (PR #54 merged); see its
 draft PR for the head and evidence. Shared runtime policy gates and the
 dispatcher use `PolicyDecision`/`PolicyDenialCode`; the Claude hook envelope is
 now a projection localized in `hooks.py`. Scripted-provider acceptance
-scenarios live in `tests/services/conversation_acceptance.py`. Issue #51 stays
-deferred; no dormant hosted tools were enabled. Evidence 2026-10-03: full
+scenarios live in `tests/services/conversation_acceptance.py`. Issue #51 was
+deferred at this milestone; no dormant hosted tools were enabled. Evidence 2026-10-03: full
 `pytest` `4416 passed, 33 skipped` at implementation round 1 (isolated data dir,
 keyring off); after round 2 the full suite was not re-run, and the focused run
 is `273 passed`; `ruff check` clean. Claude SDK removal remains issue #40.
@@ -120,7 +151,8 @@ Earlier statements about commit `a4a4bd1` are superseded by this baseline.
 | OpenAI and Gemini adapters | Implemented on main; runtime milestone merged in PR #25 | Maintain common behavior and adapter contract coverage |
 | Anthropic adapter | Direct Messages translation, shared default selection and SDK removal implemented and tested | Preserve adapter conformance as providers evolve |
 | Provider contracts and control plane | Foundation and Auth0 authorization merged, with reconciliation integrated | Finish production workflow wiring and separate connector foundations |
-| Relay walking skeleton | Plan 1 merged through PR #28 with subsequent hardening | Durable lifecycle/recovery, compatibility, full workflow dispatch |
+| Relay walking skeleton | Plan 1 merged through PR #28; dormant durable lifecycle/recovery and real authority merged in PRs #69/#70 | Production adapter integration, compatibility and full workflow dispatch |
+| Grant persistence and authority | Optional Redis/PostgreSQL prerequisites merged in PRs #68–#70; bounded #51 qualification recorded | Authenticated approval/preview/target integration, safe status projection and production failure-policy qualification |
 | Hosted provider shipping | Descriptors and plans exist; production target handler map currently wires only status | Implement prepare/approve/execute, continuation and artifact delivery |
 | Provider interfaces | Connector designs and widget plans exist | Complete reviewed approval profiles and real integration; descriptors alone are not readiness |
 
@@ -187,9 +219,10 @@ agent frameworks do not own core orchestration.
 ## Milestone 3: Complete relay and connector foundations
 
 Follow the [connector execution guide](superpowers/plans/2026-06-30-openai-claude-connector-parallel-execution-guide.md).
-Plan 1's walking skeleton exists; the remaining plans are not a claim of
-completed implementation. Their existing primitives must be checked before
-each slice starts.
+Plan 1's walking skeleton exists. Plans 4 and 2 now have the dormant persistence
+and recovery slices above, and issue #67 supplies their real-authority bridge.
+These are bounded prerequisites, not complete production Plans 2/4/7 or a
+completed connector. Check the existing primitives before each remaining slice.
 
 | Order | Existing plans | Required result |
 | --- | --- | --- |
