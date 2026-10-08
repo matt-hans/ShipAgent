@@ -565,9 +565,11 @@ class LocalToolDispatcher:
         catalog: Any,
         policy: RuntimePolicyEngine,
         emit_frontend: Callable[[str, dict[str, Any]], None],
+        decision_audit_enabled: bool = True,
     ) -> None:
         self.catalog = catalog
         self.policy = policy
+        self._decision_audit_enabled = decision_audit_enabled
         # Dispatcher records provider-neutral tool calls; handlers own domain events.
         self.emit_frontend = emit_frontend
 
@@ -581,7 +583,7 @@ class LocalToolDispatcher:
     async def execute(self, call: ProviderToolCall) -> ProviderToolResult:
         decision = await self.policy.check_pre_tool(call)
         if not decision.allowed:
-            _audit(
+            self._audit(
                 "policy.tool_denied",
                 tool_name=call.tool_name,
                 payload={"denial_code": decision.code.value if decision.code else None},
@@ -699,7 +701,7 @@ class LocalToolDispatcher:
         )
 
     def emit_tool_call(self, call: ProviderToolCall) -> None:
-        _audit(
+        self._audit(
             "agent.tool_call.observed",
             tool_name=call.tool_name,
             payload={"tool_input_type": type(call.parsed_input).__name__},
@@ -712,6 +714,12 @@ class LocalToolDispatcher:
             payload["tool_use_id"] = call.call_id
 
         self.emit_frontend("tool_call", payload)
+
+    def _audit(
+        self, event_name: str, *, tool_name: str, payload: dict[str, Any]
+    ) -> None:
+        if self._decision_audit_enabled:
+            _audit(event_name, tool_name=tool_name, payload=payload)
 
 
 def _audit(event_name: str, *, tool_name: str, payload: dict[str, Any]) -> None:

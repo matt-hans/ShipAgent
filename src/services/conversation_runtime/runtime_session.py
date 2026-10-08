@@ -67,8 +67,14 @@ class ConversationRuntimeSession:
         session_id: str | None,
         max_turns: int = 50,
         prior_conversation: list[dict[str, Any]] | None = None,
+        allowed_tool_names: frozenset[str] | None = None,
+        decision_audit_enabled: bool = True,
     ) -> None:
         self._provider = provider
+        self._allowed_tool_names = (
+            None if allowed_tool_names is None else frozenset(allowed_tool_names)
+        )
+        self._decision_audit_enabled = decision_audit_enabled
         self._system_prompt = system_prompt or ""
         self._interactive_shipping = interactive_shipping
         self._max_turns = max_turns
@@ -162,16 +168,29 @@ class ConversationRuntimeSession:
             content=[ProviderContentPart(text=provider_authored_text(user_input))],
         )
         messages: list[ProviderInputMessage] = [*self._history, user_message]
-        catalog = WorkflowToolCatalog.for_mode(
-            interactive_shipping=self._interactive_shipping,
-            bridge=bridge,
-        )
+        if self._allowed_tool_names == frozenset():
+            catalog = WorkflowToolCatalog([])
+        else:
+            catalog = WorkflowToolCatalog.for_mode(
+                interactive_shipping=self._interactive_shipping,
+                bridge=bridge,
+            )
+            if self._allowed_tool_names is not None:
+                catalog = WorkflowToolCatalog(
+                    [
+                        tool
+                        for tool in catalog.tools
+                        if tool.name in self._allowed_tool_names
+                    ]
+                )
         dispatcher = LocalToolDispatcher(
             catalog=catalog,
             policy=RuntimePolicyEngine(
                 interactive_shipping=self._interactive_shipping,
+                allowed_tool_names=self._allowed_tool_names,
             ),
             emit_frontend=capture_frontend_event,
+            decision_audit_enabled=self._decision_audit_enabled,
         )
         system_instructions = [ProviderSystemInstruction(content=self._system_prompt)]
         if self._history_omitted:
