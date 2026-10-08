@@ -2,7 +2,11 @@
 
 **How to Add New Data Sources, Platforms, and Agent Tools**
 
-This document provides a complete architectural reference for extending ShipAgent with new integrations. It identifies every file involved in each extension path and describes exactly what must be created or modified.
+This guide describes extension points for ShipAgent integrations. The conversation
+runtime guidance below uses the shared SDK-free runtime. Older React frontend
+examples are historical; new UI work must use `shipagent-frontend/` and its
+`AGENTS.md`, not the removed `frontend/` paths. Verify each integration contract
+against current source before implementing an extension.
 
 ---
 
@@ -26,8 +30,8 @@ ShipAgent uses a layered architecture with three distinct extension paths:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                      Frontend (React)                       │
-│   types/api.ts → hooks → components → icons/CSS             │
+│                   Frontend (Angular / Nx)                   │
+│   shipagent-frontend/ shell, remotes and shared libraries    │
 ├─────────────────────────────────────────────────────────────┤
 │                    FastAPI REST Routes                       │
 │   routes/data_sources.py    routes/platforms.py              │
@@ -42,13 +46,13 @@ ShipAgent uses a layered architecture with three distinct extension paths:
 │   adapters/csv_adapter.py    clients/shopify.py              │
 ├─────────────────────────────────────────────────────────────┤
 │                  Orchestration Agent                         │
-│   tools/__init__.py → system_prompt.py → client.py           │
+│   canonical tools → shared catalog / policy / dispatcher    │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ### Extension Path A — Data Source Adapters
 
-For local/file-based data (CSV, Excel, databases, EDI, Google Sheets, etc.). Data is imported into DuckDB and queried via SQL. The agent generates WHERE clauses against the imported schema.
+For local/file-based data (CSV, Excel, databases, EDI, Google Sheets, etc.). Data is imported into DuckDB and queried via SQL. The model proposes closed filter intent/specifications from provider-safe schema metadata; deterministic services resolve and compile SQL locally. Raw model-supplied SQL is denied.
 
 ### Extension Path B — Platform Integrations
 
@@ -62,7 +66,7 @@ For new deterministic capabilities the agent can invoke during conversation (add
 
 ## 2. Adding a New Data Source Adapter
 
-Data source adapters handle importing external data into DuckDB so the agent can query it via SQL. The current adapters are CSV, Excel, Database (PostgreSQL/MySQL), and EDI.
+Data source adapters import external data into DuckDB for deterministic queries behind the workflow boundary. Models receive safe schema/aggregate information, never imported row samples. The current adapters are CSV, Excel, Database (PostgreSQL/MySQL), and EDI.
 
 ### 2.1 The Base Class Contract
 
@@ -553,6 +557,10 @@ To replicate this for a new platform, add an agent tool (see [Section 4](#4-addi
 ## 4. Adding a New Agent Tool
 
 Agent tools are deterministic functions the LLM can invoke during conversation. They are defined as dicts with a name, description, input schema, and async handler.
+`WorkflowToolCatalog` adds mode, side-effect, retry and artifact metadata;
+`RuntimePolicyEngine` and `LocalToolDispatcher` own the shared dispatch boundary.
+The Anthropic, OpenAI and Gemini adapters translate protocol only. See the
+[SDK-free runtime guide](runtime/sdk-free-runtime.md).
 
 ### 4.1 Tool Definition Structure
 
@@ -592,8 +600,8 @@ async def my_tool_handler(
         result = await some_service.do_work(param)
         return _ok({"status": "success", "data": result})
     except Exception as e:
-        logger.error("my_tool failed: %s", e)
-        return _err(f"Operation failed: {e}")
+        logger.warning("my_tool failed: exception_type=%s", type(e).__name__)
+        return _err("Operation failed.")
 ```
 
 **Response format** (MCP-compatible):
@@ -612,7 +620,11 @@ async def my_tool_handler(
 |---|------|--------|
 | 1 | `src/orchestrator/agent/tools/{module}.py` | Add handler function (choose: `data.py`, `pipeline.py`, `interactive.py`, or new file) |
 | 2 | `src/orchestrator/agent/tools/__init__.py` | Import handler + add definition to `get_all_tool_definitions()` |
-| 3 | `src/orchestrator/agent/system_prompt.py` | Add tool usage guidance to agent's system prompt (if non-obvious) |
+| 3 | `src/services/conversation_runtime/tool_catalog.py` | Classify mode, side effects, confirmation, retry and artifact events; missing effect metadata fails closed |
+| 4 | `src/services/conversation_runtime/policy.py` | Review denial-before-effect rules; model arguments cannot grant mutation authority |
+| 5 | `src/services/conversation_runtime/dispatcher.py` | Review/add a closed provider-safe result projection |
+| 6 | `src/orchestrator/agent/system_prompt.py` | Add usage guidance after deterministic safety is covered |
+| 7 | Workflow service and confirmation boundary | For mutations, prepare an exact payload and require explicit user authority before dispatch |
 
 ### 4.4 Tool Module Organization
 
@@ -623,90 +635,35 @@ async def my_tool_handler(
 | `interactive.py` | Single-shipment creation | `preview_interactive_shipment` |
 | `core.py` | Shared utilities only (not tools) | `_ok()`, `_err()`, `EventEmitterBridge`, `_get_ups_client()` |
 
-### 4.5 Step-by-Step Example: Rate Comparison Tool
+### 4.5 Example: Reuse the Rate-Shopping Workflow
+
+Before adding `compare_rates`, check the existing `rate_shipment` workflow in
+`src/orchestrator/agent/tools/ups.py`. Its registered schema supports
+`requestoption="Shop"` and delegates to `UPSMCPClient.get_rate()`.
+
+The deterministic gateway contract is:
 
 ```python
-# 1. Add handler to src/orchestrator/agent/tools/data.py
-
-async def compare_rates_tool(
-    args: dict[str, Any],
-    bridge: EventEmitterBridge | None = None,
-) -> dict[str, Any]:
-    """Compare shipping rates across multiple UPS services for a destination.
-
-    Args:
-        args: Dict with ship_to_zip, weight_lbs, and optional services list.
-        bridge: Optional event emitter for SSE.
-
-    Returns:
-        Rate comparison table sorted by cost.
-    """
-    zip_code = args.get("ship_to_zip")
-    weight = args.get("weight_lbs", 1.0)
-    services = args.get("services")  # Optional: subset of service codes
-
-    if not zip_code:
-        return _err("ship_to_zip is required")
-
-    try:
-        ups = await _get_ups_client()
-        # Rate against multiple services
-        rates = []
-        for code in (services or ["03", "02", "01", "12", "13"]):
-            rate = await ups.get_rate(ship_to_zip=zip_code, weight=weight, service_code=code)
-            rates.append({"service_code": code, "cost_cents": rate["cost_cents"]})
-
-        rates.sort(key=lambda r: r["cost_cents"])
-        return _ok({"rates": rates, "cheapest": rates[0], "destination_zip": zip_code})
-    except Exception as e:
-        logger.error("compare_rates_tool failed: %s", e)
-        return _err(f"Rate comparison failed: {e}")
+# Inside an async service; rate_payload is a locally constructed UPS RateRequest.
+ups = await _get_ups_client()
+rates = await ups.get_rate(request_body=rate_payload, requestoption="Shop")
+# Shop normalization exposes ratedShipments to deterministic business logic.
 ```
 
-```python
-# 2. Register in src/orchestrator/agent/tools/__init__.py
+This service result is not a model-result contract. The shared dispatcher
+projects approved rate fields and removes raw carrier/local data before a
+provider sees the result. Use owner-only artifacts for detailed local output.
+Do not pass `ship_to_zip`, `weight` or `service_code` directly to `get_rate()`;
+it accepts a constructed `request_body` and a rating mode.
 
-from src.orchestrator.agent.tools.data import compare_rates_tool
-
-# Inside get_all_tool_definitions():
-definitions.append({
-    "name": "compare_rates",
-    "description": "Compare shipping rates across multiple UPS services for a given destination ZIP and weight. Returns rates sorted by cost.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "ship_to_zip": {
-                "type": "string",
-                "description": "Destination ZIP code",
-            },
-            "weight_lbs": {
-                "type": "number",
-                "description": "Package weight in pounds (default 1.0)",
-                "default": 1.0,
-            },
-            "services": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Optional list of service codes to compare (default: all)",
-            },
-        },
-        "required": ["ship_to_zip"],
-    },
-    "handler": _bind_bridge(compare_rates_tool, bridge),
-})
-```
-
-```python
-# 3. Update system prompt in src/orchestrator/agent/system_prompt.py (if needed)
-# Add to tool_usage_section:
-tool_usage_section += """
-- Use `compare_rates` when the user asks to compare shipping costs across services.
-"""
-```
+If a new comparison workflow is still needed, complete all the registrations
+in Section 4.3, including catalog metadata and a closed result projection.
+Add tests against the actual serialized Anthropic, OpenAI and Gemini requests,
+not just a handler unit test or a prompt change.
 
 ### 4.6 Bridge Binding
 
-If a tool needs to emit real-time events to the frontend (progress updates, preview cards, etc.), it accepts a `bridge` parameter and uses `_bind_bridge()`:
+If a tool needs to emit real-time events to the frontend (progress updates, preview cards, etc.), it accepts a `bridge` parameter and uses `_bind_bridge()`. Use the runtime-supplied generation-bound bridge; do not cache a bridge globally or emit stale-turn events into a replacement session. Owner artifacts stay separate from provider history:
 
 ```python
 # Handler accepts bridge
@@ -726,26 +683,26 @@ If a tool does NOT need event emission, bind it directly without the bridge wrap
 
 ### 4.7 Mode-Aware Tools
 
-Tools can be restricted to specific modes:
+`get_all_tool_definitions(interactive_shipping=...)` owns the canonical mode
+filter. `WorkflowToolCatalog.for_mode()` wraps those definitions and classifies
+mode and effects. Update both when introducing a new workflow; do not replace
+the existing interactive allowlist with a three-tool example or assume batch
+mode bypasses safety. Auxiliary workflows are available in both modes where
+registered, while `preview_interactive_shipment` is interactive-only.
 
-```python
-# In get_all_tool_definitions():
-if interactive_shipping:
-    # Only include these tools in interactive mode
-    interactive_allowed = {"get_job_status", "get_platform_status", "preview_interactive_shipment"}
-    return [d for d in definitions if d["name"] in interactive_allowed]
-else:
-    # Batch mode gets all tools
-    return definitions
-```
+`batch_execute` and `schedule_pickup` model calls are denied even if declared in
+the catalog. Execution requires the trusted user confirmation path. A catalog
+confirmation flag by itself is not an authorization check.
 
 ### 4.8 Design Rules
 
-- **Always async.** Required by Claude Agent SDK.
+- **Always async.** Required by the shared runtime handler and MCP gateway contracts.
 - **Always return `_ok()` or `_err()`.** Never raise exceptions from handlers.
 - **Validate inputs first.** Check required params before doing work.
-- **Log errors to logger.** Frontend sees the `_err()` message; backend sees the stack trace.
+- **Keep errors safe.** Log exception types/redacted diagnostics and return a fixed safe error. The dispatcher projects model errors; never echo credentials or raw carrier/row data.
 - **Keep tool descriptions precise.** The LLM uses the description to decide when to call the tool.
+- **Keep local data local.** Provider-safe schemas/results are closed and origin-aware. Authored chat or allowed current-flow inputs do not permit revealing imported rows, local contacts, labels, credentials or raw carrier results.
+- **Enforce authority in workflows.** Require preview/explicit confirmation for mutations and the bound user upload grant for document bytes. Never replay uncertain mutations, including after a 503 or reconnect.
 
 ---
 
@@ -939,7 +896,12 @@ MODIFY:
   [ ] src/orchestrator/agent/tools/{module}.py            — handler function
   [ ] src/orchestrator/agent/tools/__init__.py            — import + definition
   [ ] src/orchestrator/agent/system_prompt.py             — usage guidance (if needed)
-  [ ] tests/orchestrator/agent/tools/test_{module}.py     — tests
+  [ ] src/services/conversation_runtime/tool_catalog.py  — mode/effect metadata
+  [ ] src/services/conversation_runtime/policy.py        — safety review
+  [ ] src/services/conversation_runtime/dispatcher.py    — closed model projection
+  [ ] tests/orchestrator/agent/tools/test_{module}.py     — handler tests
+  [ ] tests/services/conversation_runtime/               — catalog/policy/projection tests
+  [ ] tests/services/test_workflow_confirmation.py       — mutation authority (if needed)
 ```
 
 ---
@@ -990,12 +952,13 @@ Adding new carriers requires a different extension path — creating a new MCP s
 **Carrier expansion pattern:**
 
 1. Create or find an MCP server for the carrier (like `ups-mcp`)
-2. Add it as a stdio MCP server in the agent configuration (`client.py`)
-3. Create a `{Carrier}MCPClient` wrapper for batch execution (like `UPSMCPClient`)
+2. Add gateway-owned stdio configuration in `src/orchestrator/agent/config.py` and lifecycle ownership through `src/services/gateway_provider.py`
+3. Create a `{Carrier}MCPClient` deterministic wrapper for interactive and batch workflows (like `UPSMCPClient`); do not give adapters raw carrier access
 4. Update `BatchEngine` to dispatch to the correct carrier client
 5. Update `UPSPayloadBuilder` → `PayloadBuilder` to support carrier-specific payloads
 6. Add carrier service codes to the system prompt
-7. Update agent tools to accept carrier selection
+7. Add/update canonical workflow tools, catalog metadata, policy, provider-safe result projections and tests
+8. Require explicit prepared-payload confirmation for carrier mutations; one attempt only, with status reconciliation after an uncertain outcome
 
 ### 9.4 Agent Tool Expansions
 
