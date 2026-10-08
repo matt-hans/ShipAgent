@@ -105,6 +105,7 @@ class GrantLedger:
             or identity.provider_connection_id != context.provider_connection_id
             or identity.purchase_scope_hash is None
             or identity.preview_hash is None
+            or identity.execution_target_fingerprint_hash is None
         ):
             raise ValueError("authorization evidence unavailable")
         async with self.active_owner(context) as session:
@@ -120,9 +121,9 @@ class GrantLedger:
                     ControlPlaneAuthorizationLedgerEvent.idempotency_key_hash
                     == hashlib.sha256(identity.idempotency_key.encode()).hexdigest(),
                     ControlPlaneAuthorizationLedgerEvent.execution_target_fingerprint_hash
-                    == hashlib.sha256(
-                        identity.execution_target_id.encode()
-                    ).hexdigest(),
+                    == identity.execution_target_fingerprint_hash.removeprefix(
+                        "sha256:"
+                    ),
                     ControlPlaneAuthorizationLedgerEvent.purchase_scope_hash
                     == identity.purchase_scope_hash.removeprefix("sha256:"),
                     ControlPlaneAuthorizationLedgerEvent.preview_hash

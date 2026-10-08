@@ -28,7 +28,7 @@ from src.control_plane.execution_grants import (
     ExecutionGrantDenial as Denial,
 )
 from src.control_plane.grant_models import ApprovedPurchase, GrantRecord
-from src.control_plane.relay.lifecycle import _Budget
+from src.control_plane.relay.lifecycle import _Budget, build_processing_envelope
 from src.control_plane.relay.lifecycle_store import (
     InvocationLifecycleStore,
     JobReferenceStore,
@@ -136,9 +136,7 @@ class RedisExecutionGrantAuthority:
             authorized_amount_minor=int(Decimal(purchase.amount) * 100),
             currency=purchase.currency_code,
             approving_subject_hash=subject_hash,
-            execution_target_fingerprint_hash=hashlib.sha256(
-                purchase.execution_target_id.encode()
-            ).hexdigest(),
+            execution_target_fingerprint_hash=purchase.execution_target_fingerprint_hash,
             idempotency_key_hash=hashlib.sha256(
                 grant.idempotency_key.encode()
             ).hexdigest(),
@@ -152,7 +150,10 @@ class RedisExecutionGrantAuthority:
         )
         # Even a delayed CREATE after account cleanup is inert and TTL-bound.
         await self.ledger.record(metadata, "requested", context=context)
-        await self.state.create("approval_request", replace(pending, grant=None))
+        if not await self.state.create(
+            "approval_request", replace(pending, grant=None)
+        ):
+            raise ExecutionGrantError(Denial.GRANT_UNAVAILABLE)
         if not await self.state.create("execution_grant", pending):
             raise ExecutionGrantError(Denial.GRANT_UNAVAILABLE)
         approved = replace(
@@ -188,7 +189,7 @@ class RedisExecutionGrantAuthority:
             != int(Decimal(grant.purchase.amount) * 100)
             or record.metadata.currency != grant.purchase.currency_code
             or record.metadata.execution_target_fingerprint_hash
-            != hashlib.sha256(grant.purchase.execution_target_id.encode()).hexdigest()
+            != grant.purchase.execution_target_fingerprint_hash
         ):
             raise ExecutionGrantError(Denial.GRANT_INVALID)
         return record
@@ -333,7 +334,9 @@ class RedisExecutionGrantAuthority:
             or result.get("job_ref") != record.job_ref
         ):
             raise ExecutionGrantError(Denial.RECONCILIATION_PENDING)
-        return result
+        return build_processing_envelope(
+            record.job_ref, coordinator.timeouts.poll_after_ms
+        )
 
     async def recovery_callbacks(self, *, context, job_ref):
         """Read-only recovery capability; it can never authorize a dispatch."""
@@ -406,6 +409,8 @@ class RedisGrantReservation:
             attempt_generation=grant.attempt_generation,
             purchase_scope_hash="sha256:" + self.original.metadata.purchase_scope_hash,
             preview_hash="sha256:" + self.original.metadata.preview_hash,
+            execution_target_fingerprint_hash="sha256:"
+            + grant.purchase.execution_target_fingerprint_hash,
         )
 
     def callbacks(self):

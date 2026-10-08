@@ -10,15 +10,18 @@ interfaces; this module does not implement production approval/authentication.
 ## Required inputs and stored data
 
 A `LiveApprovedPreview` adapter resolves the exact account/connection/target and
-returns `ApprovedPurchase`: canonical preview reference, tool pair, policy, exact
+returns `ApprovedPurchase`: the authenticated target fingerprint hash (distinct
+from its stable target ID), canonical preview reference, tool pair, policy, exact
 amount/currency, preview hash and target argument hash. Full preview detail,
 shipping rows, carrier data, labels, tokens and URLs stay outside this record.
-Every field must match during reserve, including a lower amount. The adapter
+Every field must match during reserve, including a lower amount or same-ID
+target key/fingerprint replacement. The fingerprint field itself is not proof of
+authentication. The adapter
 must fetch/validate current immutable data and authenticate target provenance.
 
 The internal post-gesture `issue_approved` API generates a fresh Approval Request
 ID and random server purchase key. It cannot accept an old ID/key to restore
-lost state. The caller is responsible for an explicit authenticated gesture;
+lost state. A colliding Approval Request NX fails before any grant creation. The caller is responsible for an explicit authenticated gesture;
 there is no public route to this dormant API. SQL validates live account subject,
 Provider Connection ownership, client/surface and active status.
 
@@ -107,7 +110,7 @@ then retry safely denies without extending either deadline.
 `recovery_callbacks(context, job_ref)` pins the existing scoped lifecycle identity
 and can never reserve or dispatch. It uses the original exact target for status.
 Accepted work is recoverable after grant expiry; an evidence-only SQL lookup
-matches account, connection, Approval Request, key/target/scope/preview hashes and
+matches account, connection, Approval Request, key/target-fingerprint/scope/preview hashes and
 records only permitted consumed evidence. Consumption evidence is idempotent
 across recovery processes under the existing account lock. This SQL path never
 returns a key, creates a grant, extends TTL or authorizes a second effect.

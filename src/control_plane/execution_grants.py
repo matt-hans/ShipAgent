@@ -192,5 +192,6 @@ class ExecutionGrantAuthority(Protocol):
         clean it up only with fenced proof of no dispatch/acceptance, otherwise
         reconcile or expire to denial. Never suppress cancellation and return
         dispatchable ownership. Missing state cannot be rebuilt from an approved
-        request or the SQL ledger. Redis/ledger implementation is separate work.
+        request or the SQL ledger. The shared Redis/ledger implementation is dormant
+        in ``redis_grant_authority.py``; production wiring remains separate.
         """

@@ -377,3 +377,41 @@ async def test_bound_bridge_unknown_result_never_returns_as_accepted(
         "execution_grant", approval, account_id=context.account_id
     )
     assert current.grant.status == "held"
+
+
+async def test_bound_bridge_normalizes_acceptance_after_evidence_write_reply_is_lost(
+    real_redis, postgres_db, monkeypatch
+):
+    authority, context, preview, approval = await setup_authority(
+        real_redis, postgres_db
+    )
+    reservation = await reserve(authority, context, preview, approval)
+    target = SyntheticTarget(reservation.identity)
+    lifecycle = coordinator(real_redis)
+    write_evidence = lifecycle.invocations.record_evidence
+
+    async def lost_evidence_reply(*args, **kwargs):
+        await write_evidence(*args, **kwargs)
+        raise ConnectionError("PRIVATE_EVIDENCE_REPLY_CANARY")
+
+    monkeypatch.setattr(lifecycle.invocations, "record_evidence", lost_evidence_reply)
+    result = await authority.invoke_bound(
+        context=context,
+        approval_request_id=approval,
+        binding=reservation.binding,
+        target=target,
+        arguments={},
+        coordinator=lifecycle,
+    )
+    record = await authority.lifecycle.get(
+        reservation.identity.relay_invocation_id,
+        account_id=context.account_id,
+        provider_connection_id=context.provider_connection_id,
+    )
+    assert record.evidence.outcome == "accepted"
+    assert result == {
+        "status": "processing",
+        "job_ref": record.job_ref,
+        "poll_after_ms": 2000,
+    }
+    assert len(target.effects) == 1

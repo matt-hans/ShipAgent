@@ -21,6 +21,7 @@ def purchase(data, **changes):
         "account_id": data.account_id,
         "provider_connection_id": data.provider_connection_id,
         "execution_target_id": "relay:relay_device_" + "a" * 32,
+        "execution_target_fingerprint_hash": "f" * 64,
         "preview_id": "sa_preview_" + "b" * 32,
         "tool_name": "execute_shipments",
         "prepare_tool": "prepare_shipments",
@@ -462,3 +463,102 @@ async def test_binding_repr_excludes_private_owner_and_purchase_key(
     reservation = await reserve(authority, context, preview, approval)
     assert reservation.binding.reservation_token not in repr(reservation.binding)
     assert reservation.binding.idempotency_key not in repr(reservation.binding)
+
+
+async def test_fresh_id_collision_with_old_request_cannot_remint_missing_grant(
+    real_redis, postgres_db, monkeypatch
+):
+    from src.control_plane import redis_grant_authority
+
+    authority, context, preview, approval = await setup_authority(
+        real_redis, postgres_db
+    )
+    grant_key = RedisKey.execution_grant(approval)
+    request_key = RedisKey.approval_request(approval)
+    original_request = await real_redis.get(request_key)
+    original_expiry = await real_redis.pexpiretime(request_key)
+    await real_redis.delete(grant_key)
+    original_hex = redis_grant_authority.secrets.token_hex
+    monkeypatch.setattr(
+        redis_grant_authority.secrets,
+        "token_hex",
+        lambda size: approval.removeprefix("sa_approval_request_")
+        if size == 16
+        else original_hex(size),
+    )
+    with pytest.raises(ExecutionGrantError):
+        await authority.issue_approved(
+            context=context,
+            purchase=preview.value,
+            approving_subject_hash=hashlib.sha256(context.subject.encode()).hexdigest(),
+        )
+    assert not await real_redis.exists(grant_key)
+    assert await real_redis.get(request_key) == original_request
+    assert await real_redis.pexpiretime(request_key) == original_expiry
+
+
+async def test_corrupt_approved_dispatch_claim_is_denied_not_normalized(
+    real_redis, postgres_db
+):
+    import json
+
+    authority, context, preview, approval = await setup_authority(
+        real_redis, postgres_db
+    )
+    key = RedisKey.execution_grant(approval)
+    raw = json.loads(await real_redis.get(key))
+    raw["grant"]["dispatch_claimed"] = True
+    await real_redis.set(
+        key,
+        json.dumps(raw, sort_keys=True, separators=(",", ":")),
+        xx=True,
+        keepttl=True,
+    )
+    with pytest.raises(ExecutionGrantError) as error:
+        await reserve(authority, context, preview, approval)
+    assert error.value.denial == "execution_grant_unavailable"
+    assert json.loads(await real_redis.get(key))["grant"]["status"] == "approved"
+
+
+async def test_live_target_fingerprint_replacement_under_same_target_id_denies(
+    real_redis, postgres_db
+):
+    from src.control_plane.grant_models import ApprovedPurchase
+
+    assert "execution_target_fingerprint_hash" in ApprovedPurchase.model_fields
+    authority, context, preview, approval = await setup_authority(
+        real_redis, postgres_db
+    )
+    original_target = preview.value.execution_target_id
+    preview.value = preview.value.model_copy(
+        update={"execution_target_fingerprint_hash": "e" * 64}
+    )
+    assert preview.value.execution_target_id == original_target
+    with pytest.raises(ExecutionGrantError) as error:
+        await reserve(authority, context, preview, approval)
+    assert error.value.denial == "preview_changed"
+
+
+async def test_authority_ledger_and_lifecycle_bind_actual_target_fingerprint(
+    real_redis, postgres_db
+):
+    from src.control_plane.audit.models import ControlPlaneAuthorizationLedgerEvent
+    from src.control_plane.grant_models import ApprovedPurchase
+
+    assert "execution_target_fingerprint_hash" in ApprovedPurchase.model_fields
+    authority, context, preview, approval = await setup_authority(
+        real_redis, postgres_db
+    )
+    reservation = await reserve(authority, context, preview, approval)
+    expected = preview.value.execution_target_fingerprint_hash
+    assert (
+        reservation.identity.execution_target_fingerprint_hash == "sha256:" + expected
+    )
+    rows = (
+        await postgres_db.scalars(select(ControlPlaneAuthorizationLedgerEvent))
+    ).all()
+    assert all(row.execution_target_fingerprint_hash == expected for row in rows)
+    assert (
+        expected
+        != hashlib.sha256(preview.value.execution_target_id.encode()).hexdigest()
+    )

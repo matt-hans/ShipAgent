@@ -335,6 +335,9 @@ class InvocationIdentity(RelayProtocolModel):
     tool_name: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
     arguments_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     idempotency_key: str = Field(pattern=r"^[A-Za-z0-9_-]{16,128}$", repr=False)
+    execution_target_fingerprint_hash: str | None = Field(
+        default=None, pattern=r"^sha256:[0-9a-f]{64}$"
+    )
     authorization_expires_at: datetime
     purchase_scope_hash: str | None = Field(
         default=None, pattern=r"^sha256:[0-9a-f]{64}$", strict=True

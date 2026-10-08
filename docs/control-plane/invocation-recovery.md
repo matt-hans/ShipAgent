@@ -117,8 +117,9 @@ old attempts forever, requires proof-backed sequencing for new generations, and
 keeps one accepted effect per purchase key. A retry never deletes/reset records,
 mints a new key or extends deadlines. Ordinary invoke with a stale identity
 denies; reconcile by original job reference reads the current generation. The
-optional paired `purchase_scope_hash`/`preview_hash` identity fields are immutable
-hashed evidence (required by the real authority), never new public inputs.
+optional paired `purchase_scope_hash`/`preview_hash` and target-fingerprint identity
+fields are immutable hashed evidence (all required by the real authority), never
+new public inputs. A target ID alone is not a key/fingerprint binding.
 
 ## Bounded operations and interruption
 

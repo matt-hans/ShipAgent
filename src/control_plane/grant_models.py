@@ -26,6 +26,7 @@ class ApprovedPurchase(BaseModel):
     account_id: str
     provider_connection_id: str
     execution_target_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$")
+    execution_target_fingerprint_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     preview_id: str = Field(pattern=shipagent_id_pattern(ShipAgentIdFamily.PREVIEW))
     tool_name: str = Field(pattern=r"^execute_[a-z0-9_]{1,55}$")
     prepare_tool: str = Field(pattern=r"^prepare_[a-z0-9_]{1,55}$")
@@ -73,7 +74,11 @@ class GrantRecord(BaseModel):
     @model_validator(mode="after")
     def validate_owner(self):
         if self.status in {"pending", "approved"}:
-            if self.owner_token is not None or self.lease_expires_at is not None:
+            if (
+                self.owner_token is not None
+                or self.lease_expires_at is not None
+                or self.dispatch_claimed
+            ):
                 raise ValueError("unreserved grant cannot carry an owner")
         elif self.status in {"reserved", "held", "consumed"}:
             if (
