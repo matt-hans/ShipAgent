@@ -34,12 +34,18 @@ OWNER = AuthorizationContext(
 
 
 @asynccontextmanager
-async def synthetic_mcp(store, provider_factory, *, context=OWNER, controls_now=None):
+async def synthetic_mcp(
+    store, provider_factory, *, context=OWNER, controls_now=None, connection_epoch=None
+):
     from src.registry.tools.agent_runs import AGENT_RUN_TOOLS
     from src.services.agent_runs.execution_target import AgentRunExecutionTarget
     from src.services.agent_runs.service import AgentRunService
 
-    service = AgentRunService(store=store, provider_factory=provider_factory)
+    service = AgentRunService(
+        store=store,
+        provider_factory=provider_factory,
+        connection_epoch=connection_epoch,
+    )
     target = AgentRunExecutionTarget(service)
     mcp = build_server(
         tool_handlers=build_execution_target_tool_handlers(
@@ -117,6 +123,7 @@ async def test_real_mcp_submit_runs_canonical_agent_and_completed_result_survive
         tools = {tool.name: tool for tool in await client.list_tools()}
         assert set(tools) == {
             "submit_shipagent_task",
+            "continue_shipagent_task",
             "read_shipagent_run",
             "cancel_shipagent_run",
         }

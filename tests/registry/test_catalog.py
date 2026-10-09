@@ -10,6 +10,7 @@ from src.registry.tools.schema import object_schema
 
 EXPECTED_PUBLIC = {
     "submit_shipagent_task",
+    "continue_shipagent_task",
     "read_shipagent_run",
     "cancel_shipagent_run",
     "get_shipagent_status",
@@ -45,7 +46,12 @@ def test_public_tools_are_tenant_safe_and_provider_exportable():
         assert tool.hosted_readiness == (
             "not_ready"
             if tool.name
-            in {"submit_shipagent_task", "read_shipagent_run", "cancel_shipagent_run"}
+            in {
+                "submit_shipagent_task",
+                "continue_shipagent_task",
+                "read_shipagent_run",
+                "cancel_shipagent_run",
+            }
             else "ready"
         )
         assert tool.provider_export_enabled is (tool.name in DEFAULT_EXPORTED_PUBLIC)
