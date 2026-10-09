@@ -10,7 +10,12 @@ from collections.abc import Callable
 from contextlib import aclosing, suppress
 
 from src.services.agent_runs.clarification import ClarificationProvider
-from src.services.agent_runs.coordinator import CoordinatorBorrow, CoordinatorLease
+from src.services.agent_runs.coordinator import (
+    CoordinatorBorrow,
+    CoordinatorLease,
+    SourceStorageBinding,
+    SourceWorkKind,
+)
 from src.services.agent_runs.store import AgentRun, AgentRunStore
 from src.services.agent_session_manager import AgentSession, AgentSessionManager
 from src.services.conversation_handler import process_message
@@ -106,7 +111,30 @@ class AgentRunService:
             self._lease.close()
             self._lease = None
 
-    def borrow_coordinator(self) -> tuple[CoordinatorBorrow, int]:
+    def source_storage_binding(self) -> SourceStorageBinding:
+        """Read current exact storage readiness without opening a transaction."""
+        self._require_worker()
+        if self._lease is None:
+            raise RuntimeError("Agent run coordinator is unavailable.")
+        binding = self._lease.source_storage_binding()
+        self._require_source_binding(binding)
+        return binding
+
+    def _require_source_binding(self, binding: SourceStorageBinding) -> None:
+        if (
+            type(binding) is not SourceStorageBinding
+            or binding.generation != self._generation
+            or binding.account_id != self.store.account_id
+            or binding.execution_target_id != self.store.execution_target_id
+        ):
+            raise RuntimeError("Agent run coordinator is unavailable.")
+
+    def borrow_coordinator(
+        self,
+        *,
+        source_work: SourceWorkKind | None = None,
+        source_binding: SourceStorageBinding | None = None,
+    ) -> tuple[CoordinatorBorrow, int]:
         """Pin available ownership without database, authority or model work.
 
         The consumer must validate the captured generation in its own bounded
@@ -115,7 +143,12 @@ class AgentRunService:
         self._require_worker()
         if self._lease is None:
             raise RuntimeError("Agent run coordinator is unavailable.")
-        return self._lease.borrow(), self._generation
+        if source_binding is None:
+            return self._lease.borrow(source_work=source_work), self._generation
+        self._require_source_binding(source_binding)
+        return self._lease.borrow(
+            source_work=source_work, source_binding=source_binding
+        ), self._generation
 
     def _own_task(self, task: asyncio.Task) -> asyncio.Task:
         self._owned_tasks.add(task)
