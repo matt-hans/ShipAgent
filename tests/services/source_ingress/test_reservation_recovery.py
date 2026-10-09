@@ -127,9 +127,15 @@ async def restart_owner(agent, metadata, authority):
     await agent.close()
     await agent.start()
     reopened = ReservationStore(
-        metadata.path, account_id="account-a", execution_target_id="target-a"
+        metadata.path,
+        account_id="account-a",
+        execution_target_id="target-a",
+        coordinator_path=agent.store.path.with_suffix(".coordinator.lock"),
     )
-    reopened.open(deadline=time.monotonic() + 2)
+    from src.services.source_ingress.source_store_owner import SourceStoreOwner
+
+    maintenance = SourceStoreOwner(agent, reopened)
+    maintenance.open()
     return coordinator(agent, reopened, authority), reopened
 
 
@@ -145,22 +151,16 @@ async def test_unknown_commit_retains_identity_and_requires_explicit_owner_recov
         providers,
     ):
         owner = coordinator(agent, metadata, authority)
-        connect = sqlite3.connect
+        original_commit = ReservationTransaction._commit_database
 
-        class UnknownCommit(sqlite3.Connection):
-            def commit(self):
-                if effect == "after":
-                    super().commit()
-                raise sqlite3.OperationalError("PRIVATE_COMMIT_CANARY")
-
-        def connecting(*args, **kwargs):
-            if str(metadata.path) in str(args[0]):
-                kwargs["factory"] = UnknownCommit
-            return connect(*args, **kwargs)
+        def commit(tx):
+            if effect == "after":
+                original_commit(tx)
+            raise sqlite3.OperationalError("PRIVATE_COMMIT_CANARY")
 
         try:
             with monkeypatch.context() as fault:
-                fault.setattr(sqlite3, "connect", connecting)
+                fault.setattr(ReservationTransaction, "_commit_database", commit)
                 with pytest.raises(ReservationError) as caught:
                     owner.reserve(**arguments(accepted), request=request())
             assert caught.value.code == "reservation_unavailable"
@@ -209,33 +209,26 @@ async def test_precommit_rollback_failure_retains_original_scope_until_recovery(
 ):
     async with waiting_target(tmp_path) as (agent, metadata, authority, accepted, _):
         owner = coordinator(agent, metadata, authority)
-        connect = sqlite3.connect
         captured = []
+        blocked = [True]
+        original_rollback = ReservationTransaction._rollback_database
 
-        class FailedRollback(sqlite3.Connection):
-            fail_cleanup = True
-
-            def rollback(self):
-                if self.fail_cleanup:
-                    if effect == "after":
-                        super().rollback()
-                    raise OSError("PRIVATE_ROLLBACK_CANARY")
-                return super().rollback()
-
-        def connecting(*args, **kwargs):
-            if str(metadata.path) in str(args[0]):
-                kwargs["factory"] = FailedRollback
-                db = connect(*args, **kwargs)
-                captured.append(db)
-                return db
-            return connect(*args, **kwargs)
+        def rollback(tx):
+            if tx._db not in captured:
+                captured.append(tx._db)
+                tx._rollback_database = lambda: rollback(tx)
+            if blocked[0]:
+                if effect == "after":
+                    original_rollback(tx)
+                raise OSError("PRIVATE_ROLLBACK_CANARY")
+            return original_rollback(tx)
 
         def denied_commit(transaction, **kwargs):
             raise ReservationError("reservation_unavailable")
 
         try:
             with monkeypatch.context() as fault:
-                fault.setattr(sqlite3, "connect", connecting)
+                fault.setattr(ReservationTransaction, "_rollback_database", rollback)
                 fault.setattr(ReservationTransaction, "commit", denied_commit)
                 with pytest.raises(ReservationError) as caught:
                     owner.reserve(**arguments(accepted), request=request())
@@ -255,8 +248,7 @@ async def test_precommit_rollback_failure_retains_original_scope_until_recovery(
                 replacement.reserve(**arguments(accepted), request=request())
             replacement.close()
         finally:
-            for db in captured:
-                db.fail_cleanup = False
+            blocked[0] = False
             owner.close()
         with pytest.raises(RuntimeError):
             agent.borrow_coordinator()
@@ -394,8 +386,12 @@ async def test_fresh_process_death_recovers_only_durable_metadata_identity(
         tmp_path / "sources.sqlite3",
         account_id="account-a",
         execution_target_id="target-a",
+        coordinator_path=runs.path.with_suffix(".coordinator.lock"),
     )
-    metadata.open(deadline=time.monotonic() + 2)
+    from src.services.source_ingress.source_store_owner import SourceStoreOwner
+
+    maintenance = SourceStoreOwner(agent, metadata)
+    maintenance.open()
     authority = SQLiteSourceAuthority(tmp_path / "authority.sqlite3", create=False)
     owner = coordinator(agent, metadata, authority)
     try:

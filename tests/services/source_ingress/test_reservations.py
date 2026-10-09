@@ -68,9 +68,13 @@ async def waiting_target(tmp_path, *, following_turn=None):
         tmp_path / "sources.sqlite3",
         account_id="account-a",
         execution_target_id="target-a",
+        coordinator_path=runs.path.with_suffix(".coordinator.lock"),
         create=True,
     )
-    metadata.open(deadline=time.monotonic() + 2)
+    from src.services.source_ingress.source_store_owner import SourceStoreOwner
+
+    maintenance = SourceStoreOwner(agent, metadata)
+    maintenance.open()
     authority = SQLiteSourceAuthority(tmp_path / "authority.sqlite3")
     try:
         accepted = agent.submit(
@@ -90,7 +94,7 @@ async def waiting_target(tmp_path, *, following_turn=None):
                 await asyncio.sleep(0.001)
         yield agent, metadata, authority, accepted, providers
     finally:
-        metadata.close()
+        maintenance.close()
         await agent.close()
 
 
@@ -482,7 +486,9 @@ async def test_authority_wait_consumes_common_budget_and_retires_partial_scope(
     tmp_path, monkeypatch
 ):
     async with waiting_target(tmp_path) as (agent, metadata, authority, accepted, _):
-        monkeypatch.setattr(implementation(), "_OPERATION_SECONDS", 0.08)
+        monkeypatch.setattr(
+            "src.services.source_ingress.source_fences._OPERATION_SECONDS", 0.08
+        )
         owner = coordinator(agent, metadata, authority)
         with closing(sqlite3.connect(authority.path, isolation_level=None)) as blocker:
             blocker.execute("BEGIN IMMEDIATE")
