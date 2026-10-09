@@ -477,7 +477,9 @@ async def test_hosted_mcp_handler_translates_request_control_deny():
             tool_name: str,
             rate_limit_class: str,
             arguments_hash: str,
+            call_repetition: str = "guarded",
         ) -> None:
+            assert call_repetition == "poll"
             raise RequestControlError(
                 code="provider_loop_detected",
                 message="identical call loop detected",

@@ -17,6 +17,12 @@ from src.control_plane.auth import (
 )
 from src.control_plane.auth.context import AuthorizationContext
 from src.control_plane.auth.jwt_verifier import TokenPrincipal
+from src.control_plane.auth.oauth_contract import (
+    METADATA_PATH,
+    ROOT_METADATA_PATH,
+    canonical_mcp_resource,
+    resource_metadata_url,
+)
 from src.control_plane.config import ControlPlaneSettings
 from src.control_plane.db import build_session_factory
 from src.control_plane.execution_targets import ExecutionTarget, RelayExecutionTarget
@@ -45,12 +51,15 @@ def _build_redis_client(redis_url: str):
 def _metadata_url(settings: ControlPlaneSettings) -> str:
     if settings.public_base_url is None:
         raise RuntimeError("SHIPAGENT_PUBLIC_BASE_URL is required for OAuth metadata")
-    return f"{str(settings.public_base_url).rstrip('/')}/.well-known/oauth-protected-resource"
+    return resource_metadata_url(str(settings.public_base_url))
 
 
-def _bearer_challenge(settings: ControlPlaneSettings) -> dict[str, str]:
+def _bearer_challenge(
+    settings: ControlPlaneSettings, *, mcp_request: bool = False
+) -> dict[str, str]:
+    scope = ', scope="shipagent.status"' if mcp_request else ""
     return {
-        "WWW-Authenticate": (f'Bearer resource_metadata="{_metadata_url(settings)}"')
+        "WWW-Authenticate": f'Bearer resource_metadata="{_metadata_url(settings)}"{scope}'
     }
 
 
@@ -107,6 +116,11 @@ def create_control_plane_app(
         raise RuntimeError("SHIPAGENT_AUTH0_AUDIENCE must be set")
     if not settings.public_base_url:
         raise RuntimeError("SHIPAGENT_PUBLIC_BASE_URL must be set")
+    metadata_resource = canonical_mcp_resource(str(settings.public_base_url))
+    if settings.auth0_audience != metadata_resource:
+        raise ValueError(
+            "SHIPAGENT_AUTH0_AUDIENCE must equal the canonical MCP resource"
+        )
 
     redis_client = redis_client or _build_redis_client(settings.redis_url)
     db_session_factory = db_session_factory or _build_db_sessionmaker(
@@ -124,8 +138,11 @@ def create_control_plane_app(
     mcp = build_server(
         tool_handlers=build_execution_target_tool_handlers(execution_target),
         request_controls=RequestControls(redis_client=redis_client),
+        oauth_resource_metadata_url=_metadata_url(settings),
     )
-    mcp_app = mcp.http_app(path="/", transport="streamable-http")
+    # Workflow continuity is target-owned. Do not retain transport sessions or
+    # server-initiated streams that could outlive per-request authorization.
+    mcp_app = mcp.http_app(path="/", transport="streamable-http", stateless_http=True)
     retention_worker = ControlPlaneRetentionWorker(
         redis_client=redis_client,
         session_factory=db_session_factory,
@@ -145,7 +162,6 @@ def create_control_plane_app(
     app = FastAPI(lifespan=lifespan)
     app.state.retention_worker = retention_worker
     verifier = _build_verifier(settings.auth0_issuer, settings.auth0_audience)
-    metadata_resource = str(settings.public_base_url).rstrip("/")
     app.include_router(build_metadata_router(metadata_resource, settings.auth0_issuer))
     app.include_router(build_relay_router(relay_registry, relay_invocation_broker))
     app.mount("/mcp", mcp_app)
@@ -161,15 +177,22 @@ def create_control_plane_app(
 
     @app.middleware("http")
     async def _require_authorization(request: Request, call_next):
-        if request.url.path.startswith("/.well-known/oauth-protected-resource"):
+        if request.method == "GET" and request.url.path in {
+            METADATA_PATH,
+            ROOT_METADATA_PATH,
+        }:
             return await call_next(request)
+
+        challenge = _bearer_challenge(
+            settings, mcp_request=request.url.path in {"/mcp", "/mcp/"}
+        )
 
         authorization = request.headers.get("authorization", "")
         if not authorization.lower().startswith("bearer "):
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Unauthorized"},
-                headers=_bearer_challenge(settings),
+                headers=challenge,
             )
 
         token = authorization.split(" ", 1)[1].strip()
@@ -177,7 +200,7 @@ def create_control_plane_app(
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Unauthorized"},
-                headers=_bearer_challenge(settings),
+                headers=challenge,
             )
 
         try:
@@ -193,9 +216,18 @@ def create_control_plane_app(
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Unauthorized"},
-                headers=_bearer_challenge(settings),
+                headers=challenge,
             )
         try:
+            if request.url.path in {"/mcp", "/mcp/"} and request.method in {
+                "GET",
+                "DELETE",
+            }:
+                return JSONResponse(
+                    status_code=405,
+                    content={"detail": "MCP transport sessions are not supported"},
+                    headers={"Allow": "POST"},
+                )
             return await call_next(request)
         finally:
             clear_authorization_context(context_token)
