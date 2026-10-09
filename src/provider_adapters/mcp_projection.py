@@ -24,6 +24,10 @@ EXTERNAL_BEHAVIOR_TERMS = (
 
 
 def has_external_reach(tool: ToolContract) -> bool:
+    # Planning/cancellation can reach the configured model provider even when
+    # no shipping or commerce vocabulary appears in the closed facade contract.
+    if tool.side_effect == SideEffectClass.agent_work:
+        return True
     if any(
         scope.startswith(EXTERNAL_AUTH_SCOPE_PREFIXES) for scope in tool.auth_scopes
     ):

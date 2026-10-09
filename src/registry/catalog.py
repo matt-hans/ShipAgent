@@ -1,10 +1,11 @@
 from src.registry.models import RegistrySchema, ToolContract, ToolVisibility
+from src.registry.tools.agent_runs import AGENT_RUN_TOOLS
 from src.registry.tools.private import PRIVATE_TOOLS
 from src.registry.tools.public import PUBLIC_TOOLS
 
 
 def all_tools() -> list[ToolContract]:
-    return [*PUBLIC_TOOLS, *PRIVATE_TOOLS]
+    return [*PUBLIC_TOOLS, *AGENT_RUN_TOOLS, *PRIVATE_TOOLS]
 
 
 def public_tools() -> list[ToolContract]:

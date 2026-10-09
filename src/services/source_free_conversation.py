@@ -38,6 +38,7 @@ class SourceFreeConversationConfig:
 
     provider: ModelProviderClient = field(repr=False)
     max_turns: int = 3
+    is_run_active: Callable[[], bool] = field(default=lambda: True, repr=False)
 
     def __post_init__(self) -> None:
         if type(self.max_turns) is not int or not 1 <= self.max_turns <= 5:
@@ -63,13 +64,19 @@ async def process_source_free_message(
             if session.terminating:
                 return
             generation = session.begin_turn_generation()
+            session.source_free_completed_turn = None
             if turn_generation_callback is not None:
                 turn_generation_callback(generation)
 
             def active() -> bool:
-                return not session.terminating and session.is_turn_generation_active(
-                    generation
-                )
+                try:
+                    return (
+                        not session.terminating
+                        and session.is_turn_generation_active(generation)
+                        and config.is_run_active() is True
+                    )
+                except Exception:
+                    return False
 
             prior_messages = []
             for message in session.history:
@@ -100,6 +107,7 @@ async def process_source_free_message(
                     prior_conversation=prior,
                     allowed_tool_names=frozenset(),
                     decision_audit_enabled=False,
+                    is_dispatch_allowed=config.is_run_active,
                 )
                 await session.agent.start()
                 session._source_free_agent_config = config
@@ -120,6 +128,8 @@ async def process_source_free_message(
                     elif event.get("event") == "error":
                         yield {"event": "error", "data": {"message": SOURCE_FREE_ERROR}}
                         return
+                if active() and owned_agent.last_turn_completed:
+                    session.source_free_completed_turn = turn_id
             except asyncio.CancelledError:
                 session.invalidate_active_turn_generation()
                 await owned_agent.interrupt()
