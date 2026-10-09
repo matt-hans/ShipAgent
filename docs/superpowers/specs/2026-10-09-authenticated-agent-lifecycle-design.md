@@ -227,6 +227,13 @@ current-authority/settlement rule before returning provider-visible evidence.
 The worker uses its own captured run binding and operation owner; it never relies
 on an HTTP ContextVar or caches a link epoch as current authority.
 
+A separate captured local-only candidate/claim transaction uses the same strict
+service slot and coordinator pin. It grants no model dispatch. Prior private
+history is materialized only after current authority is held inside dispatch
+admission. The strict profile rejects history JSON above 1 MiB before loading
+it, then uses the existing shared privacy/replay limits before model input.
+That raw-storage ceiling is distinct from the existing provider replay ceiling.
+
 Under the same guards, it revalidates the current account/link/scope and the
 original accepted-turn deadline before admitting exactly one source-free model
 call. Dispatch admission linearizes when that original authority transaction

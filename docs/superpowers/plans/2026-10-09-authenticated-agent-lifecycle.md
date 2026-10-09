@@ -15,7 +15,7 @@ its own one-shot dispatch authorization and fresh publication authority.
 PostgreSQL 17, Alembic and pytest. No new dependency or live service provisioning.
 
 **Spec:** [Authenticated synthetic lifecycle](../specs/2026-10-09-authenticated-agent-lifecycle-design.md),
-approved SHA256 `62717082950b77f6233c9c1d5186369fe2dc247d5c40d141f2db036680131a80`.
+SHA256 `69b4ee7f46f4a3ef595b6c61b00ff17434b32b6320627fe8a3759b2052774cf2`.
 
 **Execution:** Serial implementation by the current integrator and independent
 review after each checkpoint. Task 1 begins only after this plan is reviewed.
@@ -33,6 +33,8 @@ Current status: all implementation tasks below are unstarted.
   configured model timeout is at most 120 seconds, default 30 seconds.
 - Original conversation/reference ceiling remains 24 hours; no refresh on retry.
 - Strict profile admits one model call per accepted run; zero tool declarations.
+- Strict private-history JSON is at most 1 MiB before materialization; existing
+  privacy projection and provider replay limits still apply separately.
 - Per-service strict operation slot allows one owner and zero HTTP waiters.
 - Lock order is coordinator → SQLite writer → PostgreSQL account → link.
 - PostgreSQL COMMIT is the dispatch authorization linearization point. The later
@@ -149,6 +151,9 @@ bound. Release between checkpoints and honor already-queued Bulldog work.
   It never exposes its raw connection/cursor or a reusable commit closure.
 - Existing store entrypoints and owned actions share private connection-scoped
   SQL helpers; do not duplicate acceptance/idempotency/revision logic.
+- Owned history reads inspect stored byte length before fetching/parsing JSON;
+  the strict ceiling is 1 MiB. This does not relabel the provider replay limit
+  as a durable-storage cap or change legacy private reads.
 - Owned scope uses `timeout=0`/`busy_timeout=0`, current coordinator/path identity,
   strict deadline checks and retained cursors/connection before every effect.
 
@@ -162,7 +167,9 @@ bound. Release between checkpoints and honor already-queued Bulldog work.
 - [ ] **Write migration/expiry RED.** Preserve legacy rows unbound across normal
   upgrade, SQL failure and process death. A new strict run stores exactly the
   minimum accepting-token/120-second deadline; duplicate/reopen does not renew
-  it; continuation keeps the original conversation expiry.
+  it; continuation keeps the original conversation expiry. Stored history above
+  1 MiB is denied before materialization; the bounded private result still passes
+  through the existing provider privacy/replay limits.
 - [ ] **Implement V3 compatibility and run GREEN.** New strict operations reject
   legacy NULL authority; old explicitly synthetic callers retain their historical
   behavior. Source ownership only recognizes compatible version3 layout; no source
@@ -196,7 +203,11 @@ bound. Release between checkpoints and honor already-queued Bulldog work.
   `admit_dispatch` and `publish` methods. Their inputs are the exact service,
   `RunRequestAuthority` or persisted `AgentRun`, plus the existing closed operation
   arguments. Submit/continue/read/cancel return `AgentRun`; dispatch returns a
-  private `RunDispatchPermit`; publish returns no new reference.
+  private `AuthorizedRunDispatch`; publish returns no new reference.
+- `AuthorizedRunDispatch` contains the one-shot `RunDispatchPermit` and bounded
+  immutable `private_history_json: bytes`, hidden from repr. History is read
+  under held current authority and returned only after settlement/retirement;
+  it never enters public target requests/results or PostgreSQL metadata.
 - `PostgresAgentRunAuthority` implements those fixed operations. Its captured
   private owner holds the exact target transaction, PostgreSQL connection/
   transaction, original driver/backend/XID, deadline and result/failure state.
@@ -259,6 +270,11 @@ bound. Release between checkpoints and honor already-queued Bulldog work.
   delegate to the authority owner, then apply existing public result projection.
 - The strict worker uses `admit_dispatch(service, run)` and
   `publish(service, run, outcome, private_history, clarification)` from Task3.
+- Before dispatch, `AgentRunService._claim_strict_candidate()` owns a separate
+  local-only Task2 transaction under its coordinator borrow and strict slot. It
+  claims one candidate or returns none and positively retires; it grants no
+  provider permission and does not fetch private history. Any wait between this
+  claim and Task3 admission remains under the original turn/reference expiry.
 - `AuthorizedRunProvider(provider, permit)` implements the existing
   `ModelProviderClient.stream_turn`/`cancel`; it consumes the exact permit before
   invoking the owned provider and rejects any second call. The same shared
@@ -273,6 +289,8 @@ bound. Release between checkpoints and honor already-queued Bulldog work.
   including claim/history, timeout/denial cleanup and coordinator checks, uses
   the bounded owned path. Do not call the legacy fixed-timeout DB helper while
   another strict operation yields. No ambient request context or epoch cache.
+  Decode the private dispatch result only for the original session/runtime;
+  never attach its history to a public request, result, log or control-plane row.
 - [ ] **Add lifetime/restart RED/GREEN.** Queued original authority expires with
   zero calls; refreshed tokens do not extend an old turn; accepted retry/restart
   preserves identity; interrupted running work never replays. Ordinary authority
@@ -314,6 +332,11 @@ bound. Release between checkpoints and honor already-queued Bulldog work.
   Default target/status construction and the legacy relay wire remain unchanged.
 - Opt-in descriptors are exactly status plus the four canonical lifecycle tools;
   do not enable arbitrary registry entries or modify model-visible schemas.
+- The profile owns a fixed `get_shipagent_status` handler for its healthy pinned
+  target. It returns the existing ready/status projection and capability
+  `get_shipagent_status` only; lifecycle availability is accurately listed by
+  the four tool descriptors. It performs no model or run-store action and never
+  invents a capability code. Unavailable target ownership yields unavailable.
 
 - [ ] **Write/run RED.** Launch the actual app on loopback with real signature/
   issuer/audience checks, real persistent links/PostgreSQL and the scripted target.
@@ -325,6 +348,10 @@ bound. Release between checkpoints and honor already-queued Bulldog work.
   verified HTTP request; bind its immutable request only after actual resolution.
   Private fixed handlers use that owner-bound object, never a header or ambient
   fallback. The HTTP owner retires on auth denial as well as handler completion.
+  The middleware owns retirement for initialize/list, missing scope, unknown
+  tool, schema denial, disconnect and BaseException even when no lifecycle
+  handler executes. Failed/uncertain cleanup retains the same owner and closes
+  admission instead of leaking a slot or releasing its coordinator.
   Profile startup owns
   target lifecycle, account/store pins and failures; shutdown keeps uncertain
   scopes captured. Default construction still exports only status.
@@ -333,6 +360,9 @@ bound. Release between checkpoints and honor already-queued Bulldog work.
   after a blocked lookup, scope narrowing/older broad token, conflict/duplicate,
   restart/reconnect and cancellation. Assert zero additional provider calls on
   every rejected/read-only path and no sensitive canary in results or logs.
+  Explicitly test every no-handler retirement path above and qualified status
+  before/after target shutdown; prove the next legitimate request can use a
+  positively released slot and cannot use an uncertain one.
 - [ ] **Verify metadata/package/docs.** Existing registry schemas should be
   unchanged; run artifact drift and regenerate only if canonical source changed.
   Check wheel inclusion if existing tools support it. Document exact local proof,
