@@ -1,0 +1,131 @@
+--- a/src/services/agent_runs/service.py
++++ b/src/services/agent_runs/service.py
+@@ -9,7 +9,7 @@
+ from collections.abc import Callable
+ from contextlib import aclosing, suppress
+ 
+-from src.services.agent_runs.clarification import ClarificationProvider
++from src.services.agent_runs.clarification import clarification_code
+ from src.services.agent_runs.coordinator import CoordinatorLease
+ from src.services.agent_runs.store import AgentRun, AgentRunStore
+ from src.services.agent_session_manager import AgentSession, AgentSessionManager
+@@ -64,7 +64,6 @@
+         self._lease = CoordinatorLease(self.store.path.with_suffix(".coordinator.lock"))
+         try:
+             self._lease.require_owned()
+-            self.store.upgrade(lease=self._lease)
+             self._generation = self.store.begin_coordinator(lease=self._lease)
+         except BaseException:
+             self._lease.close()
+@@ -163,28 +162,6 @@
+         self._wake.set()
+         return run.public_result()
+ 
+-    def continue_turn(
+-        self, *, connection_id: str, arguments: dict
+-    ) -> dict[str, object]:
+-        self._require_worker()
+-        self._require_coordinator()
+-        epoch, authority = self._authority(connection_id)
+-        if epoch is None:
+-            raise PermissionError("Continuation authority is unavailable.")
+-        run = self.store.continue_turn(
+-            connection_id=connection_id,
+-            link_epoch=epoch,
+-            authority=authority,
+-            generation=self._generation,
+-            conversation_reference=arguments["conversation_reference"],
+-            run_reference=arguments["run_reference"],
+-            expected_revision=arguments["expected_revision"],
+-            task=arguments["task"],
+-            request_key=arguments["request_key"],
+-        )
+-        self._wake.set()
+-        return run.public_result()
+-
+     def read(self, *, connection_id: str, run_reference: str) -> dict[str, object]:
+         epoch, authority = self._authority(connection_id)
+         run = self.store.read(
+@@ -205,13 +182,10 @@
+         lifetime. Cancellation does not undo an in-flight provider charge.
+         """
+         self._require_coordinator()
+-        epoch, authority = self._authority(connection_id)
+         run = self.store.cancel(
+             connection_id=connection_id,
+             run_reference=run_reference,
+             generation=self._generation,
+-            link_epoch=epoch,
+-            authority=authority,
+         )
+         if (
+             run.state == "cancelled"
+@@ -236,13 +210,6 @@
+         self._lease.require_owned()
+         if not self.store.is_current_generation(self._generation):
+             raise RuntimeError("Agent run coordinator is unavailable.")
+-
+-    def _epoch_active(self, run: AgentRun) -> bool:
+-        try:
+-            epoch, authority = self._authority(run.connection_id)
+-            return epoch == run.link_epoch and authority()
+-        except Exception:
+-            return False
+ 
+     def _run_active(self, run: AgentRun) -> bool:
+         if self._closing or self._unhealthy:
+@@ -325,26 +292,17 @@
+ 
+         try:
+             async with asyncio.timeout(self._model_timeout_seconds):
+-                if not active():
+-                    outcome = "interrupted"
+-                    return
+                 provider = self._provider_factory(run.conversation_reference)
+                 if self._owned_providers.get(id(provider)) is provider:
+                     raise RuntimeError(
+                         "Provider instance already belongs to another conversation."
+                     )
+                 self._owned_providers[id(provider)] = provider
+-                guarded_provider = ClarificationProvider(provider)
+                 session = self._sessions.get_or_create_session(
+                     run.conversation_reference,
+                     source_free_config=SourceFreeConversationConfig(
+-                        provider=guarded_provider,
+-                        is_run_active=active,
+-                        clarification_enabled=run.link_epoch is not None,
++                        provider=provider, is_run_active=active
+                     ),
+-                )
+-                session.history = self.store.prior_history(
+-                    run, authority=lambda: self._epoch_active(run)
+                 )
+                 session.add_message(
+                     "user", run.task, turn_id=run.run_reference, queued=True
+@@ -358,8 +316,6 @@
+                             break
+                         if event.get("event") == "agent_message":
+                             blocks.append(event.get("data", {}).get("text", ""))
+-                            if len(blocks) > 1:
+-                                raise ValueError("Planning output is unavailable.")
+                     else:
+                         if (
+                             not active()
+@@ -367,7 +323,7 @@
+                         ):
+                             outcome = "interrupted"
+                         elif blocks:
+-                            clarification = guarded_provider.clarification
++                            clarification = clarification_code(blocks)
+                             if clarification is not None and run.link_epoch is None:
+                                 raise PermissionError(
+                                     "Clarification authority is unavailable."
+@@ -392,7 +348,7 @@
+                         outcome=outcome,
+                         private_history=session.history if session else [],
+                         clarification=clarification,
+-                        authority=lambda: self._epoch_active(run),
++                        authority=active,
+                     )
+             except BaseException:
+                 # Publication failure must fence admission before asynchronous

@@ -1,0 +1,68 @@
+{
+  "source-ingress-contract.original.md": {
+    "original_path": "docs/plugin-backend/source-ingress-contract.md",
+    "sha256": "2a094b0fa154eca226089f0df92728a694390f6dddac9e57458702583f8d7b18",
+    "historical_base": "c391e8c31e52598a9473de7b0a92f6308dd37a83",
+    "public_equal_tree_base": "8199d0f195edf1a5f6ad8d4d6d51b84e5cbc12da"
+  },
+  "source-ingress-tests.original.md": {
+    "original_path": "tests/services/source_ingress/README.md",
+    "sha256": "9f79bb1d25daf79f25e71c73698033eb02b6386c1be89199edec6d8bbbfc1277",
+    "historical_base": "c391e8c31e52598a9473de7b0a92f6308dd37a83",
+    "public_equal_tree_base": "8199d0f195edf1a5f6ad8d4d6d51b84e5cbc12da"
+  },
+  "source_ingress_contract_red.py": {
+    "original_path": "tests/services/source_ingress/source_ingress_contract_red.py",
+    "sha256": "6c2b0892b3e4786579c9a7afa63d3a5b2daa0097273d03c73aa570aab719244b",
+    "historical_base": "c391e8c31e52598a9473de7b0a92f6308dd37a83",
+    "public_equal_tree_base": "8199d0f195edf1a5f6ad8d4d6d51b84e5cbc12da"
+  },
+  "continuation": {
+    "public_successor": "f5740a572f8dfd901eaf8eeb4746ff2cf95c261b",
+    "files": {
+      "src/services/agent_runs/clarification.py": {
+        "working_sha256": "a0f7eb64e3908a431f1ffdd6fb72b7815c007bc2c9d8e1ada97c9cf22938086e",
+        "published_successor_sha256": "a0f7eb64e3908a431f1ffdd6fb72b7815c007bc2c9d8e1ada97c9cf22938086e",
+        "working_identical": true
+      },
+      "src/services/agent_runs/service.py": {
+        "working_sha256": "5ac9f899d7ebd56d8c916618864c2f493fe0d26aff25136d9c73612ad792cbae",
+        "published_successor_sha256": "4fba995d1d73e5353b270f7e88831ff52d32447b3b6933b70096fb41b6012229",
+        "working_identical": false,
+        "staged_sha256": "384d731a9b8ca93a3c811400ea72b3cc724784a89124c7ab46d3b7f202fdd03b"
+      },
+      "src/services/agent_runs/store.py": {
+        "working_sha256": "70fdeb36d789e52df505ee72e5845f6000c9befae365a50f9f3d198d69dbceb7",
+        "published_successor_sha256": "70fdeb36d789e52df505ee72e5845f6000c9befae365a50f9f3d198d69dbceb7",
+        "working_identical": true
+      },
+      "tests/services/agent_runs/test_clarification_projection.py": {
+        "working_sha256": "40ee7fda8bbdb38c5138716514e35763c5f695f1326eb85e3669221e8cbb63a0",
+        "published_successor_sha256": "40ee7fda8bbdb38c5138716514e35763c5f695f1326eb85e3669221e8cbb63a0",
+        "working_identical": true
+      },
+      "tests/services/agent_runs/test_continuation.py": {
+        "working_sha256": "54daea6708f74faf89b749af684cdd2a2979bcef95da2cec3f116dac2b287262",
+        "published_successor_sha256": "54daea6708f74faf89b749af684cdd2a2979bcef95da2cec3f116dac2b287262",
+        "working_identical": true
+      },
+      "tests/services/agent_runs/test_continuation_migration.py": {
+        "working_sha256": "47bc1c717a88a014517017ef21026e090f81ff5036f2b00dd0f4b60342c0a771",
+        "published_successor_sha256": "47bc1c717a88a014517017ef21026e090f81ff5036f2b00dd0f4b60342c0a771",
+        "working_identical": true
+      },
+      "tests/services/agent_runs/test_continuation_recovery.py": {
+        "working_sha256": "a993aad678a7102030866c8c58777c83216c97896938e6482e7c1f6ff23a6654",
+        "published_successor_sha256": "a993aad678a7102030866c8c58777c83216c97896938e6482e7c1f6ff23a6654",
+        "working_identical": true
+      },
+      "tests/services/agent_runs/test_continuation_store.py": {
+        "working_sha256": "340638581bc0cb18bcccc0ca6bb0dbce1a853cc2cbeaf55cb8246b560bc5ff4d",
+        "published_successor_sha256": "340638581bc0cb18bcccc0ca6bb0dbce1a853cc2cbeaf55cb8246b560bc5ff4d",
+        "working_identical": true
+      }
+    },
+    "working_patch": "continuation-predecessor-working.patch",
+    "index_patch": "continuation-predecessor-index.patch"
+  }
+}

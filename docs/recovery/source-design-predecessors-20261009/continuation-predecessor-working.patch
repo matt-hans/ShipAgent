@@ -1,0 +1,13 @@
+--- a/src/services/agent_runs/service.py
++++ b/src/services/agent_runs/service.py
+@@ -338,9 +338,7 @@
+                 session = self._sessions.get_or_create_session(
+                     run.conversation_reference,
+                     source_free_config=SourceFreeConversationConfig(
+-                        provider=guarded_provider,
+-                        is_run_active=active,
+-                        clarification_enabled=run.link_epoch is not None,
++                        provider=guarded_provider, is_run_active=active
+                     ),
+                 )
+                 session.history = self.store.prior_history(
