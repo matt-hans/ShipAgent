@@ -23,8 +23,129 @@ def implementation():
     return importlib.import_module(name)
 
 
+class _FixtureScope:
+    """Retain real outer ownership until the source scope actually retires."""
+
+    def __init__(self, owner):
+        self.owner = owner
+        self.borrow = None
+        self.conversation = None
+        owner.scopes.append(self)
+        self.borrow = owner.lease.borrow()
+        self.conversation = owner.runs.conversation_fence(
+            borrow=self.borrow, generation=owner.generation
+        )
+
+    def acquire(self):
+        if self.conversation is None:
+            raise ReservationError("reservation_unavailable")
+        self.conversation.acquire(deadline=time.monotonic() + 2)
+
+    def retire(self):
+        if self.conversation is not None:
+            self.conversation.retire()
+            self.conversation = None
+        if self.borrow is not None:
+            self.borrow.retire()
+            self.borrow = None
+
+
+class _FixtureOwner:
+    def __init__(self):
+        self.runs = self.lease = None
+        self.stores, self.transactions, self.scopes = [], [], []
+
+    def start(self, root):
+        from src.services.agent_runs.coordinator import CoordinatorLease
+        from src.services.agent_runs.store import AgentRunStore
+
+        self.runs = AgentRunStore(
+            root / "fixture-runs.sqlite3",
+            account_id="account-a",
+            execution_target_id="target-a",
+            create=True,
+        )
+        self.lease = CoordinatorLease(self.runs.path.with_suffix(".coordinator.lock"))
+        self.generation = self.runs.begin_coordinator(lease=self.lease)
+
+    def close(self):
+        for tx in reversed(self.transactions):
+            tx.retire()
+        for store in reversed(self.stores):
+            store.close()
+        for scope in reversed(self.scopes):
+            scope.retire()
+        if self.lease is not None:
+            self.lease.close()
+
+
+@pytest.fixture(autouse=True)
+def fixture_ownership(tmp_path):
+    global _fixture_owner
+    owner = _FixtureOwner()  # Captured before creating any lease/store.
+    _fixture_owner = owner
+    try:
+        owner.start(tmp_path)
+        yield
+    finally:
+        owner.close()
+        _fixture_owner = None
+
+
+def owned_store(*args, **kwargs):
+    """Legacy behavior fixture; direct API tests separately prove mandatory fencing."""
+    module = implementation()
+    owner = _fixture_owner
+
+    class OwnedMetadata(module.ReservationStore):
+        def __init__(self):
+            self.setup_scope = None
+            owner.stores.append(self)
+            super().__init__(
+                *args,
+                coordinator_path=owner.runs.path.with_suffix(".coordinator.lock"),
+                **kwargs,
+            )
+
+        def open(self, **options):
+            if self._open_attempted or self._closed:
+                return super().open(conversation=None, **options)
+            self.setup_scope = _FixtureScope(owner)
+            self.setup_scope.acquire()
+            super().open(conversation=self.setup_scope.conversation, **options)
+            self.setup_scope.retire()
+            self.setup_scope = None
+
+        def transaction(self, **options):
+            # Core availability check precedes allocation; no fixture can revive it.
+            tx = super().transaction(conversation=None, **options)
+            owner.transactions.append(tx)
+            scope = _FixtureScope(owner)
+            tx._conversation = scope.conversation
+            acquire, retire = tx.acquire, tx.retire
+
+            def acquire_owned(**arguments):
+                scope.acquire()
+                acquire(**arguments)
+
+            def retire_owned():
+                retire()
+                scope.retire()
+
+            tx.acquire, tx.retire = acquire_owned, retire_owned
+            return tx
+
+        def close(self):
+            super().close()
+            if self.setup_scope is not None:
+                self.setup_scope.retire()
+                self.setup_scope = None
+
+    return OwnedMetadata()
+
+
 def new_store(tmp_path):
-    store = implementation().ReservationStore(
+    store = owned_store(
         tmp_path / "sources.sqlite3",
         account_id="account-a",
         execution_target_id="target-a",
@@ -88,7 +209,7 @@ def test_explicit_commit_reopens_same_private_identity_and_original_times(tmp_pa
             "prospective_source_expires_at",
         }
         tx.commit()
-    reopened = implementation().ReservationStore(
+    reopened = owned_store(
         store.path, account_id="account-a", execution_target_id="target-a"
     )
     reopened.open(deadline=time.monotonic() + 2)
@@ -188,22 +309,27 @@ def test_corrupt_accounting_is_unavailable_before_another_admission(
 
 
 def test_open_requires_existing_owned_store_and_never_rewrites_foreign_format(tmp_path):
-    module = implementation()
+    missing = owned_store(
+        tmp_path / "missing.sqlite3",
+        account_id="account-a",
+        execution_target_id="target-a",
+    )
     with pytest.raises(ReservationError):
-        module.ReservationStore(
-            tmp_path / "missing.sqlite3",
-            account_id="account-a",
-            execution_target_id="target-a",
-        ).open(deadline=time.monotonic() + 2)
+        missing.open(deadline=time.monotonic() + 2)
+    missing.close()
     assert not (tmp_path / "missing.sqlite3").exists()
     store = new_store(tmp_path)
     with sqlite3.connect(store.path) as db:
         db.execute("PRAGMA application_id=1")
         db.execute("PRAGMA journal_mode=DELETE")
-    with pytest.raises(ReservationError):
-        module.ReservationStore(
-            store.path, account_id="account-a", execution_target_id="target-a"
-        ).open(deadline=time.monotonic() + 2)
+    foreign = owned_store(
+        store.path, account_id="account-a", execution_target_id="target-a"
+    )
+    try:
+        with pytest.raises(ReservationError):
+            foreign.open(deadline=time.monotonic() + 2)
+    finally:
+        foreign.close()
     with sqlite3.connect(store.path) as db:
         assert db.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
         assert db.execute("PRAGMA application_id").fetchone()[0] == 1
@@ -213,25 +339,19 @@ def test_close_after_effect_failure_can_retire_again_without_losing_commit_evide
     tmp_path, monkeypatch
 ):
     store = new_store(tmp_path)
-    real_connect = sqlite3.connect
-
-    class FaultyClose(sqlite3.Connection):
-        failed_once = False
-
-        def close(self):
-            super().close()
-            if not self.failed_once:
-                self.failed_once = True
-                raise OSError("PRIVATE_CLOSE_CANARY")
-
-    def connect(*args, **kwargs):
-        return real_connect(*args, **kwargs, factory=FaultyClose)
-
     tx = store.transaction()
+    original_close = tx._close_database
+    failed_once = [False]
+
+    def close():
+        original_close()
+        if not failed_once[0]:
+            failed_once[0] = True
+            raise OSError("PRIVATE_CLOSE_CANARY")
+
+    tx._close_database = close
     try:
-        with monkeypatch.context() as fault:
-            fault.setattr(sqlite3, "connect", connect)
-            tx.acquire(deadline=time.monotonic() + 2)
+        tx.acquire(deadline=time.monotonic() + 2)
         insert(tx)
         assert not tx.committed
         tx.commit()
@@ -364,15 +484,21 @@ def test_record_byte_bound_is_checked_before_insertion(tmp_path, monkeypatch):
         assert tx.lookup(namespace()) is None
 
 
-def test_sql_failure_is_closed_and_retirement_rolls_back(tmp_path):
+def test_sql_failure_is_closed_and_retirement_rolls_back(tmp_path, monkeypatch):
     store = new_store(tmp_path)
-    with sqlite3.connect(store.path) as db:
-        db.execute("""CREATE TRIGGER reject_reservation BEFORE INSERT ON reservations
-            BEGIN SELECT RAISE(ABORT, 'PRIVATE_SQL_CANARY'); END""")
-    with pytest.raises(ReservationError) as caught:
-        with transaction(store) as tx:
-            insert(tx)
-            tx.commit()
+    original = implementation().ReservationTransaction._execute
+
+    def execute(tx, sql, parameters=()):
+        if sql.startswith("INSERT INTO reservations"):
+            raise sqlite3.OperationalError("PRIVATE_SQL_CANARY")
+        return original(tx, sql, parameters)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(implementation().ReservationTransaction, "_execute", execute)
+        with pytest.raises(ReservationError) as caught:
+            with transaction(store) as tx:
+                insert(tx)
+                tx.commit()
     assert caught.value.code == "reservation_unavailable"
     assert "PRIVATE_" not in str(caught.value)
     with transaction(store) as tx:
@@ -381,10 +507,14 @@ def test_sql_failure_is_closed_and_retirement_rolls_back(tmp_path):
 
 def test_replaced_file_and_foreign_owner_are_unavailable(tmp_path):
     store = new_store(tmp_path)
-    with pytest.raises(ReservationError):
-        implementation().ReservationStore(
-            store.path, account_id="another-account", execution_target_id="target-a"
-        ).open(deadline=time.monotonic() + 2)
+    foreign = owned_store(
+        store.path, account_id="another-account", execution_target_id="target-a"
+    )
+    try:
+        with pytest.raises(ReservationError):
+            foreign.open(deadline=time.monotonic() + 2)
+    finally:
+        foreign.close()
     store.path.rename(tmp_path / "retired.sqlite3")
     with pytest.raises(ReservationError):
         with transaction(store):
@@ -403,11 +533,12 @@ def test_writer_wait_uses_operation_deadline_and_partial_scope_retires(tmp_path)
             tx.acquire(deadline=started + 0.08)
         assert caught.value.code == "reservation_unavailable"
         assert time.monotonic() - started < 0.75
-        tx.retire()
+        with pytest.raises(ReservationError):
+            tx.retire()  # Busy checkpoint keeps original ownership until blocker retires.
     finally:
-        tx.retire()
         blocker.rollback()
         blocker.close()
+        tx.retire()
 
 
 def test_expired_deadline_blocks_commit_but_does_not_block_rollback(tmp_path):
@@ -443,7 +574,7 @@ def test_invalid_deadline_does_not_open_or_mutate_store(tmp_path, bad_deadline):
 
 def test_constructor_allocates_without_io_and_open_is_explicit_single_attempt(tmp_path):
     path = tmp_path / "not-created" / "sources.sqlite3"
-    store = implementation().ReservationStore(
+    store = owned_store(
         path, account_id="account-a", execution_target_id="target-a", create=True
     )
     assert not path.parent.exists()
@@ -481,7 +612,7 @@ def test_writer_acquisition_does_not_read_reservation_rows_before_authority(
             guard.setattr(
                 implementation().ReservationTransaction, "_execute", inspect_query
             )
-            reopened = implementation().ReservationStore(
+            reopened = owned_store(
                 store.path, account_id="account-a", execution_target_id="target-a"
             )
             reopened.open(deadline=time.monotonic() + 2)
@@ -498,24 +629,20 @@ def test_failed_setup_retirement_is_retained_for_explicit_close(
     tmp_path, monkeypatch, effect
 ):
     module = implementation()
-    real_connect = sqlite3.connect
     captured = []
+    blocked = [True]
+    original_close = module.ReservationTransaction._close_database
 
-    class FaultyClose(sqlite3.Connection):
-        fail_cleanup = True
+    def close(tx):
+        if tx._db not in captured:
+            captured.append(tx._db)
+            tx._close_database = lambda: close(tx)
+        if not blocked[0] or effect == "after":
+            original_close(tx)
+        if blocked[0]:
+            raise OSError("PRIVATE_SETUP_CLEANUP_CANARY")
 
-        def close(self):
-            if not self.fail_cleanup or effect == "after":
-                super().close()
-            if self.fail_cleanup:
-                raise OSError("PRIVATE_SETUP_CLEANUP_CANARY")
-
-    def connect(*args, **kwargs):
-        db = real_connect(*args, factory=FaultyClose, **kwargs)
-        captured.append(db)
-        return db
-
-    store = module.ReservationStore(
+    store = owned_store(
         tmp_path / "sources.sqlite3",
         account_id="account-a",
         execution_target_id="target-a",
@@ -523,7 +650,7 @@ def test_failed_setup_retirement_is_retained_for_explicit_close(
     )
     try:
         with monkeypatch.context() as fault:
-            fault.setattr(sqlite3, "connect", connect)
+            fault.setattr(module.ReservationTransaction, "_close_database", close)
             with pytest.raises(ReservationError) as caught:
                 store.open(deadline=time.monotonic() + 2)
         assert "PRIVATE_" not in str(caught.value) + repr(caught.value)
@@ -535,7 +662,7 @@ def test_failed_setup_retirement_is_retained_for_explicit_close(
             store.open(deadline=time.monotonic() + 2)
         with pytest.raises(ReservationError):
             store.close()
-        captured[0].fail_cleanup = False
+        blocked[0] = False
         store.close()
         store.close()
         assert store.initialization_committed
@@ -543,7 +670,7 @@ def test_failed_setup_retirement_is_retained_for_explicit_close(
             store.transaction()
         with pytest.raises(sqlite3.ProgrammingError):
             captured[0].execute("SELECT 1")
-        reopened = module.ReservationStore(
+        reopened = owned_store(
             store.path, account_id="account-a", execution_target_id="target-a"
         )
         reopened.open(deadline=time.monotonic() + 2)
@@ -551,10 +678,8 @@ def test_failed_setup_retirement_is_retained_for_explicit_close(
             assert tx.lookup(namespace()) is None
         reopened.close()
     finally:
-        for db in captured:
-            db.fail_cleanup = False
-            with suppress(sqlite3.ProgrammingError):
-                db.close()
+        blocked[0] = False
+        store.close()
 
 
 def test_store_close_does_not_reclaim_handed_out_transaction(tmp_path):
@@ -576,28 +701,26 @@ def test_failed_open_retains_setup_writer_until_explicit_successful_close(
     tmp_path, monkeypatch
 ):
     original = new_store(tmp_path)
-    store = implementation().ReservationStore(
+    store = owned_store(
         original.path, account_id="account-a", execution_target_id="target-a"
     )
-    real_connect = sqlite3.connect
     captured = []
+    blocked = [True]
+    original_rollback = implementation().ReservationTransaction._rollback_database
 
-    class FaultyRollback(sqlite3.Connection):
-        fail_cleanup = True
-
-        def rollback(self):
-            if self.fail_cleanup:
-                raise OSError("PRIVATE_ROLLBACK_CANARY")
-            return super().rollback()
-
-    def connect(*args, **kwargs):
-        db = real_connect(*args, factory=FaultyRollback, **kwargs)
-        captured.append(db)
-        return db
+    def rollback(tx):
+        if tx._db not in captured:
+            captured.append(tx._db)
+            tx._rollback_database = lambda: rollback(tx)
+        if blocked[0]:
+            raise OSError("PRIVATE_ROLLBACK_CANARY")
+        original_rollback(tx)
 
     try:
         with monkeypatch.context() as fault:
-            fault.setattr(sqlite3, "connect", connect)
+            fault.setattr(
+                implementation().ReservationTransaction, "_rollback_database", rollback
+            )
             with pytest.raises(ReservationError) as caught:
                 store.open(deadline=time.monotonic() + 2)
         assert "PRIVATE_" not in str(caught.value)
@@ -610,7 +733,7 @@ def test_failed_open_retains_setup_writer_until_explicit_successful_close(
             store.close()
         with pytest.raises(ReservationError):
             store.transaction()
-        captured[0].fail_cleanup = False
+        blocked[0] = False
         store.close()
         with pytest.raises(sqlite3.ProgrammingError):
             captured[0].execute("SELECT 1")
@@ -620,11 +743,8 @@ def test_failed_open_retains_setup_writer_until_explicit_successful_close(
         with pytest.raises(ReservationError):
             store.open(deadline=time.monotonic() + 2)
     finally:
-        for db in captured:
-            db.fail_cleanup = False
-            with suppress(sqlite3.ProgrammingError):
-                db.rollback()
-                db.close()
+        blocked[0] = False
+        store.close()
 
 
 def test_open_checks_deadline_after_setup_cleanup_without_erasing_commit(
@@ -632,7 +752,7 @@ def test_open_checks_deadline_after_setup_cleanup_without_erasing_commit(
 ):
     module = implementation()
     clock = [100.0]
-    store = module.ReservationStore(
+    store = owned_store(
         tmp_path / "sources.sqlite3",
         account_id="account-a",
         execution_target_id="target-a",
@@ -652,7 +772,7 @@ def test_open_checks_deadline_after_setup_cleanup_without_erasing_commit(
     with pytest.raises(ReservationError):
         store.transaction()
     store.close()
-    reopened = module.ReservationStore(
+    reopened = owned_store(
         store.path, account_id="account-a", execution_target_id="target-a"
     )
     reopened.open(deadline=time.monotonic() + 2)
@@ -663,7 +783,7 @@ def test_open_checks_deadline_after_setup_cleanup_without_erasing_commit(
 
 @pytest.mark.parametrize("deadline", [True, float("nan"), float("inf"), 100])
 def test_invalid_or_elapsed_open_deadline_never_creates_a_file(tmp_path, deadline):
-    store = implementation().ReservationStore(
+    store = owned_store(
         tmp_path / "sources.sqlite3",
         account_id="account-a",
         execution_target_id="target-a",
