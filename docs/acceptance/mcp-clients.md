@@ -11,7 +11,8 @@ current-request OAuth authority from #86; earlier harness-only evidence on
 This harness qualifies a **local synthetic slice**, not either product client,
 OAuth deployment, shipping functionality, or a production launch. The default
 catalog stays status-only. Test-local descriptor copies opt in the implemented
-source-free submit/read/cancel tools. There is no inferred continue, event
+source-free submit/read/continue/cancel tools. Continuation requires the
+explicitly injected synthetic epoch authority. There is no inferred event
 cursor, source upload, approval, label, or live carrier capability.
 
 ## Reproduce the local slice
@@ -57,7 +58,7 @@ into SQL/Redis failure qualification.
 - A real FastMCP client initializes, discovers the wire catalog and calls tools
   over a loopback Streamable HTTP socket. It is not an in-process MCP client.
 - The default wire catalog remains status-only even if dormant handlers are
-  bound. Opt-in submit/read/cancel reaches the real target adapter, `AgentRunService`,
+  bound. Opt-in lifecycle work reaches the real target adapter, `AgentRunService`,
   shared conversation handler/runtime, and durable target-owned store.
 - One successful submit response is deliberately discarded at the ASGI wire
   boundary and replaced by HTTP 503. A new MCP session retries the same input
@@ -82,6 +83,12 @@ into SQL/Redis failure qualification.
   cancellation, stable identity after reopen, completed history, foreign
   authority and disconnect/restart boundaries. Cancellation preserves prior
   accepted effects; it does not prove in-flight provider billing stopped.
+- The epoch-bound HTTP path exposes only fixed clarification questions and
+  accepts the exact current waiting run/revision. Retry/reopen, stale and foreign
+  denial, changed-key conflicts, legacy-unbound denial, and quiescent cancellation
+  are covered with exact model counts and immutable terminal-row checks. SQLite
+  migration and continuation process-crash cases are included; trusted production
+  link-epoch integration is still absent.
 - Every listener is joined on exit. The outer runner checks owned descendants
   and removes its private runtime directory.
 
@@ -143,12 +150,12 @@ a skipped non-loopback case never counts as network-listener qualification.
 Keep the existing HTTP fixture and external fake seams; extend expected
 descriptors only after the implementation is integrated and admitted.
 
-1. Continue: clarification followed by expected-revision acceptance, duplicate
-   continuation recovery, conflicting/stale replies and two-session isolation.
-2. Cancel: extend the implemented queued/running and terminal cases to future
-   waiting-for-input invalidation only when continuation is integrated. MCP
-   transport disconnection alone is never interpreted as cancellation of a
-   durable agent run.
+1. Continue: extend the implemented synthetic revision/epoch-bound path to the
+   production trusted authority source and actual clients, without promoting
+   legacy unbound histories or accepting model-supplied authority.
+2. Cancel: extend the implemented queued/running, terminal and waiting-input
+   cases to actual clients and future approval-state invalidation. MCP transport
+   disconnection alone is never interpreted as cancellation of a durable run.
 3. Progress: opaque scoped cursors, ordered retained events, rejected tampered
    and foreign cursors, repeated safe polls with no model dispatch.
 4. Source/preview: deterministic synthetic source snapshots, import privacy
