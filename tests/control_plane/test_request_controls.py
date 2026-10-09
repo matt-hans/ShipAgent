@@ -85,3 +85,18 @@ async def test_fake_redis_isolation_of_namespaces(fake_controls):
         arguments_hash="same-hash",
     )
     await connection_two_task
+
+
+@pytest.mark.parametrize("repetition", ["poll", "idempotent"])
+async def test_safe_repetition_still_consumes_rate_budget(fake_controls, repetition):
+    arguments = {
+        "connection_id": "connection-1",
+        "tool_name": "safe_run_tool",
+        "rate_limit_class": "read",
+        "arguments_hash": "same-hash",
+        "call_repetition": repetition,
+    }
+    for _ in range(30):
+        await fake_controls.require_allowed(**arguments)
+    with pytest.raises(RequestControlError, match="rate limit exceeded"):
+        await fake_controls.require_allowed(**arguments)

@@ -366,7 +366,10 @@ def _completed(call_id: str | None, arguments: str = "{}") -> dict:
     }
     if call_id:
         item["call_id"] = call_id
-    return {"type": "response.completed", "response": {"output": [item]}}
+    return {
+        "type": "response.completed",
+        "response": {"status": "completed", "output": [item]},
+    }
 
 
 @pytest.mark.parametrize(
@@ -422,6 +425,7 @@ def _unnamed_completed(call_id: str = "call_x") -> dict:
                 {
                     "type": "response.completed",
                     "response": {
+                        "status": "completed",
                         "output": [
                             {
                                 "type": "function_call",
@@ -430,7 +434,7 @@ def _unnamed_completed(call_id: str = "call_x") -> dict:
                                 "name": "",
                                 "arguments": "{}",
                             }
-                        ]
+                        ],
                     },
                 }
             ],

@@ -167,6 +167,7 @@ async def test_gemini_stream_normalizes_text_and_function_call(
                 ],
             )
             yield SimpleNamespace(text="Done", function_calls=[])
+            yield SimpleNamespace(candidates=[SimpleNamespace(finish_reason="STOP")])
 
     class FakeModels:
         async def generate_content_stream(self, **kwargs):
@@ -320,6 +321,7 @@ async def test_signed_parts_survive_stream_to_request_as_exact_bytes() -> None:
                 ),
                 types.Part(function_call=types.FunctionCall(name="a", args={"n": 1})),
             ),
+            SimpleNamespace(candidates=[SimpleNamespace(finish_reason="STOP")]),
         ]
     )
 
