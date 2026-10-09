@@ -1,0 +1,39 @@
+{
+  "purpose": "WIP recovery source-tree mapping; independent implementation acceptance pending",
+  "repository": "matt-hans/ShipAgent",
+  "branch": "recovery/authenticated-lifecycle-task1-20261009",
+  "unchanged_main": "551f257a2f66ac15195e5d25c4b64d101a3c8508",
+  "preserved_product_head": "93abf3ee6cda3c490b6a7cd73e79e1b8da8caa65",
+  "steps": [
+    {
+      "original_local_commit": "a5bf521acd4bd283d489030b143e1aec417758c1",
+      "remote_user_commit": "747ca727f3b206132d4a2229a8a89faeabba6e8c",
+      "identical_source_tree": "58fc54265656eb6c21c73dfdbb2effaaeea815d2",
+      "remote_parent": "551f257a2f66ac15195e5d25c4b64d101a3c8508"
+    },
+    {
+      "original_local_commit": "1e697ce72e7b74a916e63579998062d8f72c0603",
+      "remote_user_commit": "20d8d6fa1b400bb131d1fbd2c4262c6e3666ce47",
+      "identical_source_tree": "61177b9d74a28d9037d0a3c5b261ccf5e79e7d2d",
+      "remote_parent": "747ca727f3b206132d4a2229a8a89faeabba6e8c"
+    },
+    {
+      "original_local_commit": "17fcf0417885c80e5172b38883826f4e1503c755",
+      "remote_user_commit": "eb995cb668bde224e8983b3bf1cdcca51cf14e4f",
+      "identical_source_tree": "1ee0da489162e3323d7406d8cda895abf58cace8",
+      "remote_parent": "20d8d6fa1b400bb131d1fbd2c4262c6e3666ce47"
+    },
+    {
+      "original_local_commit": "7e8810d2d736c7643c579dcef3bd2e4a0a99f86a",
+      "remote_user_commit": "70bc155280e906d1762f33295ec18d35f232cb0d",
+      "identical_source_tree": "c6c58254d62e8bf10b94fa300c4a8240a6f1a1dd",
+      "remote_parent": "eb995cb668bde224e8983b3bf1cdcca51cf14e4f"
+    },
+    {
+      "original_local_commit": "729d3671934dcf6f1b5e00151509050e65bc2e5a",
+      "remote_user_commit": "93abf3ee6cda3c490b6a7cd73e79e1b8da8caa65",
+      "identical_source_tree": "7936640b545d3d1bcc322bd1bc6943ff4f05eb94",
+      "remote_parent": "70bc155280e906d1762f33295ec18d35f232cb0d"
+    }
+  ]
+}

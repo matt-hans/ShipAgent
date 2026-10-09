@@ -64,7 +64,7 @@ The local docs history above main is, in order:
 - `7e8810d2d736c7643c579dcef3bd2e4a0a99f86a`: candidate and HTTP cleanup details
 
 The recovery publication preserves these ordered source trees with an explicit
-local-to-remote mapping. GitHub-created commit metadata may give different SHAs;
+[local-to-remote mapping](evidence/authenticated-lifecycle-task1-publication-map.json). GitHub-created commit metadata may give different SHAs;
 source-tree equality is checked for every step. Existing main and remote refs
 are not rewritten.
 
