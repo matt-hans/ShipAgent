@@ -8,9 +8,12 @@ permission for another operation. This scope never commits or changes history.
 from __future__ import annotations
 
 import math
+import os
 import sqlite3
+import weakref
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
@@ -44,17 +47,28 @@ class ConversationFence:
         generation: int,
         monotonic: Callable[[], float],
     ) -> None:
+        self._owner_ref = weakref.ref(self)
+        self._pid = os.getpid()
         self._store = store
         self._borrow = borrow
         self._generation = generation
         self._monotonic = monotonic
         self._deadline = 0.0
         self._db: sqlite3.Connection | None = None
+        self._pending_cursor: sqlite3.Cursor | None = None
         self._attempted = False
         self._active = False
         self._retired = False
         self._rolled_back = False
         self._resolved: OwnedConversation | None = None
+        self._source_owner: object | None = None
+
+    def _require_identity(self) -> None:
+        try:
+            if self._pid != os.getpid() or self._owner_ref() is not self:
+                raise RuntimeError(_UNAVAILABLE)
+        except Exception:
+            raise RuntimeError(_UNAVAILABLE) from None
 
     def _remaining(self) -> float:
         now = self._monotonic()
@@ -71,12 +85,13 @@ class ConversationFence:
         return self._deadline - now
 
     def _execute(self, sql: str, parameters: tuple = ()) -> sqlite3.Cursor:
-        if self._db is None or self._retired:
+        if self._db is None or self._retired or self._pending_cursor is not None:
             raise RuntimeError(_UNAVAILABLE)
         milliseconds = min(int(self._remaining() * 1000), 2**31 - 1)
         self._db.execute(f"PRAGMA busy_timeout={milliseconds}")
-        result = self._db.execute(sql, parameters)
+        self._pending_cursor = self._db.execute(sql, parameters)
         self._remaining()
+        result, self._pending_cursor = self._pending_cursor, None
         return result
 
     def _require_files(self) -> None:
@@ -102,6 +117,7 @@ class ConversationFence:
 
     def acquire(self, *, deadline: float) -> None:
         """Capture the connection before validation; retain it on any failure."""
+        self._require_identity()
         if self._attempted or self._retired:
             raise RuntimeError(_UNAVAILABLE)
         self._attempted = True
@@ -133,6 +149,7 @@ class ConversationFence:
             raise RuntimeError(_UNAVAILABLE) from None
 
     def _require_active(self) -> None:
+        self._require_identity()
         if (
             not self._active
             or self._retired
@@ -194,6 +211,45 @@ class ConversationFence:
         except Exception:
             raise RuntimeError(_UNAVAILABLE) from None
 
+    def _claim_source_owner(self, owner: object) -> None:
+        """Exclude every other source open/inspection under this writer."""
+        self._require_active()
+        if self._source_owner is not None and self._source_owner is not owner:
+            raise RuntimeError(_UNAVAILABLE)
+        self._source_owner = owner
+
+    def _release_source_owner(self, owner: object) -> None:
+        """Cleanup only: caller already retired all source connections/FDs.
+
+        Never acquire admission authority or touch another owner's binding.
+        The attempted owner captures itself before admission so interruptions
+        before/after assignment can always retry this exact cleanup safely.
+        """
+        self._require_identity()
+        if self._source_owner is owner:
+            self._source_owner = None
+
+    def require_storage_owner(
+        self,
+        *,
+        account_id: str,
+        execution_target_id: str,
+        coordinator_path: Path,
+    ) -> None:
+        """Prove held target storage ownership, without conversation authority."""
+        try:
+            self._require_active()
+            if (
+                account_id != self._store.account_id
+                or execution_target_id != self._store.execution_target_id
+                or coordinator_path != self._store.path.with_suffix(".coordinator.lock")
+                or coordinator_path != self._borrow.coordinator_path
+            ):
+                raise RuntimeError(_UNAVAILABLE)
+            self._remaining()
+        except Exception:
+            raise RuntimeError(_UNAVAILABLE) from None
+
     def require_current(self, *, now: float) -> None:
         """Revalidate the held owner/generation and original expiry after waits."""
         try:
@@ -205,17 +261,26 @@ class ConversationFence:
         except Exception:
             raise RuntimeError(_UNAVAILABLE) from None
 
+    def _close_pending_cursor(self) -> None:
+        if self._pending_cursor is not None:
+            self._pending_cursor.close()
+            self._pending_cursor = None
+
     def retire(self) -> None:
         """Rollback and close explicitly; never retire the caller's borrow.
 
         A failed retirement retains the captured connection and completed stage
         so its operation owner can quarantine and retry actual cleanup later.
         """
+        self._require_identity()
+        if self._source_owner is not None:
+            raise RuntimeError(_UNAVAILABLE)
         self._active = False
         if self._retired:
             return
         try:
             if self._db is not None:
+                self._close_pending_cursor()
                 if not self._rolled_back:
                     self._db.rollback()
                     self._rolled_back = True
