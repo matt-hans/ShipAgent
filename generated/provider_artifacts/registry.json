@@ -10,7 +10,7 @@
         "hosted",
         "local"
       ],
-      "call_repetition": "guarded",
+      "call_repetition": "poll",
       "confirmation_policy": null,
       "contract_version": "1.0.0",
       "description": "Return operational status for the active account execution target.",
@@ -101,7 +101,7 @@
         "generic_mcp"
       ],
       "provider_originated_fields": [],
-      "rate_limit_class": "default",
+      "rate_limit_class": "read",
       "requires_confirmation": false,
       "result_profile": "aggregate",
       "result_sensitivity": "business",

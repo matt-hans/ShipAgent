@@ -1,22 +1,22 @@
-from typing import Final
+"""Public protected-resource discovery; management scopes stay private."""
 
 from fastapi import APIRouter
 
-SUPPORTED_SCOPES: Final = [
-    "shipagent.status",
-    "shipments:preview",
-    "shipments:create",
-    "jobs:read",
-    "labels:read",
-    "relay:device:manage",
-    "relay:manage",
-]
+from src.control_plane.auth.oauth_contract import (
+    METADATA_PATH,
+    PUBLIC_SCOPES,
+    ROOT_METADATA_PATH,
+)
+
+# Retained for existing imports of the public metadata vocabulary.
+SUPPORTED_SCOPES = PUBLIC_SCOPES
 
 
 def build_metadata_router(resource: str, issuer: str) -> APIRouter:
     router = APIRouter()
 
-    @router.get("/.well-known/oauth-protected-resource")
+    @router.get(METADATA_PATH)
+    @router.get(ROOT_METADATA_PATH)
     async def protected_resource_metadata() -> dict[str, object]:
         return {
             "resource": resource,

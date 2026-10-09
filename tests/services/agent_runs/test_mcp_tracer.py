@@ -71,6 +71,7 @@ async def synthetic_mcp(store, provider_factory, *, context=OWNER, controls_now=
         # Only the external identity-provider boundary is scripted. The actual
         # MCP gate, target service, run store and conversation runtime are real.
         assert request.headers.get("authorization") == "Bearer synthetic-owner"
+        request.state.authorization = context
         token = set_authorization_context(context)
         try:
             return await call_next(request)

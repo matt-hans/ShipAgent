@@ -10,14 +10,20 @@ from typing import Any
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+from fastmcp.server.dependencies import get_context, get_http_request
 from fastmcp.tools import Tool
 from fastmcp.tools.tool import ToolResult
 from jsonschema import validate
-from mcp.types import TextContent, ToolAnnotations
+from mcp.types import CallToolResult, TextContent, ToolAnnotations
+from mcp.types import Tool as MCPTool
 
 from src.control_plane.auth.context import (
     AuthorizationContext,
     get_authorization_context,
+)
+from src.control_plane.auth.oauth_contract import (
+    PUBLIC_SCOPES,
+    validate_resource_metadata_url,
 )
 from src.control_plane.execution_grants import (
     ExecutionGrantAuthority,
@@ -60,6 +66,13 @@ PROVIDER_RESULT_ERROR = "Tool result could not be safely returned"
 GRANT_SETTLEMENT_TIMEOUT_SECONDS = 5.0
 
 
+class _OAuthErrorResult(ToolResult):
+    """Serialize auth failures as MCP error results without success-schema checks."""
+
+    def to_mcp_result(self) -> CallToolResult:
+        return CallToolResult(content=self.content, isError=True, _meta=self.meta)
+
+
 class BoundRegistryTool(Tool):
     def __init__(
         self,
@@ -68,14 +81,56 @@ class BoundRegistryTool(Tool):
         handler: ToolHandler | ConfirmedToolHandler,
         request_controls: RequestControls | None = None,
         execution_grants: ExecutionGrantAuthority | None = None,
+        oauth_resource_metadata_url: str | None = None,
         **kwargs: Any,
     ) -> None:
+        if oauth_resource_metadata_url is not None:
+            validate_resource_metadata_url(oauth_resource_metadata_url)
+            if not set(contract.auth_scopes) <= set(PUBLIC_SCOPES):
+                raise ValueError("configured MCP tools must use public OAuth scopes")
         super().__init__(*args, **kwargs)
         object.__setattr__(self, "_contract", contract)
         object.__setattr__(self, "_handler", handler)
         object.__setattr__(self, "_request_controls", request_controls)
         object.__setattr__(self, "_execution_grants", execution_grants)
         object.__setattr__(self, "_settlement_tasks", set())
+        object.__setattr__(
+            self, "_oauth_resource_metadata_url", oauth_resource_metadata_url
+        )
+
+    def _oauth_error(self, *, missing_context: bool = False) -> _OAuthErrorResult:
+        error = "invalid_token" if missing_context else "insufficient_scope"
+        description = (
+            "Authentication is required"
+            if missing_context
+            else "Additional authorization is required"
+        )
+        scopes = " ".join(self._contract.auth_scopes)
+        challenge = (
+            f'Bearer resource_metadata="{self._oauth_resource_metadata_url}", '
+            f'error="{error}", error_description="{description}", scope="{scopes}"'
+        )
+        return _OAuthErrorResult(
+            content=[TextContent(type="text", text=description)],
+            meta={"mcp/www_authenticate": [challenge]},
+        )
+
+    def to_mcp_tool(
+        self, *, include_fastmcp_meta: bool | None = None, **overrides: Any
+    ) -> MCPTool:
+        """Preserve the registry descriptor and expose its OAuth requirements."""
+        descriptor = (
+            super()
+            .to_mcp_tool(include_fastmcp_meta=include_fastmcp_meta, **overrides)
+            .model_dump(by_alias=True, exclude_none=True)
+        )
+        schemes = [{"type": "oauth2", "scopes": list(self._contract.auth_scopes)}]
+        descriptor["securitySchemes"] = schemes
+        descriptor["_meta"] = {
+            **descriptor.get("_meta", {}),
+            "securitySchemes": schemes,
+        }
+        return MCPTool.model_validate(descriptor)
 
     @staticmethod
     def _context_missing_error() -> "ToolAuthorizationError":
@@ -321,12 +376,41 @@ class BoundRegistryTool(Tool):
         return result
 
     async def run(self, arguments: dict[str, Any]) -> ToolResult:
-        context = get_authorization_context()
+        try:
+            request = get_http_request()
+        except RuntimeError:
+            # A configured HTTP server must prove the current request even if
+            # transport metadata has gone missing. Only legacy non-HTTP callers
+            # may explicitly authorize through the in-process context seam.
+            context = (
+                get_authorization_context()
+                if self._oauth_resource_metadata_url is None
+                else None
+            )
+        else:
+            # get_http_request has an initialization-time HTTP ContextVar fallback.
+            # Only the SDK's current message metadata proves this is the request
+            # being authorized, rather than an inherited transport request.
+            try:
+                message_context = get_context().request_context
+            except RuntimeError:
+                message_context = None
+            context = (
+                getattr(request.state, "authorization", None)
+                if message_context is not None and message_context.request is request
+                else None
+            )
+            if not isinstance(context, AuthorizationContext):
+                context = None
         if context is None:
+            if self._oauth_resource_metadata_url is not None:
+                return self._oauth_error(missing_context=True)
             raise self._context_missing_error()
 
         missing = set(self._contract.auth_scopes) - context.scopes
         if missing:
+            if self._oauth_resource_metadata_url is not None:
+                return self._oauth_error()
             raise self._missing_scopes_error(sorted(missing))
 
         failure_category: str | None = None
@@ -428,6 +512,7 @@ def build_server(
     request_controls: RequestControls | None = None,
     execution_grants: ExecutionGrantAuthority | None = None,
     confirmed_tool_handlers: Mapping[str, ConfirmedToolHandler] | None = None,
+    oauth_resource_metadata_url: str | None = None,
 ) -> FastMCP:
     """Build the hosted MCP server from exportable, handler-bound contracts.
 
@@ -435,6 +520,8 @@ def build_server(
     handlers receive the server-owned ``ExecutionGrantBinding``; with no
     ``execution_grants`` authority they fail closed on every call.
     """
+    if oauth_resource_metadata_url is not None:
+        validate_resource_metadata_url(oauth_resource_metadata_url)
     server = FastMCP("ShipAgentHosted")
     handlers = tool_handlers or {}
     confirmed_handlers = confirmed_tool_handlers or {}
@@ -457,6 +544,7 @@ def build_server(
                 handler=handler,
                 request_controls=request_controls,
                 execution_grants=execution_grants,
+                oauth_resource_metadata_url=oauth_resource_metadata_url,
             )
         )
     return server
