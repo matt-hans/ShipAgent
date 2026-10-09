@@ -1,3 +1,4 @@
+import time
 from contextlib import asynccontextmanager
 from functools import lru_cache
 from typing import Any
@@ -79,7 +80,11 @@ async def _resolve_authorization(
     settings: ControlPlaneSettings,
     principal: TokenPrincipal,
     db_session_factory: async_sessionmaker[AsyncSession] | None = None,
+    *,
+    operation_deadline: float | None = None,
 ) -> AuthorizationContext:
+    if operation_deadline is None:
+        operation_deadline = time.monotonic() + 2.0
     client_registry = ProviderClientRegistry(settings.auth0_provider_clients)
     session_factory = db_session_factory or _build_db_sessionmaker(
         settings.database_url
@@ -91,12 +96,20 @@ async def _resolve_authorization(
             client_id=principal.client_id,
             scopes=set(principal.scopes),
             auth_time=principal.auth_time,
+            issuer=principal.issuer,
+            issuer_link_id=principal.issuer_link_id,
+            token_expires_at=principal.expires_at,
+            operation_deadline=operation_deadline,
         )
 
 
 @lru_cache
-def _build_verifier(issuer: str, audience: str) -> Auth0TokenVerifier:
-    return Auth0TokenVerifier(issuer=issuer, audience=audience)
+def _build_verifier(
+    issuer: str, audience: str, provider_link_claim: str | None = None
+) -> Auth0TokenVerifier:
+    return Auth0TokenVerifier(
+        issuer=issuer, audience=audience, provider_link_claim=provider_link_claim
+    )
 
 
 def create_control_plane_app(
@@ -161,7 +174,15 @@ def create_control_plane_app(
 
     app = FastAPI(lifespan=lifespan)
     app.state.retention_worker = retention_worker
-    verifier = _build_verifier(settings.auth0_issuer, settings.auth0_audience)
+    verifier = (
+        _build_verifier(
+            settings.auth0_issuer,
+            settings.auth0_audience,
+            settings.auth0_provider_link_claim,
+        )
+        if settings.auth0_provider_link_claim is not None
+        else _build_verifier(settings.auth0_issuer, settings.auth0_audience)
+    )
     app.include_router(build_metadata_router(metadata_resource, settings.auth0_issuer))
     app.include_router(build_relay_router(relay_registry, relay_invocation_broker))
     app.mount("/mcp", mcp_app)

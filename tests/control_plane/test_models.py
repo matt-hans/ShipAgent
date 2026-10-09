@@ -264,3 +264,75 @@ def test_alembic_upgrades_existing_relay_device_schema_forward(tmp_path):
     engine.dispose()
 
     assert {"key_version", "revoked_at"} <= upgraded_columns
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"issuer_link_id": "grant"},
+        {"link_epoch": "epoch"},
+        {"issuer_link_id": "grant", "link_epoch": "epoch"},
+        {"issuer_link_id": "", "link_epoch": "epoch", "allowed_scopes_text": ""},
+    ],
+)
+async def test_provider_link_binding_is_all_or_none(control_db, fields):
+    control_db.add(
+        CloudAccount(
+            id="strict-account",
+            auth0_subject="strict-owner",
+            issuer="https://synthetic.invalid/",
+        )
+    )
+    await control_db.commit()
+    control_db.add(
+        ProviderConnection(
+            account_id="strict-account",
+            client_id="chatgpt-client",
+            surface="chatgpt",
+            **fields,
+        )
+    )
+    with pytest.raises(IntegrityError):
+        await control_db.commit()
+
+
+async def test_strict_and_legacy_uniqueness_are_separate(control_db):
+    control_db.add(
+        CloudAccount(
+            id="strict-account",
+            auth0_subject="strict-owner",
+            issuer="https://synthetic.invalid/",
+        )
+    )
+    await control_db.commit()
+    for link in (None, "one", "two"):
+        fields = (
+            {}
+            if link is None
+            else {
+                "issuer_link_id": link,
+                "link_epoch": "epoch-" + link,
+                "allowed_scopes_text": "shipagent.status",
+            }
+        )
+        control_db.add(
+            ProviderConnection(
+                account_id="strict-account",
+                client_id="chatgpt-client",
+                surface="chatgpt",
+                **fields,
+            )
+        )
+    await control_db.commit()
+    control_db.add(
+        ProviderConnection(
+            account_id="strict-account",
+            client_id="chatgpt-client",
+            surface="chatgpt",
+            issuer_link_id="one",
+            link_epoch="different-epoch",
+            allowed_scopes_text="shipagent.status",
+        )
+    )
+    with pytest.raises(IntegrityError):
+        await control_db.commit()

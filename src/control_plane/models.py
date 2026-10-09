@@ -3,6 +3,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -31,6 +32,7 @@ class CloudAccount(ControlPlaneBase):
     __tablename__ = "cloud_accounts"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     auth0_subject: Mapped[str] = mapped_column(String(255), unique=True)
+    issuer: Mapped[str | None] = mapped_column(String(2048))
     suspended: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -49,7 +51,37 @@ class ProviderConnection(ControlPlaneBase):
     surface: Mapped[str] = mapped_column(String(64))
     scopes_text: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(32), default="active")
-    __table_args__ = (UniqueConstraint("account_id", "client_id", "surface"),)
+    issuer_link_id: Mapped[str | None] = mapped_column(String(128))
+    link_epoch: Mapped[str | None] = mapped_column(String(128))
+    allowed_scopes_text: Mapped[str | None] = mapped_column(Text)
+    __table_args__ = (
+        CheckConstraint(
+            "(issuer_link_id IS NULL AND link_epoch IS NULL AND allowed_scopes_text IS NULL) OR "
+            "(issuer_link_id IS NOT NULL AND length(issuer_link_id) BETWEEN 1 AND 128 "
+            "AND link_epoch IS NOT NULL AND length(link_epoch) BETWEEN 1 AND 128 "
+            "AND allowed_scopes_text IS NOT NULL)",
+            name="ck_provider_connections_link_binding",
+        ),
+        Index(
+            "uq_provider_connections_legacy",
+            "account_id",
+            "client_id",
+            "surface",
+            unique=True,
+            sqlite_where=text("issuer_link_id IS NULL"),
+            postgresql_where=text("issuer_link_id IS NULL"),
+        ),
+        Index(
+            "uq_provider_connections_strict_link",
+            "account_id",
+            "client_id",
+            "surface",
+            "issuer_link_id",
+            unique=True,
+            sqlite_where=text("issuer_link_id IS NOT NULL"),
+            postgresql_where=text("issuer_link_id IS NOT NULL"),
+        ),
+    )
 
 
 class RelayDevice(ControlPlaneBase):

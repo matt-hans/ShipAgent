@@ -33,6 +33,7 @@ class _AuthorizationService(AuthorizationService):
         client_id: str,
         scopes: set[str],
         auth_time: datetime | None,
+        **verified_request,
     ) -> AuthorizationContext:
         return AuthorizationContext(
             account_id="acct-1",
@@ -119,3 +120,32 @@ def test_valid_token_populates_context(monkeypatch):
         "shipments:preview",
     }
     assert payload["authorization"]["auth_time"] == _AUTH_TIME.isoformat()
+
+
+async def test_real_identity_resolution_preserves_captured_deadline(control_db):
+    import time
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from src.control_plane.app import _resolve_authorization
+    from src.control_plane.config import ControlPlaneSettings
+
+    deadline = time.monotonic() + 1.5
+    expiry = time.time() + 30.125
+    principal = TokenPrincipal(
+        subject="legacy-http-owner",
+        client_id="chatgpt-client",
+        scopes=frozenset({"shipagent.status"}),
+        issuer="https://synthetic.invalid/",
+        expires_at=expiry,
+    )
+    context = await _resolve_authorization(
+        ControlPlaneSettings(),
+        principal,
+        async_sessionmaker(control_db.bind, expire_on_commit=False),
+        operation_deadline=deadline,
+    )
+    assert context.operation_deadline == deadline
+    assert context.token_expires_at == expiry
+    assert context.issuer == principal.issuer
+    assert context.link_epoch is None

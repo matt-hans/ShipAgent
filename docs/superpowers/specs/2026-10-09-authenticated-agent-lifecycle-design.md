@@ -95,6 +95,18 @@ rewrite policy; an older broad token cannot restore a reduced or revoked
 permission. Revocation and ceiling reduction are trusted internal operations
 for this local proof, not new model-callable or public management endpoints.
 
+### Staged identity qualification
+
+The identity-only checkpoint qualifies verified claims, durable link mapping,
+policy separation and propagation of the original request deadline. Its service
+retains the exact failed session and original failure when rollback is uncertain
+and denies further use of that service. It does not independently qualify the
+full two-second HTTP cleanup bound. Before opt-in composition, the planned
+captured pre-auth owner must own this same service/session before effects and
+provide bounded rollback/close retention; an automatic session-context exit must
+not discard an uncertain owner. This is a mandatory integration gate, not a waiver
+of the final request-lifetime contract.
+
 ## Lifetimes and expected ownership
 
 The verified request carries exact account, connection, expected epoch, surface,

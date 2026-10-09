@@ -12,6 +12,10 @@ class AuthorizationContext:
     client_id: str
     scopes: frozenset[str]
     auth_time: datetime | None = None
+    issuer: str | None = None
+    link_epoch: str | None = None
+    token_expires_at: float | None = None
+    operation_deadline: float | None = None
 
 
 _AUTHORIZATION_CONTEXT: ContextVar[AuthorizationContext | None] = ContextVar(

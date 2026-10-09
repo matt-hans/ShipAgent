@@ -15,12 +15,12 @@ its own one-shot dispatch authorization and fresh publication authority.
 PostgreSQL 17, Alembic and pytest. No new dependency or live service provisioning.
 
 **Spec:** [Authenticated synthetic lifecycle](../specs/2026-10-09-authenticated-agent-lifecycle-design.md),
-SHA256 `69b4ee7f46f4a3ef595b6c61b00ff17434b32b6320627fe8a3759b2052774cf2`.
+SHA256 `2a5f55340b90c1b5b90827bb08345d4fece47a80d257bd0af543aeb0aef0b343`.
 
 **Execution:** Serial implementation by the current integrator and independent
 review after each checkpoint. Task 1 begins only after this plan is reviewed.
 Do not create additional worker lanes or implement later tasks before their gate.
-Current status: all implementation tasks below are unstarted.
+Current status: Task 1 author qualification is in progress; Tasks 2–5 remain unstarted.
 
 ## Global Constraints
 
@@ -123,6 +123,11 @@ bound. Release between checkpoints and honor already-queued Bulldog work.
   a new grant gets a new identity; older broad/narrow tokens in both orders cannot
   change a reduced ceiling. Wrong issuer and expired post-lock resolution deny.
   Run real PostgreSQL migration upgrade/rollback-failure checks preserving rows.
+- [ ] **Preserve failed identity cleanup.** Keep the exact session and original
+  failure when rollback fails, deny further use, and test cancellation/timeout
+  plus rollback faults. This checkpoint does not qualify bounded HTTP cleanup;
+  the Task 3 owner must capture the same service/session before effects and own
+  bounded retirement before any opt-in profile is enabled.
 - [ ] **Run GREEN and commit.** `pytest -c pyproject.toml -q tests/control_plane/auth
   tests/control_plane/test_app_auth.py tests/control_plane/test_models.py
   tests/control_plane/test_migrations_postgres.py
@@ -213,7 +218,8 @@ bound. Release between checkpoints and honor already-queued Bulldog work.
   transaction, original driver/backend/XID, deadline and result/failure state.
 - `begin_http_operation(service, deadline) -> AgentRunAuthorityOwner` captures
   the ordinary coordinator borrow and slot synchronously before persistent
-  identity resolution. After resolution, `owner.bind_request(context)` creates
+  identity resolution. It owns the exact Task 1 service/session, including
+  retained rollback failures; no automatic context exit may discard them. After resolution, `owner.bind_request(context)` creates
   the one immutable `RunRequestAuthority` for that owner. The fixed HTTP methods
   require that exact bound object to belong to the still-active owner; a copied
   value or another request cannot adopt it. Worker methods allocate their own

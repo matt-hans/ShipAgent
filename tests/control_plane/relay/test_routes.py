@@ -424,6 +424,7 @@ class _AuthorizationService(AuthorizationService):
         client_id: str,
         scopes: set[str],
         auth_time: datetime | None = None,
+        **verified_request,
     ) -> AuthorizationContext:
         return AuthorizationContext(
             account_id="acct-2" if subject == "auth0|owner-2" else "acct-1",

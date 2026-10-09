@@ -4,6 +4,7 @@ from enum import StrEnum
 from pydantic import AnyHttpUrl, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from src.control_plane.auth.jwt_verifier import validate_provider_link_claim
 from src.control_plane.auth.oauth_contract import canonical_mcp_resource
 
 
@@ -35,6 +36,7 @@ class ControlPlaneSettings(BaseSettings):
     redis_url: str | None = None
     auth0_issuer: str = ""
     auth0_audience: str = ""
+    auth0_provider_link_claim: str | None = None
     relay_signing_secret: str = Field(default="", min_length=0)
     control_plane_schema: str = "shipagent_private"
     auth0_provider_clients: dict[str, str] = Field(
@@ -56,6 +58,11 @@ class ControlPlaneSettings(BaseSettings):
         if value is not None:
             canonical_mcp_resource(str(value))
         return value
+
+    @field_validator("auth0_provider_link_claim", mode="before")
+    @classmethod
+    def _validate_link_claim(cls, value):
+        return validate_provider_link_claim(value)
 
     @field_validator("audit_retention_days", mode="before")
     @classmethod
