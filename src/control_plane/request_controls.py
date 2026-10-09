@@ -99,16 +99,18 @@ class RequestControls:
         tool_name: str,
         rate_limit_class: str,
         arguments_hash: str,
+        call_repetition: str = "guarded",
     ) -> None:
         await self._require_rate_limit(
             connection_id=connection_id,
             rate_limit_class=rate_limit_class,
         )
-        await self._require_loop_guard(
-            connection_id=connection_id,
-            tool_name=tool_name,
-            arguments_hash=arguments_hash,
-        )
+        if call_repetition not in {"poll", "idempotent"}:
+            await self._require_loop_guard(
+                connection_id=connection_id,
+                tool_name=tool_name,
+                arguments_hash=arguments_hash,
+            )
 
     async def _require_rate_limit(
         self,

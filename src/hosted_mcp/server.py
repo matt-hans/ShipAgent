@@ -345,6 +345,11 @@ class BoundRegistryTool(Tool):
                         tool_name=self._contract.name,
                         rate_limit_class=self._contract.rate_limit_class,
                         arguments_hash=hash_arguments(arguments),
+                        **(
+                            {"call_repetition": self._contract.call_repetition}
+                            if self._contract.call_repetition != "guarded"
+                            else {}
+                        ),
                     )
                 except RequestControlError as err:
                     raise self._loop_guard_or_rate_limit_error(err) from err

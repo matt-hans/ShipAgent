@@ -189,6 +189,18 @@ class OpenAIProviderClient:
         finally:
             await close_owned_stream(stream)
 
+        # SDK iteration ending normally only proves transport EOF. A complete
+        # function-call block can precede a lost terminal response, so never
+        # authorize the runtime's tool batch or next model turn without it.
+        if _field(completed_response, "status") != "completed" or not isinstance(
+            _field(completed_response, "output"), list
+        ):
+            yield ProviderStreamEvent(
+                type=ProviderStreamEventType.PROVIDER_ERROR,
+                error_message="Incomplete provider response",
+            )
+            return
+
         if completed_response is not None:
             try:
                 response_calls = _tool_calls_from_openai_response(completed_response)

@@ -9,6 +9,9 @@ from src.registry.tools.public import public_tool
 from src.registry.tools.schema import object_schema
 
 EXPECTED_PUBLIC = {
+    "submit_shipagent_task",
+    "read_shipagent_run",
+    "cancel_shipagent_run",
     "get_shipagent_status",
     "validate_shipment_address",
     "get_shipment_rates",
@@ -39,7 +42,12 @@ def test_public_tools_are_tenant_safe_and_provider_exportable():
         assert tool.visibility == ToolVisibility.public
         assert tool.tenant_safe is True
         assert tool.implementation_status == "implemented"
-        assert tool.hosted_readiness == "ready"
+        assert tool.hosted_readiness == (
+            "not_ready"
+            if tool.name
+            in {"submit_shipagent_task", "read_shipagent_run", "cancel_shipagent_run"}
+            else "ready"
+        )
         assert tool.provider_export_enabled is (tool.name in DEFAULT_EXPORTED_PUBLIC)
         assert ProviderExport.openai_apps_public in tool.provider_exports
         assert ProviderExport.claude_remote_mcp_public in tool.provider_exports
@@ -839,3 +847,41 @@ def test_confirming_public_tools_declare_prepare_tool_and_approval_reference():
         if tool.requires_confirmation:
             assert tool.prepare_tool is not None
             assert "approval_request_id" in tool.input_schema["properties"]
+
+
+def test_dormant_agent_work_metadata_does_not_weaken_purchase_gates():
+    from pydantic import ValidationError
+
+    from src.provider_adapters.mcp_projection import to_mcp_tool_descriptor
+    from src.registry.models import ToolContract
+
+    tools = {tool.name: tool for tool in public_tools()}
+    submit = tools["submit_shipagent_task"]
+    read = tools["read_shipagent_run"]
+    assert submit.side_effect == SideEffectClass.agent_work
+    assert submit.auth_scopes == ["shipagent.preview"]
+    assert submit.call_repetition == "idempotent"
+    assert read.auth_scopes == ["shipagent.status"]
+    assert read.call_repetition == "poll"
+    assert to_mcp_tool_descriptor(submit)["annotations"]["readOnlyHint"] is False
+    assert to_mcp_tool_descriptor(read)["annotations"]["readOnlyHint"] is True
+    for tool in (submit, read):
+        assert not tool.provider_export_enabled
+        assert tool.hosted_readiness == "not_ready"
+        assert provider_schema_privacy_violations(tool.name, tool.input_schema) == []
+        assert provider_schema_privacy_violations(tool.name, tool.output_schema) == []
+    for side_effect in (
+        SideEffectClass.write,
+        SideEffectClass.purchase,
+        SideEffectClass.external_mutation,
+        SideEffectClass.destructive,
+    ):
+        with pytest.raises(ValidationError):
+            ToolContract.model_validate(
+                {**submit.model_dump(), "side_effect": side_effect}
+            )
+    for side_effect in (SideEffectClass.agent_work, SideEffectClass.estimate):
+        with pytest.raises(ValidationError):
+            ToolContract.model_validate(
+                {**read.model_dump(), "side_effect": side_effect}
+            )
