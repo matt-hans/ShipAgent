@@ -155,7 +155,7 @@ PUBLIC_TOOLS = [
             ["status", "executionTarget"],
         ),
         provider_export_enabled=True,
-    ),
+    ).model_copy(update={"rate_limit_class": "read", "call_repetition": "poll"}),
     public_tool(
         "validate_shipment_address",
         "Validate shipment address",

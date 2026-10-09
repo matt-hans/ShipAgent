@@ -507,7 +507,7 @@ def _build_app(monkeypatch, *, execution_target=None, relay_invocation_broker=No
         sync_engine.dispose()
     monkeypatch.setenv("SHIPAGENT_PUBLIC_BASE_URL", "https://dev-mcp.shipagent.app/")
     monkeypatch.setenv("SHIPAGENT_AUTH0_ISSUER", "https://tenant.us.auth0.com/")
-    monkeypatch.setenv("SHIPAGENT_AUTH0_AUDIENCE", "https://dev-mcp.shipagent.app")
+    monkeypatch.setenv("SHIPAGENT_AUTH0_AUDIENCE", "https://dev-mcp.shipagent.app/mcp")
     monkeypatch.setenv("SHIPAGENT_DATABASE_URL", database_url)
     monkeypatch.setenv("SHIPAGENT_REDIS_URL", "redis://127.0.0.1:6379/0")
     monkeypatch.setattr("src.control_plane.app.Auth0TokenVerifier", _TokenVerifier)
@@ -571,24 +571,64 @@ async def test_status_handler_builds_full_target_tool_request() -> None:
     assert result["status"] == "ready"
 
 
-async def _run_status_tool(server) -> dict[str, object]:
-    tools = await server.get_tools()
-    context = AuthorizationContext(
-        account_id="acct-1",
-        provider_connection_id="pc-1",
-        provider_surface="chatgpt",
-        subject="auth0|owner-1",
-        client_id="chatgpt-client",
-        scopes=frozenset({"shipagent.status"}),
-    )
-    token = set_authorization_context(context)
-    try:
-        result = await tools["get_shipagent_status"].run(
-            {"correlation_id": STATUS_CORRELATION_ID}
+async def _run_status_tool(client: TestClient) -> dict[str, object]:
+    """Use the authenticated HTTP boundary without blocking the relay loop."""
+    headers = {
+        "Authorization": "Bearer status-token",
+        "Accept": "application/json, text/event-stream",
+    }
+
+    def post(method, params, request_id):
+        response = client.post(
+            "/mcp/",
+            headers=headers,
+            json={
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": method,
+                "params": params,
+            },
         )
-    finally:
-        clear_authorization_context(token)
-    return result.structured_content
+        assert response.status_code == 200, response.text
+        if response.headers["content-type"].startswith("text/event-stream"):
+            replies = [
+                json.loads(line[6:])
+                for line in response.text.splitlines()
+                if line.startswith("data: ")
+            ]
+            payload = next(reply for reply in replies if reply.get("id") == request_id)
+        else:
+            payload = response.json()
+        return payload["result"]
+
+    def read_status():
+        post(
+            "initialize",
+            {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": {"name": "relay-http-test", "version": "1"},
+            },
+            1,
+        )
+        notification = client.post(
+            "/mcp/",
+            headers=headers,
+            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+        )
+        assert notification.status_code == 202
+        result = post(
+            "tools/call",
+            {
+                "name": "get_shipagent_status",
+                "arguments": {"correlation_id": STATUS_CORRELATION_ID},
+            },
+            2,
+        )
+        assert result.get("isError", False) is False, result
+        return result["structuredContent"]
+
+    return await asyncio.to_thread(read_status)
 
 
 async def _run_status_tool_over_http(
@@ -1846,14 +1886,6 @@ async def test_rotation_holds_device_guard_across_commit_and_disconnect(
 def test_desktop_relay_client_connection_makes_hosted_status_ready(
     monkeypatch,
 ) -> None:
-    captured = {}
-
-    def capture_build_server(**kwargs):
-        server = real_build_server(**kwargs)
-        captured["server"] = server
-        return server
-
-    monkeypatch.setattr("src.control_plane.app.build_server", capture_build_server)
     app, _redis = _build_app(monkeypatch)
 
     async def run_scenario(client: TestClient, device_id: str) -> None:
@@ -1867,10 +1899,10 @@ def test_desktop_relay_client_connection_makes_hosted_status_ready(
 
         await relay_client.start()
         try:
-            ready_status = await _run_status_tool(captured["server"])
+            ready_status = await _run_status_tool(client)
         finally:
             await relay_client.stop()
-        offline_status = await _run_status_tool(captured["server"])
+        offline_status = await _run_status_tool(client)
 
         assert ready_status == {
             "status": "ready",
@@ -1899,14 +1931,6 @@ def test_desktop_relay_client_connection_makes_hosted_status_ready(
 def test_hosted_status_returns_offline_when_only_stale_redis_liveness_remains(
     monkeypatch,
 ) -> None:
-    captured = {}
-
-    def capture_build_server(**kwargs):
-        server = real_build_server(**kwargs)
-        captured["server"] = server
-        return server
-
-    monkeypatch.setattr("src.control_plane.app.build_server", capture_build_server)
     app, redis = _build_app(monkeypatch)
 
     async def run_scenario(client: TestClient, device_id: str) -> None:
@@ -1930,7 +1954,7 @@ def test_hosted_status_returns_offline_when_only_stale_redis_liveness_remains(
         await relay_client.stop()
         redis.values.update(stale_values)
 
-        status = await _run_status_tool(captured["server"])
+        status = await _run_status_tool(client)
 
         assert status == {
             "status": "offline",
