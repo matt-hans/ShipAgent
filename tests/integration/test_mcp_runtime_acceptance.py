@@ -1,7 +1,7 @@
 """T0 wire acceptance: real MCP/runtime/storage; synthetic identity and providers.
 
 These are generic protocol clients, not ChatGPT or Claude product clients. Only
-the deliberately opted-in source-free submit/read/cancel catalog is exercised. Carrier
+the deliberately opted-in source-free planning lifecycle catalog is exercised. Carrier
 acquisition is counted and replaced at the external gateway boundary.
 """
 
@@ -273,7 +273,7 @@ async def terminal(client, reference):
                     "read_shipagent_run", {"run_reference": reference}
                 )
             ).structured_content
-            assert set(result) == set(RUN_RESULT_SCHEMA["properties"])
+            assert set(result) == set(RUN_RESULT_SCHEMA["required"])
             assert CANARY not in json.dumps(result)
             if result["state"] not in {"queued", "running"}:
                 return result
@@ -317,6 +317,7 @@ async def test_lost_reply_reconnect_and_reopen_keep_one_durable_run(
                 tools = {tool.name: tool for tool in await client.list_tools()}
                 assert set(tools) == {
                     "submit_shipagent_task",
+                    "continue_shipagent_task",
                     "read_shipagent_run",
                     "cancel_shipagent_run",
                 }

@@ -16,6 +16,11 @@ class AgentRunExecutionTarget:
                 connection_id=request.provider_connection_id,
                 arguments=request.arguments,
             )
+        if request.tool_name == "continue_shipagent_task":
+            return self._service.continue_turn(
+                connection_id=request.provider_connection_id,
+                arguments=request.arguments,
+            )
         if request.tool_name == "read_shipagent_run":
             return self._service.read(
                 connection_id=request.provider_connection_id,

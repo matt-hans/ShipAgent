@@ -64,6 +64,7 @@ def build_execution_target_tool_handlers(
         handlers.update(
             {
                 "submit_shipagent_task": run_handler("submit_shipagent_task"),
+                "continue_shipagent_task": run_handler("continue_shipagent_task"),
                 "read_shipagent_run": run_handler("read_shipagent_run"),
                 "cancel_shipagent_run": run_handler("cancel_shipagent_run"),
             }

@@ -17,6 +17,7 @@ EXPECTED_TOOL_NAMES = [
     "get_job_status",
     "create_label_download",
     "submit_shipagent_task",
+    "continue_shipagent_task",
     "read_shipagent_run",
     "cancel_shipagent_run",
     "raw_ups_tool",

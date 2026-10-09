@@ -11,7 +11,7 @@ if [[ ! -x "$PYTHON" ]]; then
 fi
 OUTPUT="${SHIPAGENT_TEST_ACCEPTANCE_OUTPUT:-$ROOT/.cache/mcp-acceptance-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 LOCK="${SHIPAGENT_TEST_HEAVY_LOCK:-$ROOT/../development-heavy.lock}"
-TESTS=(tests/integration/test_mcp_runtime_acceptance.py tests/services/agent_runs/test_mcp_tracer.py tests/services/agent_runs/test_process_recovery.py tests/services/agent_runs/test_mcp_cancellation.py tests/services/agent_runs/test_cancellation_process_recovery.py)
+TESTS=(tests/integration/test_mcp_runtime_acceptance.py tests/services/agent_runs/test_mcp_tracer.py tests/services/agent_runs/test_process_recovery.py tests/services/agent_runs/test_mcp_cancellation.py tests/services/agent_runs/test_cancellation_process_recovery.py tests/services/agent_runs/test_mcp_continuation.py tests/services/agent_runs/test_continuation_recovery.py tests/services/agent_runs/test_continuation_migration.py)
 if [[ "${1:-}" == --self-test ]]; then
   shift
   TESTS=(tests/integration/test_validation_runner.py)

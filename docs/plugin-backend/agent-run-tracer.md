@@ -9,13 +9,13 @@ live-provider readiness is claimed.
 
 ## Implemented path
 
-A real loopback HTTP FastMCP client initializes and lists three test-enabled
+A real loopback HTTP FastMCP client initializes and lists four test-enabled
 canonical contracts. `submit_shipagent_task` requires `shipagent.preview` and
 truthfully describes stateful model work (`readOnlyHint=false`). It accepts a
 bounded source-free task plus an idempotency key; it cannot accept source paths,
 remote URLs, approval flags or shipping execution arguments.
 `read_shipagent_run` requires `shipagent.status` and returns only a closed state
-projection. Neither descriptor is enabled in production provider exports.
+projection. None of these lifecycle descriptors is enabled in production provider exports.
 
 The existing hosted gate constructs a trusted `TargetToolRequest` carrying the
 account and provider-connection identity separately from model arguments. An
@@ -74,9 +74,62 @@ arbitrary cancellation-resistant in-process provider. This is safe fencing and
 truthful resource ownership, not an arbitrary-provider termination guarantee.
 
 Real loopback MCP tests cover queued/running cancel, duplicate/reopen recovery,
-terminal immutability, minimal scope and cross-account/connection denial. No
-clarification or approval follow-up exists yet; cancellation of those future
-quiescent follow-ups remains a separate lifecycle requirement.
+terminal immutability, minimal scope and cross-account/connection denial. They
+also cover invalidating the exact current clarification follow-up while keeping
+its terminal row unchanged. Shipping approval follow-ups are not implemented;
+their cancellation/invalidation remains a separate approval-lifecycle gate.
+
+## Dormant clarification and continuation
+
+`continue_shipagent_task` requires preview scope and accepts only the owning
+Conversation Reference, exact current waiting Agent Run Reference, expected
+**conversation** revision, bounded follow-up text and request key. It is stateful
+model work with an idempotent call policy, not shipment approval. A trusted
+service callback supplies a bounded opaque connection epoch; neither MCP inputs
+nor model output may choose one. The current callback result is rechecked after
+storage-lock waits and before acceptance, idempotent recovery, dispatch and
+publication. A missing, changed or unavailable authority fails closed. This
+injection is a synthetic interface, not an implemented production relink or
+reauthorization system.
+
+Only an epoch-bound run gets the trusted closed-control prompt. A successful
+clarification is exactly one complete JSON object containing only
+`clarification_code`, selected from `shipping_goal`, `package_scope` or
+`service_preference`. Trusted templates supply the public question; arbitrary
+inner text never becomes a public question. Duplicate keys, extra fields,
+malformed objects, unknown codes, multiple text blocks and missing genuine
+terminal proof cannot authorize follow-up. Validation occurs on raw complete
+text events before privacy projection can normalize JSON. The 256-character
+control limit is distinct from the shared runtime's 65,536-character accepted
+plain-text-block ceiling; neither bounds an already-materialized SDK event.
+
+The completed waiting run keeps its immutable reference, accepted revision,
+outcome and private history. Its public `conversation_revision` and
+`conversation_state` describe current follow-up reality separately. The fixed
+clarification object is present only while that exact run/revision still owns
+live waiting input. Accepting a continuation atomically consumes that follow-up,
+creates a new run at the next revision and retains the original expiry. An
+identical retry recovers the accepted successor even though the original
+revision is now stale; a changed request, other waiting run or foreign owner
+cannot start another model request. A conversation is bounded to eight accepted
+runs and the existing account/connection admission quotas.
+
+Cancelling a quiescent waiting turn invalidates only its current follow-up;
+it does not rewrite the old terminal row or transcript. Cancelling an old run
+after a successor exists cannot cancel that successor. Retrying, reading or
+reopening completed work does not construct another provider. A fresh shared
+runtime receives only committed prior private history under its existing
+30-message/16,000-serialized-character provider replay limits; these are not a
+durable-storage byte cap. Dispatched work interrupted by process death is never
+automatically replayed.
+
+Version-one stores are upgraded explicitly and transactionally only during
+service startup under the exclusive coordinator lease. Ordinary store open/read
+does not migrate. The migration preserves old references, input hashes,
+idempotency keys, histories and original expiry as epoch-unbound records; it
+never silently grants them clarification/continuation authority. SQL-failure
+and process-death tests cover atomic rollback and recovery. Physical storage
+power loss and backup rollback remain separate qualification gates.
 
 ## Acceptance and recovery invariants
 
@@ -132,11 +185,11 @@ its retained-record bound rather than forgetting old keys and resurrecting work.
 
 ## Still required
 
-This slice returns status only. Useful, privacy-reviewed clarification/result
-projection, continue revisions, authenticated ordered event cursors,
-provider revocation and pending-follow-up cancellation, private provider continuation recovery, authenticated relay
-ownership envelopes, connection-generation semantics, headless enrollment and
-secret storage, source/settings/gateway isolation, token/spending budgets and
-actual ChatGPT/Claude client tests remain open. The existing status-only tool's
-polling contract and OAuth/resource metadata alignment remain in milestone #78.
-No pending shipment mutation or approval path is enabled by this tracer.
+Useful source-backed answers and previews, authenticated ordered event cursors,
+production provider revocation/relink epochs, authenticated relay ownership
+envelopes, operational headless enrollment and secret storage, source/settings/
+gateway isolation, token/spending budgets and actual ChatGPT/Claude client tests
+remain open. The local callback-bound clarification/continuation path does not
+close those authority or deployment gates. OAuth/resource alignment and bounded
+status polling are implemented locally, with actual-client qualification still
+in milestone #78. No pending shipment mutation or approval path is enabled.
