@@ -10,7 +10,7 @@ from collections.abc import Callable
 from contextlib import aclosing, suppress
 
 from src.services.agent_runs.clarification import ClarificationProvider
-from src.services.agent_runs.coordinator import CoordinatorLease
+from src.services.agent_runs.coordinator import CoordinatorBorrow, CoordinatorLease
 from src.services.agent_runs.store import AgentRun, AgentRunStore
 from src.services.agent_session_manager import AgentSession, AgentSessionManager
 from src.services.conversation_handler import process_message
@@ -87,6 +87,8 @@ class AgentRunService:
     async def close(self) -> None:
         """Bound shutdown without releasing a lease above still-live owned work."""
         self._closing = True
+        if self._lease is not None:
+            self._lease.begin_close()
         self._signal_active_cancel()
         self._wake.set()
         tasks = {task for task in self._owned_tasks if not task.done()}
@@ -103,6 +105,17 @@ class AgentRunService:
         if self._lease is not None:
             self._lease.close()
             self._lease = None
+
+    def borrow_coordinator(self) -> tuple[CoordinatorBorrow, int]:
+        """Pin available ownership without database, authority or model work.
+
+        The consumer must validate the captured generation in its own bounded
+        transaction. This accessor deliberately does not open that transaction.
+        """
+        self._require_worker()
+        if self._lease is None:
+            raise RuntimeError("Agent run coordinator is unavailable.")
+        return self._lease.borrow(), self._generation
 
     def _own_task(self, task: asyncio.Task) -> asyncio.Task:
         self._owned_tasks.add(task)
