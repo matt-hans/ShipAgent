@@ -12,16 +12,20 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import quote
 
 from src.registry.identifiers import ShipAgentIdFamily, mint_shipagent_id
 from src.services.agent_runs.clarification import public_clarification
-from src.services.agent_runs.coordinator import CoordinatorLease
+from src.services.agent_runs.coordinator import CoordinatorBorrow, CoordinatorLease
 from src.services.agent_runs.private_storage import (
     require_private_directory,
     require_private_file,
     sync_directory,
 )
+
+if TYPE_CHECKING:
+    from src.services.agent_runs.source_ownership import ConversationFence
 
 # Conservative synthetic admission bounds, not a production spending policy.
 MAX_PENDING_PER_CONNECTION = 4
@@ -142,15 +146,33 @@ class AgentRunStore:
         if create:
             sync_directory(self.path.parent)
 
-    def _require_store_identity(self, db: sqlite3.Connection) -> None:
-        if db.execute("PRAGMA application_id").fetchone()[
-            0
-        ] != 1396785746 or db.execute("PRAGMA user_version").fetchone()[0] not in {
+    def conversation_fence(
+        self,
+        *,
+        borrow: CoordinatorBorrow,
+        generation: int,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> ConversationFence:
+        """Allocate an unacquired scope; the caller owns acquisition/retirement."""
+        from src.services.agent_runs.source_ownership import ConversationFence
+
+        return ConversationFence(self, borrow, generation, monotonic)
+
+    def _require_store_identity(
+        self,
+        db: sqlite3.Connection,
+        *,
+        execute: Callable[[str], sqlite3.Cursor] | None = None,
+    ) -> None:
+        query = execute if execute is not None else db.execute
+        if query("PRAGMA application_id").fetchone()[0] != 1396785746 or query(
+            "PRAGMA user_version"
+        ).fetchone()[0] not in {
             1,
             2,
         }:
             raise PermissionError("Target store format is unavailable.")
-        owner = db.execute(
+        owner = query(
             "SELECT account_id, target_id FROM target_owner WHERE singleton = 1"
         ).fetchone()
         if owner is None or tuple(owner) != (self.account_id, self.execution_target_id):
