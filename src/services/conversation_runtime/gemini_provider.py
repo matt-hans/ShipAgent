@@ -150,6 +150,7 @@ class GeminiProviderClient:
         raw_call_ids: list[str] = []
         native_call_ids: dict[str, tuple[str, str]] = {}
         last_chunk: Any | None = None
+        finish_reason: str | None = None
 
         stream = None
         responses: list[httpx.Response] = []
@@ -162,7 +163,26 @@ class GeminiProviderClient:
             )
             async for chunk in stream:
                 last_chunk = chunk
-                for kind, value in _chunk_items(chunk):
+                items = _chunk_items(chunk)
+                if finish_reason is not None and items:
+                    yield ProviderStreamEvent(
+                        type=ProviderStreamEventType.PROVIDER_ERROR,
+                        error_message="Content after provider completion",
+                    )
+                    return
+                candidates = _field(chunk, "candidates") or []
+                if candidates:
+                    reason = _field(candidates[0], "finish_reason")
+                    reason = _field(reason, "value") or reason
+                    if reason is not None:
+                        if reason != "STOP":
+                            yield ProviderStreamEvent(
+                                type=ProviderStreamEventType.PROVIDER_ERROR,
+                                error_message="Unsuccessful provider response",
+                            )
+                            return
+                        finish_reason = reason
+                for kind, value in items:
                     if kind == "text":
                         text_parts.append(value)
                         yield ProviderStreamEvent(
@@ -214,6 +234,15 @@ class GeminiProviderClient:
                     await close_owned_stream(response)
             finally:
                 self._request_responses.reset(response_token)
+
+        # A clean transport EOF does not prove model completion. Only the
+        # selected candidate's positive terminal reason permits tool dispatch.
+        if finish_reason != "STOP":
+            yield ProviderStreamEvent(
+                type=ProviderStreamEventType.PROVIDER_ERROR,
+                error_message="Incomplete provider response",
+            )
+            return
 
         if _needs_private_continuation(raw_parts):
             yield ProviderStreamEvent(
