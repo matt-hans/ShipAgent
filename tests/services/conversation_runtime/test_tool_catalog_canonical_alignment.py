@@ -28,6 +28,7 @@ LOCAL_TO_CANONICAL = {
 # Canonical public tools with no local read-only counterpart, and why.
 PUBLIC_ONLY = {
     "submit_shipagent_task": "outer task admission must never be an inner model tool",
+    "continue_shipagent_task": "outer follow-up admission is not an inner model tool",
     "read_shipagent_run": "outer accepted-run status is owned by the durable facade",
     "cancel_shipagent_run": "outer cancellation authority is not an inner model tool",
     "prepare_shipments": "local equivalent is the preview pipeline, not a tool name",

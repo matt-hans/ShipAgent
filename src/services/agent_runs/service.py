@@ -9,6 +9,7 @@ import weakref
 from collections.abc import Callable
 from contextlib import aclosing, suppress
 
+from src.services.agent_runs.clarification import ClarificationProvider
 from src.services.agent_runs.coordinator import CoordinatorLease
 from src.services.agent_runs.store import AgentRun, AgentRunStore
 from src.services.agent_session_manager import AgentSession, AgentSessionManager
@@ -29,6 +30,7 @@ class AgentRunService:
         store: AgentRunStore,
         provider_factory: Callable[[str], ModelProviderClient],
         model_timeout_seconds: float = 30,
+        connection_epoch: Callable[[str], str | None] | None = None,
     ) -> None:
         if (
             isinstance(model_timeout_seconds, bool)
@@ -39,6 +41,7 @@ class AgentRunService:
             raise ValueError("Model deadline must be positive and at most 120 seconds.")
         self._model_timeout_seconds = model_timeout_seconds
         self.store = store
+        self._connection_epoch = connection_epoch
         self._provider_factory = provider_factory
         self._owned_providers: weakref.WeakValueDictionary[int, ModelProviderClient] = (
             weakref.WeakValueDictionary()
@@ -61,6 +64,7 @@ class AgentRunService:
         self._lease = CoordinatorLease(self.store.path.with_suffix(".coordinator.lock"))
         try:
             self._lease.require_owned()
+            self.store.upgrade(lease=self._lease)
             self._generation = self.store.begin_coordinator(lease=self._lease)
         except BaseException:
             self._lease.close()
@@ -122,21 +126,73 @@ class AgentRunService:
             self._cancel_requested.set()
             self._active_task.cancel()
 
+    def _authority(self, connection_id: str) -> tuple[str | None, Callable[[], bool]]:
+        if self._connection_epoch is None:
+            return None, lambda: self._connection_epoch is None
+        try:
+            epoch = self._connection_epoch(connection_id)
+            if not isinstance(epoch, str) or not 1 <= len(epoch) <= 128:
+                raise ValueError
+        except Exception:
+            raise PermissionError("Provider Connection is unavailable.") from None
+
+        def current() -> bool:
+            try:
+                return (
+                    self._connection_epoch is not None
+                    and self._connection_epoch(connection_id) == epoch
+                )
+            except Exception:
+                return False
+
+        return epoch, current
+
     def submit(self, *, connection_id: str, arguments: dict) -> dict[str, object]:
         self._require_worker()
         self._require_coordinator()
+        epoch, authority = self._authority(connection_id)
         run = self.store.accept(
             connection_id=connection_id,
             task=arguments["task"],
             mode=arguments["mode"],
             request_key=arguments["request_key"],
             generation=self._generation,
+            link_epoch=epoch,
+            authority=authority,
+        )
+        self._wake.set()
+        return run.public_result()
+
+    def continue_turn(
+        self, *, connection_id: str, arguments: dict
+    ) -> dict[str, object]:
+        self._require_worker()
+        self._require_coordinator()
+        epoch, authority = self._authority(connection_id)
+        if epoch is None:
+            raise PermissionError("Continuation authority is unavailable.")
+        run = self.store.continue_turn(
+            connection_id=connection_id,
+            link_epoch=epoch,
+            authority=authority,
+            generation=self._generation,
+            conversation_reference=arguments["conversation_reference"],
+            run_reference=arguments["run_reference"],
+            expected_revision=arguments["expected_revision"],
+            task=arguments["task"],
+            request_key=arguments["request_key"],
         )
         self._wake.set()
         return run.public_result()
 
     def read(self, *, connection_id: str, run_reference: str) -> dict[str, object]:
-        run = self.store.read(connection_id=connection_id, run_reference=run_reference)
+        epoch, authority = self._authority(connection_id)
+        run = self.store.read(
+            connection_id=connection_id,
+            run_reference=run_reference,
+            link_epoch=epoch,
+            authority=authority,
+        )
         if run.state in {"queued", "running"}:
             self._require_worker()
             self._require_coordinator()
@@ -149,10 +205,13 @@ class AgentRunService:
         lifetime. Cancellation does not undo an in-flight provider charge.
         """
         self._require_coordinator()
+        epoch, authority = self._authority(connection_id)
         run = self.store.cancel(
             connection_id=connection_id,
             run_reference=run_reference,
             generation=self._generation,
+            link_epoch=epoch,
+            authority=authority,
         )
         if (
             run.state == "cancelled"
@@ -178,12 +237,20 @@ class AgentRunService:
         if not self.store.is_current_generation(self._generation):
             raise RuntimeError("Agent run coordinator is unavailable.")
 
+    def _epoch_active(self, run: AgentRun) -> bool:
+        try:
+            epoch, authority = self._authority(run.connection_id)
+            return epoch == run.link_epoch and authority()
+        except Exception:
+            return False
+
     def _run_active(self, run: AgentRun) -> bool:
         if self._closing or self._unhealthy:
             return False
         try:
             self._require_coordinator()
-            return self.store.is_active(run)
+            epoch, authority = self._authority(run.connection_id)
+            return epoch == run.link_epoch and authority() and self.store.is_active(run)
         except Exception:
             return False
 
@@ -252,27 +319,37 @@ class AgentRunService:
     async def _execute(self, run: AgentRun) -> None:
         session = None
         outcome = "provider_failed"
+        clarification = None
         deadline = asyncio.get_running_loop().time() + self._model_timeout_seconds
         active = self._activity_guard(run, deadline=deadline)
 
         try:
             async with asyncio.timeout(self._model_timeout_seconds):
+                if not active():
+                    outcome = "interrupted"
+                    return
                 provider = self._provider_factory(run.conversation_reference)
                 if self._owned_providers.get(id(provider)) is provider:
                     raise RuntimeError(
                         "Provider instance already belongs to another conversation."
                     )
                 self._owned_providers[id(provider)] = provider
+                guarded_provider = ClarificationProvider(provider)
                 session = self._sessions.get_or_create_session(
                     run.conversation_reference,
                     source_free_config=SourceFreeConversationConfig(
-                        provider=provider, is_run_active=active
+                        provider=guarded_provider,
+                        is_run_active=active,
+                        clarification_enabled=run.link_epoch is not None,
                     ),
+                )
+                session.history = self.store.prior_history(
+                    run, authority=lambda: self._epoch_active(run)
                 )
                 session.add_message(
                     "user", run.task, turn_id=run.run_reference, queued=True
                 )
-                saw_text = False
+                blocks = []
                 async with aclosing(
                     process_message(session, run.task, turn_id=run.run_reference)
                 ) as stream:
@@ -280,15 +357,26 @@ class AgentRunService:
                         if event.get("event") == "error":
                             break
                         if event.get("event") == "agent_message":
-                            saw_text = True
+                            blocks.append(event.get("data", {}).get("text", ""))
+                            if len(blocks) > 1:
+                                raise ValueError("Planning output is unavailable.")
                     else:
                         if (
                             not active()
                             or session.source_free_completed_turn != run.run_reference
                         ):
                             outcome = "interrupted"
-                        elif saw_text:
-                            outcome = "planning_completed"
+                        elif blocks:
+                            clarification = guarded_provider.clarification
+                            if clarification is not None and run.link_epoch is None:
+                                raise PermissionError(
+                                    "Clarification authority is unavailable."
+                                )
+                            outcome = (
+                                "clarification_required"
+                                if clarification
+                                else "planning_completed"
+                            )
         except asyncio.CancelledError:
             outcome = "interrupted"
             raise
@@ -303,6 +391,8 @@ class AgentRunService:
                         run,
                         outcome=outcome,
                         private_history=session.history if session else [],
+                        clarification=clarification,
+                        authority=lambda: self._epoch_active(run),
                     )
             except BaseException:
                 # Publication failure must fence admission before asynchronous
