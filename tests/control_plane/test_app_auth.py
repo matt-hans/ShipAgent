@@ -48,7 +48,7 @@ class _AuthorizationService(AuthorizationService):
 def _build_app_with_routes(monkeypatch, database_url: str):
     monkeypatch.setenv("SHIPAGENT_PUBLIC_BASE_URL", "https://dev-mcp.shipagent.app/")
     monkeypatch.setenv("SHIPAGENT_AUTH0_ISSUER", "https://tenant.us.auth0.com/")
-    monkeypatch.setenv("SHIPAGENT_AUTH0_AUDIENCE", "https://dev-mcp.shipagent.app")
+    monkeypatch.setenv("SHIPAGENT_AUTH0_AUDIENCE", "https://dev-mcp.shipagent.app/mcp")
     monkeypatch.setenv("SHIPAGENT_DATABASE_URL", database_url)
     monkeypatch.setenv("SHIPAGENT_REDIS_URL", "redis://127.0.0.1:6379/0")
 
@@ -79,9 +79,14 @@ def test_protected_resource_metadata(monkeypatch):
         response = client.get("/.well-known/oauth-protected-resource")
 
     assert response.status_code == 200
-    assert response.json()["resource"] == "https://dev-mcp.shipagent.app"
+    assert response.json()["resource"] == "https://dev-mcp.shipagent.app/mcp"
     assert response.json()["authorization_servers"] == ["https://tenant.us.auth0.com/"]
-    assert "relay:manage" in response.json()["scopes_supported"]
+    assert response.json()["scopes_supported"] == [
+        "shipagent.status",
+        "shipagent.preview",
+        "shipagent.execute",
+        "shipagent.artifacts",
+    ]
 
 
 def test_missing_token_returns_bearer_challenge(monkeypatch):

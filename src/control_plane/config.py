@@ -4,6 +4,8 @@ from enum import StrEnum
 from pydantic import AnyHttpUrl, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from src.control_plane.auth.oauth_contract import canonical_mcp_resource
+
 
 class AuthMode(StrEnum):
     auth0 = "auth0"
@@ -22,6 +24,7 @@ class ControlPlaneSettings(BaseSettings):
         env_prefix="SHIPAGENT_",
         extra="ignore",
         frozen=True,
+        hide_input_in_errors=True,
     )
 
     auth_mode: AuthMode = AuthMode.auth0
@@ -46,6 +49,13 @@ class ControlPlaneSettings(BaseSettings):
     # Dormant unless the control-plane operator explicitly enables retention.
     audit_retention_days: int = Field(default=90, ge=30, le=365, strict=True)
     retention_background_tasks_enabled: bool = False
+
+    @field_validator("public_base_url", mode="before")
+    @classmethod
+    def _validate_public_url_before_normalization(cls, value):
+        if value is not None:
+            canonical_mcp_resource(str(value))
+        return value
 
     @field_validator("audit_retention_days", mode="before")
     @classmethod
