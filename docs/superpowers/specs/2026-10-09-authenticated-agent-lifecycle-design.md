@@ -105,8 +105,10 @@ epoch looked up from the connection ID.
 
 Four lifetimes are distinct:
 
-1. HTTP operation deadline: at most two seconds from strict handler admission,
-   shared across waiting, storage, authority settlement, retirement and response.
+1. HTTP operation deadline: at most two seconds, captured before the first
+   persistent authorization lookup and carried unchanged through identity
+   resolution, handler admission, storage, authority settlement, retirement and
+   response. A blocked account/link lookup cannot earn a fresh handler budget.
 2. Current access-token expiry: checked after identity-resolution waits and again
    before a response. A valid token at HTTP entry is not sufficient after expiry.
 3. Original accepted-turn authority: persisted on each new run as the earlier of
@@ -116,6 +118,12 @@ Four lifetimes are distinct:
 4. Conversation/reference expiry: the existing original 24-hour ceiling, never
    renewed by poll, retry or continuation. A new continuation gets a new run's
    bounded turn authority but retains the conversation's original expiry.
+
+Strict issued-at and expiry claims must be actual finite numeric timestamps,
+excluding booleans, with an explicitly supported datetime range. Reject missing,
+nonfinite, out-of-range, future-issued, inverted or already-expired values.
+Preserve fractional expiry without rounding up or renewing it. Test these
+checks through signed tokens as well as the principal parser.
 
 After a turn has completed, an active same-link request with a fresh token may
 read its retained result within the original reference lifetime. It does not
@@ -137,8 +145,9 @@ denial. Its sole existing worker can wait on the owner's completion signal only
 within its original turn authority; replacement adapters share the same slot.
 No mutex spans SQL, filesystem work or provider I/O.
 
-Use installed SQLAlchemy `AsyncSession.run_sync` as an asyncpg bridge for the
-existing synchronous store action. The fixed order is:
+Use installed SQLAlchemy `AsyncConnection.run_sync` as an asyncpg bridge for the
+existing synchronous store action, with an explicitly owned connection and
+transaction rather than an ORM identity map. The fixed order is:
 
 1. Exact coordinator borrow and strict operation slot.
 2. Captured nonwaiting Agent Run SQLite writer/transaction.
@@ -146,8 +155,8 @@ existing synchronous store action. The fixed order is:
 4. Validate captured issuer/account/link/epoch/scope, account status, target,
    coordinator generation and the applicable original clocks.
 5. Perform the existing bounded target-store action and classify its COMMIT.
-6. Settle the exact original PostgreSQL transaction, then retire captured SQL,
-   target and coordinator ownership in the defined reverse order.
+6. Settle and verify the exact original PostgreSQL transaction, then retire
+   captured SQL, target and coordinator ownership in the defined reverse order.
 7. Check original response deadline/expiry after retirement before responding.
 
 Account/link revocation and policy changes use the same account→link row-lock
@@ -171,8 +180,10 @@ known-busy admission alone does not quarantine the service.
 
 ## Local commit and PostgreSQL settlement are separate facts
 
-This is not an atomic cross-database transaction. A held AsyncSession object is
-not proof that a server-side lock survived connection loss.
+This is not an atomic cross-database transaction. A held Python connection
+object is not proof that a server-side lock survived connection loss. Nor is a
+normally returning COMMIT call sufficient: PostgreSQL can treat COMMIT of an
+already-aborted transaction as rollback.
 
 A fresh success requires a known local outcome plus successful settlement of
 the exact original PostgreSQL connection/transaction. No automatic reconnect or
@@ -180,6 +191,24 @@ replacement transaction may satisfy the original owner. Database death, an
 aborted transaction, lost settlement response or cancellation during settlement
 preserves the local outcome and original idempotency key but returns unavailable.
 Never retry the action, remint a reference or infer rollback from missing reply.
+
+The supported local authority profile is PostgreSQL 17 with the installed
+asyncpg/SQLAlchemy stack and one explicitly pinned database endpoint. Capture
+the exact original driver connection, backend PID and top-level xid8 from
+`pg_current_xact_id()` during held validation. Before COMMIT, revalidate that the
+same original transaction is live. After it returns, require
+`pg_xact_status(captured_xid)` to report `committed` on the same still-owned
+physical connection/backend. `aborted`, `in progress`, NULL, unsupported
+capability, invalidation or replacement denies success. Do not quietly use a
+different database or reconnect to obtain a favorable status.
+
+The post-COMMIT status query starts a separate evidence-only transaction. It
+does not authorize another action or repin a link, and the owner must capture
+and positively retire it before acknowledgment. Any earlier acquisition,
+validation, local-action or settlement exception stays latched; a later status
+query may refine known commit evidence but cannot convert the failed request
+into success. Unsupported server/driver profiles fail this local qualification
+instead of receiving an untested fallback.
 
 If local COMMIT was not attempted and both scopes positively roll back, the
 operation is an ordinary denied/precommit action. If local COMMIT was attempted
@@ -228,16 +257,19 @@ never occur after authorization but before response bytes arrive.
 1. Signed JWT/link persistence and migration: two links under one client,
    refresh, revoked old tuple/new link, concurrent first use, legacy-unbound
    denial, wrong issuer, scope reduction with broad/narrow tokens in both orders,
-   malformed/missing claim and expiry after waits.
+   malformed/missing claim, strict issued-at/expiry types/ranges, and expiry after
+   waits, including identity lookup that exhausts the original operation budget.
 2. Shared operation owner: actual PostgreSQL row-lock ordering plus nonwaiting
    SQLite contention, copied/stale owner denial, close while admitted, bounded
    slot contention, cancellation during acquisition/settlement and before/after-
    effect retirement failures. PostgreSQL-specific claims use real disposable
    PostgreSQL, never SQLite substitutes.
 3. Failure model: PostgreSQL dies after validation, before/after local COMMIT,
-   and before/after settlement; no replacement transaction, model dispatch,
-   duplicate key or falsely acknowledged success. Same-key recovery preserves
-   the exact known/unknown local state.
+   and before/after settlement; also deliberately abort a real transaction
+   before COMMIT and require denial even when the driver returns normally.
+   Null/in-progress/aborted XID status, replacement driver/backend, reconnect and
+   post-error committed status cannot authorize success or model dispatch.
+   Same-key recovery preserves the exact known/unknown local state.
 4. Worker lifetime: revocation-first and dispatch-first barriers count actual
    provider entries; no second call; original turn expiry before dispatch/during
    execution; completion denied after revocation; restart without replay;
@@ -272,7 +304,9 @@ Primary references checked 2026-10-09:
 - [Auth0 post-login event](https://auth0.com/docs/actions/reference/post-login/post-login-event-object)
 - [Auth0 post-login API](https://auth0.com/docs/actions/reference/post-login/post-login-api-object)
 - [Auth0 claims during refresh](https://support.auth0.com/center/s/article/Will-the-access-token-received-via-refresh-token-have-the-custom-claim)
-- [SQLAlchemy run_sync](https://docs.sqlalchemy.org/en/20/orm/extensions/asyncio.html#sqlalchemy.ext.asyncio.AsyncSession.run_sync)
+- [SQLAlchemy run_sync](https://docs.sqlalchemy.org/en/20/orm/extensions/asyncio.html#sqlalchemy.ext.asyncio.AsyncConnection.run_sync)
+- [PostgreSQL 17 transaction status](https://www.postgresql.org/docs/17/functions-info.html)
+- [PostgreSQL aborted COMMIT semantics](https://www.postgresql.org/message-id/E1w5qAH-001aDI-22%40gemulon.postgresql.org)
 
 The held headless supplemental scenario remains held. No alternative route or
 mocked enrollment is used to claim its resolution. Public source admission,
