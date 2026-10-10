@@ -603,6 +603,7 @@ class AgentRunStore:
                 or row["link_epoch"] != run.link_epoch
                 or row["claim_generation"] != run.claim_generation
                 or row["revision"] != run.revision
+                or row["expires_at"] != run.expires_at
                 or row["conversation_reference"] != run.conversation_reference
                 or row["state"] not in {"queued", "running"}
                 or row["expires_at"] <= time.time()
@@ -943,6 +944,9 @@ class AgentRunStore:
                 or row["link_epoch"] != run.link_epoch
                 or row["claim_generation"] != run.claim_generation
                 or row["state"] != "running"
+                or row["conversation_reference"] != run.conversation_reference
+                or row["revision"] != run.revision
+                or row["expires_at"] != run.expires_at
             ):
                 raise PermissionError("Agent Run Reference is unavailable.")
             expiry = self._turn_binding(row)

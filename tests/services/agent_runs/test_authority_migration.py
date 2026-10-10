@@ -226,3 +226,44 @@ def test_copied_store_cannot_release_original_migration_owner(tmp_path, monkeypa
         monkeypatch.setattr(AgentRunTransaction, "_close_connection", original)
         store.retire_upgrade()
         lease.close()
+
+
+async def test_explicit_close_finishes_after_effect_final_borrow_retirement(
+    tmp_path, monkeypatch
+):
+    from src.services.agent_runs.coordinator import CoordinatorBorrow
+    from src.services.agent_runs.service import AgentRunService
+
+    path, _ = legacy_store(tmp_path)
+    store = AgentRunStore(path, account_id="account-a", execution_target_id="target-a")
+    service = AgentRunService(store=store, provider_factory=lambda _: None)
+    original = CoordinatorBorrow.retire
+    failure = KeyboardInterrupt("after final borrow retirement")
+
+    def interrupted(borrow):
+        original(borrow)
+        raise failure
+
+    monkeypatch.setattr(CoordinatorBorrow, "retire", interrupted)
+    try:
+        with pytest.raises(KeyboardInterrupt) as captured:
+            await service.start()
+        assert captured.value is failure
+        assert store._upgrade_owner.retirement_completed
+        assert store._upgrade_borrow.retirement_completed
+        monkeypatch.setattr(CoordinatorBorrow, "retire", original)
+        unrelated = AgentRunService(store=store, provider_factory=lambda _: None)
+        with pytest.raises(RuntimeError):
+            await unrelated.start()
+        assert unrelated._lease is None
+        await unrelated.close()
+        assert store._upgrade_owner is not None
+        await service.close()
+        assert store._upgrade_owner is None and store._upgrade_borrow is None
+        assert service._lease is None
+        with sqlite3.connect(path) as db:
+            assert db.execute("PRAGMA user_version").fetchone()[0] == 3
+    finally:
+        monkeypatch.setattr(CoordinatorBorrow, "retire", original)
+        store.retire_upgrade()
+        await service.close()

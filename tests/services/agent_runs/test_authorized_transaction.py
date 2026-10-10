@@ -692,3 +692,149 @@ def test_claim_expiry_projection_uses_one_cutoff(owned, monkeypatch):
             db.execute("SELECT state FROM agent_conversations").fetchone()[0]
             == "failed"
         )
+
+
+@pytest.mark.parametrize(
+    "action", ["continue", "read", "cancel", "claim", "history", "finish"]
+)
+def test_original_reference_deadline_gates_commit_after_action(
+    owned, monkeypatch, action
+):
+    store, _, _, allocate = owned
+    now = [1_800_000_000.0]
+    monkeypatch.setattr("src.services.agent_runs.store.time.time", lambda: now[0])
+    run = durable(allocate, submit)
+    if action in {"continue", "history", "finish"}:
+        run = durable(allocate, lambda tx: tx.claim())
+    if action == "continue":
+        durable(
+            allocate,
+            lambda tx: tx.finish(
+                run,
+                outcome="clarification_required",
+                clarification="package_scope",
+                private_history=[],
+                authority=lambda: True,
+            ),
+        )
+    with sqlite3.connect(store.path) as db:
+        db.execute("UPDATE agent_runs SET expires_at=?", (int(now[0] + 1),))
+        db.execute("UPDATE agent_conversations SET expires_at=?", (int(now[0] + 1),))
+    run = durable(
+        allocate,
+        lambda tx: tx.read(
+            connection_id="c",
+            run_reference=run.run_reference,
+            link_epoch="epoch",
+            authority=lambda: True,
+        ),
+    )
+    tx = allocate()
+    if action == "continue":
+        tx.continue_turn(
+            connection_id="c",
+            conversation_reference=run.conversation_reference,
+            run_reference=run.run_reference,
+            expected_revision=1,
+            task="One package",
+            request_key="next",
+            link_epoch="epoch",
+            token_expires_at=now[0] + 60,
+            authority=lambda: True,
+        )
+    elif action in {"read", "cancel"}:
+        getattr(tx, action)(
+            connection_id="c",
+            run_reference=run.run_reference,
+            link_epoch="epoch",
+            authority=lambda: True,
+        )
+    elif action == "claim":
+        assert tx.claim() is not None
+    elif action == "history":
+        assert tx.history(run, authority=lambda: True) == b"[]"
+    else:
+        tx.finish(
+            run,
+            outcome="planning_completed",
+            private_history=[],
+            authority=lambda: True,
+        )
+    now[0] += 2
+    with pytest.raises(RuntimeError, match="unavailable"):
+        tx.commit()
+    assert not tx.commit_attempted
+    tx.retire()
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("expires_at", 2_000_000_000),
+        ("revision", 7),
+        ("conversation_reference", "forged"),
+    ],
+)
+def test_finish_requires_durable_run_identity(owned, field, value):
+    from dataclasses import replace
+
+    _, _, _, allocate = owned
+    durable(allocate, submit)
+    run = durable(allocate, lambda tx: tx.claim())
+    tx = allocate()
+    with pytest.raises(PermissionError):
+        tx.finish(
+            replace(run, **{field: value}),
+            outcome="planning_completed",
+            private_history=[],
+            authority=lambda: True,
+        )
+
+
+def test_interrupted_cleanup_survives_original_reference_expiry(owned, monkeypatch):
+    store, _, _, allocate = owned
+    now = [1_800_000_000.0]
+    monkeypatch.setattr("src.services.agent_runs.store.time.time", lambda: now[0])
+    durable(allocate, submit)
+    run = durable(allocate, lambda tx: tx.claim())
+    now[0] = run.expires_at + 1
+    durable(
+        allocate, lambda tx: tx.finish(run, outcome="interrupted", private_history=[])
+    )
+    with sqlite3.connect(store.path) as db:
+        assert db.execute("SELECT state,outcome FROM agent_runs").fetchone() == (
+            "failed",
+            "interrupted",
+        )
+
+
+def test_known_commit_after_reference_expiry_is_retained_but_not_acknowledged(
+    owned, monkeypatch
+):
+    store, _, _, allocate = owned
+    now = [1_800_000_000.0]
+    monkeypatch.setattr("src.services.agent_runs.store.time.time", lambda: now[0])
+    run = durable(allocate, submit)
+    with sqlite3.connect(store.path) as db:
+        db.execute("UPDATE agent_runs SET expires_at=?", (int(now[0] + 1),))
+        db.execute("UPDATE agent_conversations SET expires_at=?", (int(now[0] + 1),))
+    tx = allocate()
+    tx.cancel(
+        connection_id="c",
+        run_reference=run.run_reference,
+        link_epoch="epoch",
+        authority=lambda: True,
+    )
+    original = tx._commit_sql
+
+    def commit():
+        original()
+        now[0] += 2
+
+    monkeypatch.setattr(tx, "_commit_sql", commit)
+    with pytest.raises(RuntimeError):
+        tx.commit()
+    assert tx.commit_attempted and tx.commit_known
+    tx.retire()
+    with sqlite3.connect(store.path) as db:
+        assert db.execute("SELECT state FROM agent_runs").fetchone()[0] == "cancelled"

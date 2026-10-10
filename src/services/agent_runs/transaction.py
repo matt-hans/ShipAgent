@@ -81,6 +81,7 @@ class AgentRunTransaction:
         self._commit_attempted = False
         self._commit_known = False
         self._live_turn: float | None = None
+        self._reference_expiry: int | None = None
         self._sql = _SQL(self)
 
     @classmethod
@@ -241,6 +242,8 @@ class AgentRunTransaction:
             if self._maintenance_mode:
                 raise RuntimeError(_UNAVAILABLE)
             result = action()
+            if type(result) is AgentRun:
+                self._capture_run(result)
             self._current()
             return result
         except BaseException as exc:
@@ -250,6 +253,23 @@ class AgentRunTransaction:
             if isinstance(exc, Exception):
                 raise RuntimeError(_UNAVAILABLE) from None
             raise
+
+    def _capture_run(self, run: AgentRun, *, live_turn: bool = False) -> None:
+        # Values have been matched to the held durable row by the fixed action.
+        if type(run.expires_at) is not int or not 0 < run.expires_at < 253402300800:
+            raise PermissionError("Agent Run Reference is unavailable.")
+        self._reference_expiry = (
+            min(self._reference_expiry, run.expires_at)
+            if self._reference_expiry is not None
+            else run.expires_at
+        )
+        if live_turn:
+            expiry = run.turn_authority_expires_at
+            if type(expiry) not in (int, float) or not math.isfinite(expiry):
+                raise PermissionError("Agent Run Reference is unavailable.")
+            self._live_turn = (
+                min(self._live_turn, expiry) if self._live_turn is not None else expiry
+            )
 
     @staticmethod
     def _authority(callback):
@@ -290,7 +310,7 @@ class AgentRunTransaction:
                 self._sql, generation=self._generation, strict=True, **arguments
             )
             if created:
-                self._live_turn = result.turn_authority_expires_at
+                self._capture_run(result, live_turn=True)
             return result
 
         return self._call(action)
@@ -365,11 +385,16 @@ class AgentRunTransaction:
 
     def claim(self) -> AgentRun | None:
         """Local candidate ownership only; this never grants model dispatch."""
-        return self._call(
-            lambda: self._store._claim_next_on(
+
+        def action():
+            result = self._store._claim_next_on(
                 self._sql, generation=self._generation, strict=True
             )
-        )
+            if result is not None:
+                self._capture_run(result, live_turn=True)
+            return result
+
+        return self._call(action)
 
     def history(self, run: AgentRun, *, authority: Callable[[], bool]) -> bytes:
         def action():
@@ -378,7 +403,7 @@ class AgentRunTransaction:
             result = self._store._history_on(
                 self._sql, run, authority=self._authority(authority), strict=True
             )
-            self._live_turn = run.turn_authority_expires_at
+            self._capture_run(run, live_turn=True)
             return result
 
         return self._call(action)
@@ -405,30 +430,34 @@ class AgentRunTransaction:
                 strict=True,
             )
             if outcome in {"planning_completed", "clarification_required"}:
-                self._live_turn = run.turn_authority_expires_at
+                self._capture_run(run, live_turn=True)
 
         return self._call(action)
 
     def _commit_sql(self):
         self._db.commit()
 
+    def _check_clocks(self):
+        self._remaining()
+        now = time.time()
+        if (
+            type(now) not in (int, float)
+            or not math.isfinite(now)
+            or (self._live_turn is not None and now >= self._live_turn)
+            or (self._reference_expiry is not None and now >= self._reference_expiry)
+        ):
+            raise RuntimeError(_UNAVAILABLE)
+
     def commit(self):
         self._identity()
         try:
             self._current()
-            now = time.time()
-            if (
-                type(now) not in (int, float)
-                or not math.isfinite(now)
-                or (self._live_turn is not None and now >= self._live_turn)
-            ):
-                raise RuntimeError(_UNAVAILABLE)
-            self._remaining()
+            self._check_clocks()
             self._commit_attempted = True
             self._commit_sql()
             self._commit_known = True
             self._active = False
-            self._remaining()
+            self._check_clocks()
         except BaseException as exc:
             self._failed = True
             if isinstance(exc, Exception):

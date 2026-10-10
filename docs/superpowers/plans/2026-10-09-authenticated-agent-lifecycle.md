@@ -165,13 +165,19 @@ bound. Release between checkpoints and honor already-queued Bulldog work.
   AgentRunStore captures the transaction and ordinary borrow before acquisition.
   Failed cleanup keeps them and marks shared lease admission closing;
   `retire_upgrade()` is the explicit retry, also used by service shutdown. Copied
-  stores cannot release this original owner. No automatic migration on reads.
+  stores cannot release this original owner. Service startup retains its exact
+  setup lease identity through a final-borrow after-effect failure even if the
+  physical lease is already closed; another service cannot adopt that cleanup.
+  No automatic migration on reads.
 - Existing store entrypoints and owned actions share private connection-scoped
   SQL helpers; do not duplicate acceptance/idempotency/revision logic.
 - Strict metadata/retry/claim projections omit history entirely. The strict
   claim sweep uses one expiry cutoff for run/conversation projections. Successful
   or clarifying finish requires live original turn authority; the same owned
-  executor can record a fixed interrupted failure after expiry.
+  executor can record a fixed interrupted failure after expiry. Every successful
+  result captures its durable original reference expiry as well as any applicable
+  turn expiry, checked before and after COMMIT. A late known commit stays recorded
+  while the response denies. Changed run conversation/revision/expiry facts deny.
 - Owned history reads inspect stored byte length before fetching/parsing JSON;
   the strict ceiling is 1 MiB. This does not relabel the provider replay limit
   as a durable-storage cap or change legacy private reads.

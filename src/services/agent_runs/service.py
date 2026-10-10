@@ -79,7 +79,12 @@ class AgentRunService:
             except BaseException:
                 self._unhealthy = True
             else:
-                self._lease = None
+                if self.store._upgrade_lease is self._lease:
+                    # The final borrow may have retired before raising. Keep
+                    # this exact setup identity until explicit close reconciles it.
+                    self._unhealthy = True
+                else:
+                    self._lease = None
             raise
         self._unhealthy = False
         self._closing = False
