@@ -55,8 +55,8 @@ Clone this recovery branch from GitHub into a new directory. New commit messages
 carry Original-local-commit and Original-source-tree footers, so the mapping is
 available without local artifacts. The first new commit is the exact accepted
 Task 3 tree above remote `801c8971`, the matching accepted Task 2 source commit.
-The final commit adds this note/evidence and retains the exact prior Task 2 note
-and evidence. Existing main and recovery refs are not rewritten.
+The recovery commits add this note/evidence, retain the exact prior Task 2 note
+and evidence, and archive the unchanged independent middle-window probe. Existing main and recovery refs are not rewritten.
 
 Resume with Task 4 only, following its independent checkpoint gate:
 
@@ -87,3 +87,12 @@ python -m pytest -c pyproject.toml -q -ra tests/control_plane \
 Repository validation sources remain in `scripts/validation/`; the evidence
 identifies the separately qualified external supervisor used for the author run.
 No existing database or real credentials are required.
+
+The [archived independent probe](probes/test_authenticated_task3_middle_window_review.py)
+retains its reviewed bytes and is outside normal test discovery. Reproduce its
+two cases explicitly with the same prepared disposable-service environment:
+
+```sh
+python -m pytest -c pyproject.toml -q \
+  docs/recovery/probes/test_authenticated_task3_middle_window_review.py
+```
