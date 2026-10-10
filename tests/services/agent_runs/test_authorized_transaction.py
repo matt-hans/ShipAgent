@@ -569,6 +569,58 @@ def test_conflict_and_stale_continuation_do_not_remint(owned):
         assert db.execute("SELECT COUNT(*) FROM agent_runs").fetchone()[0] == 1
 
 
+@pytest.mark.parametrize(
+    "action", ["conflict", "revision", "wrong_binding", "capacity"]
+)
+def test_reference_expiry_evidence_survives_metadata_denial(owned, monkeypatch, action):
+    _, _, _, allocate = owned
+    run = durable(allocate, submit)
+    if action == "revision":
+        claimed = durable(allocate, lambda tx: tx.claim())
+        durable(
+            allocate,
+            lambda tx: tx.finish(
+                claimed,
+                outcome="clarification_required",
+                clarification="package_scope",
+                private_history=[],
+                authority=lambda: True,
+            ),
+        )
+    if action == "capacity":
+        monkeypatch.setattr("src.services.agent_runs.store.MAX_RETAINED_RUNS", 1)
+    tx = allocate()
+    with pytest.raises((ValueError, PermissionError)):
+        if action == "revision":
+            tx.continue_turn(
+                connection_id="c",
+                conversation_reference=run.conversation_reference,
+                run_reference=run.run_reference,
+                expected_revision=2,
+                task="next",
+                request_key="next",
+                link_epoch="epoch",
+                token_expires_at=time.time() + 60,
+                authority=lambda: True,
+            )
+        else:
+            submit(
+                tx,
+                key="new" if action == "capacity" else "key",
+                task="changed",
+                link_epoch="foreign" if action == "wrong_binding" else "epoch",
+            )
+    tx.retire()
+    assert hasattr(tx, "reference_expires_at"), (
+        "missing descriptive response-expiry evidence"
+    )
+    assert tx.reference_expires_at == (
+        run.expires_at if action in {"conflict", "revision"} else None
+    )
+    with pytest.raises(AttributeError):
+        tx.reference_expires_at = 253402300799
+
+
 def test_cancel_waiting_keeps_old_terminal_row(owned):
     _, _, _, allocate = owned
     run = durable(allocate, submit)

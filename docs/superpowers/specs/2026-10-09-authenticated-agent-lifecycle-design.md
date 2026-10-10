@@ -3,8 +3,9 @@
 Date: 2026-10-09. Source baseline:
 `551f257a2f66ac15195e5d25c4b64d101a3c8508`.
 
-Status: proposed architectural slice for independent review. No implementation
-has started. This advances [#77](https://github.com/matt-hans/ShipAgent/issues/77)
+Status: approved staged design. Tasks 1–2 are independently accepted; Task 3
+passed its 1,397-case author aggregate and awaits independent exact-head review.
+Worker routing and the real HTTP composition remain Tasks 4–5. This advances [#77](https://github.com/matt-hans/ShipAgent/issues/77)
 and [#78](https://github.com/matt-hans/ShipAgent/issues/78) under the approved
 [six milestones](https://github.com/matt-hans/ShipAgent/issues/75).
 
@@ -221,6 +222,16 @@ validation, local-action or settlement exception stays latched; a later status
 query may refine known commit evidence but cannot convert the failed request
 into success. Unsupported server/driver profiles fail this local qualification
 instead of receiving an untested fallback.
+
+A fixed conflict, capacity or revision error may be preserved only if classified
+by the local action while original current authority was held, no local or PG
+COMMIT was attempted, the exact original PG transaction positively rolled back,
+and all scopes retired before the original request/reference clocks expire.
+This nonmutating denial has its held-action authorization point; it does not
+claim the successful-COMMIT point used for fresh results. Infrastructure failures,
+replacement rollback, attempted commit or uncertain retirement project only the
+closed unavailable result. The private target transaction retains descriptive
+minimum reference expiry even when its bound action raises.
 
 If local COMMIT was not attempted and both scopes positively roll back, the
 operation is an ordinary denied/precommit action. If local COMMIT was attempted

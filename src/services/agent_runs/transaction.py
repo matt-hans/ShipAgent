@@ -113,6 +113,12 @@ class AgentRunTransaction:
         self._identity()
         return self._retired
 
+    @property
+    def reference_expires_at(self) -> int | None:
+        """Descriptive minimum learned from bound rows, even on action denial."""
+        self._identity()
+        return self._reference_expiry
+
     def _remaining(self):
         now = self._monotonic()
         if (
@@ -256,13 +262,7 @@ class AgentRunTransaction:
 
     def _capture_run(self, run: AgentRun, *, live_turn: bool = False) -> None:
         # Values have been matched to the held durable row by the fixed action.
-        if type(run.expires_at) is not int or not 0 < run.expires_at < 253402300800:
-            raise PermissionError("Agent Run Reference is unavailable.")
-        self._reference_expiry = (
-            min(self._reference_expiry, run.expires_at)
-            if self._reference_expiry is not None
-            else run.expires_at
-        )
+        self._capture_reference(run.expires_at)
         if live_turn:
             expiry = run.turn_authority_expires_at
             if type(expiry) not in (int, float) or not math.isfinite(expiry):
@@ -270,6 +270,15 @@ class AgentRunTransaction:
             self._live_turn = (
                 min(self._live_turn, expiry) if self._live_turn is not None else expiry
             )
+
+    def _capture_reference(self, expiry: int) -> None:
+        if type(expiry) is not int or not 0 < expiry < 253402300800:
+            raise PermissionError("Agent Run Reference is unavailable.")
+        self._reference_expiry = (
+            min(self._reference_expiry, expiry)
+            if self._reference_expiry is not None
+            else expiry
+        )
 
     @staticmethod
     def _authority(callback):
@@ -307,7 +316,11 @@ class AgentRunTransaction:
 
         def action():
             result, created = self._store._accept_on(
-                self._sql, generation=self._generation, strict=True, **arguments
+                self._sql,
+                generation=self._generation,
+                strict=True,
+                _observe_reference=self._capture_reference,
+                **arguments,
             )
             if created:
                 self._capture_run(result, live_turn=True)

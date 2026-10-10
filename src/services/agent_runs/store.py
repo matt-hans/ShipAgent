@@ -428,6 +428,7 @@ class AgentRunStore:
         continuation: tuple[str, str, int] | None = None,
         strict: bool = False,
         token_expires_at: float | None = None,
+        _observe_reference: Callable[[int], None] | None = None,
     ) -> tuple[AgentRun, bool]:
         if (
             mode != "source_free"
@@ -463,6 +464,8 @@ class AgentRunStore:
             self._binding(existing, link_epoch)
             if strict:
                 self._turn_binding(existing)
+                if _observe_reference is not None:
+                    _observe_reference(existing["expires_at"])
             if existing["expires_at"] <= now:
                 raise PermissionError("Agent Run Reference is unavailable.")
             if existing["input_hash"] != input_hash:
@@ -499,6 +502,8 @@ class AgentRunStore:
             if row is None:
                 raise PermissionError("Conversation Reference is unavailable.")
             self._binding(row, link_epoch)
+            if strict and _observe_reference is not None:
+                _observe_reference(row["expires_at"])
             if (
                 row["current_run"] != previous_run
                 or row["revision"] != expected_revision

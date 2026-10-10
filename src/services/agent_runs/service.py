@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import os
+import threading
 import weakref
 from collections.abc import Callable
 from contextlib import aclosing, suppress
@@ -62,6 +64,33 @@ class AgentRunService:
         self._cancel_requested = asyncio.Event()
         self._owned_tasks: set[asyncio.Task] = set()
         self._closing = False
+        self._authority_operation = None
+        self._authority_dispatch_run = None
+        self._authority_self = weakref.ref(self)
+        self._authority_pid = os.getpid()
+        self._authority_thread = threading.get_ident()
+
+    def _require_authority_identity(self) -> None:
+        if (
+            self._authority_self() is not self
+            or self._authority_pid != os.getpid()
+            or self._authority_thread != threading.get_ident()
+        ):
+            raise RuntimeError("Agent run authority is unavailable.")
+
+    def _admit_authority_operation(self, owner) -> None:
+        """One captured strict operation; no asynchronous admission waiters."""
+        self._require_authority_identity()
+        self._require_worker()
+        if self._authority_operation is not None:
+            raise RuntimeError("Agent run authority is busy.")
+        self._authority_operation = owner
+
+    def _release_authority_operation(self, owner) -> None:
+        self._require_authority_identity()
+        if self._authority_operation is not owner or not owner.retirement_completed:
+            raise RuntimeError("Agent run authority is unavailable.")
+        self._authority_operation = None
 
     async def start(self) -> None:
         if self._worker is not None or self._lease is not None or self._owned_tasks:
@@ -115,6 +144,8 @@ class AgentRunService:
             if pending or any(not task.done() for task in self._owned_tasks):
                 self._unhealthy = True
                 raise RuntimeError("Agent run cleanup is unavailable.")
+        if self._authority_operation is not None:
+            await self._authority_operation.close()
         self._active_run = None
         self._active_task = None
         self._worker = None

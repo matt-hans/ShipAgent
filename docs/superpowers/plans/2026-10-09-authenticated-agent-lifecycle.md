@@ -15,14 +15,17 @@ its own one-shot dispatch authorization and fresh publication authority.
 PostgreSQL 17, Alembic and pytest. No new dependency or live service provisioning.
 
 **Spec:** [Authenticated synthetic lifecycle](../specs/2026-10-09-authenticated-agent-lifecycle-design.md),
-SHA256 `2a5f55340b90c1b5b90827bb08345d4fece47a80d257bd0af543aeb0aef0b343`.
+SHA256 `3e015cea8599ed7a266dfa25c2c170a4e32aa58b25e7b755a061b7e3dbd0cd92`.
 
 **Execution:** Serial implementation by the current integrator and independent
 review after each checkpoint. Task 1 begins only after this plan is reviewed.
 Do not create additional worker lanes or implement later tasks before their gate.
 Current status: Task 1 independently approved at `b6cf12e` (158 passed,
-2 disclosed existing skips). Task 2 author qualification passed 448 cases with clean retirement; its
-independent checkpoint review is pending. Tasks 3–5 remain unstarted. The two GitHub recovery refs are frozen preservation checkpoints,
+2 disclosed existing skips). Task 2 is independently approved at `d21e1bd`
+(460 author cases and 461 independent cases, with clean retirement). Its repaired
+source is preserved on `recovery/authenticated-lifecycle-task2-20261010` at
+`0df54998`; the three recovery refs remain frozen. Task 3 passed its 1,397-case author aggregate after the unchanged 77-case
+baseline and awaits independent exact-head review; Tasks 4–5 remain unstarted. The recovery refs are preservation checkpoints,
 not feature-ready production branches.
 
 ## Global Constraints
@@ -203,7 +206,7 @@ bound. Release between checkpoints and honor already-queued Bulldog work.
   legacy NULL authority; old explicitly synthetic callers retain their historical
   behavior. Source ownership only recognizes compatible version3 layout; no source
   feature is enabled or changed.
-- [ ] **Qualify and commit.** `pytest -c pyproject.toml -q tests/services/agent_runs
+- [x] **Qualify and commit.** `pytest -c pyproject.toml -q tests/services/agent_runs
   tests/services/source_ingress/test_reservation_store.py
   tests/services/source_ingress/test_snapshot_store.py
   tests/services/source_ingress/test_snapshot_migration.py
@@ -219,10 +222,16 @@ bound. Release between checkpoints and honor already-queued Bulldog work.
 - Create `src/control_plane/agent_run_authority.py` for its PostgreSQL implementation.
 - Modify `src/services/agent_runs/service.py` only for captured ordinary coordinator
   borrow, one prompt-busy operation slot, shutdown retention and explicit retry cleanup.
+- Add only the reviewed descriptive expiry seam to `store.py`, `transaction.py`
+  and `test_authorized_transaction.py`: a fixed private observer records validated
+  durable reference expiry before conflict/revision errors, and a read-only
+  minimum remains available after failure/retirement. No observer SQL, waiting,
+  request-selected callback or legacy behavior change.
 - Create `tests/control_plane/persistence/test_agent_run_authority.py`,
-  `test_agent_run_authority_faults.py`, `agent_run_authority_process.py`.
-- Extend `tests/services/agent_runs/test_coordinator_borrow.py` for close above
-  an admitted authority operation. Reuse existing disposable PostgreSQL fixtures.
+  `test_agent_run_authority_faults.py`. The fault module uses actual owned
+  disposable PostgreSQL backends directly for death/transaction proofs, so no
+  separate process helper is needed. It also covers service close above an
+  admitted operation; reuse the existing coordinator-borrow suite unchanged.
 
 **Interfaces:**
 - `RunRequestAuthority` is immutable, exact-type validated and private: account,
@@ -250,37 +259,69 @@ bound. Release between checkpoints and honor already-queued Bulldog work.
   owner and never look up the current HTTP owner.
 - A `RunDispatchPermit` names one exact run/service/generation and original
   deadline. It is issued only after proven settlement and retirement, and can
-  be consumed exactly once by that service's captured provider owner.
+  be consumed exactly once by that service's captured provider owner on the
+  original thread, without an await between validation and consumption. Direct
+  helper tests qualify the contract; Task 4 qualifies actual provider entry.
+- The identity session/service and later authority connection are separately
+  captured. Every async stage retains its exact task before bounded observation;
+  cancellation or task completion alone is not retirement proof. Never begin
+  another stage while its predecessor still runs. Unknown acquisition without
+  an exact usable handle retains the denying owner. Explicit cleanup retries
+  only captured retirement, with no new authorization or renewed action budget.
+- Final original deadline/token/reference checks gate metadata-dependent errors
+  after retirement as well as success. Reference-free capacity uses the request
+  bounds; wrong-binding denials reveal no reference facts.
+- A fixed precommit conflict/capacity/revision denial is classified while the
+  original current authority is held. Preserving that descriptive error requires
+  no local COMMIT attempt, positive rollback of the exact original PG transaction
+  on its unchanged physical connection, and complete retirement plus original
+  response clocks. This nonmutating denial does not claim successful-COMMIT
+  linearization. Any local attempt, settlement uncertainty or unrelated failure
+  uses only the fixed unavailable projection.
 
-- [ ] **Write/run RED.** Compose real PostgreSQL and owned SQLite transactions;
+- [x] **Write/run RED.** Compose real PostgreSQL and owned SQLite transactions;
   prove account→link lock order, expected-epoch denial and policy intersection.
   A barrier must let the asyncio heartbeat/cancel task run while PostgreSQL is
   blocked; a second own operation is promptly busy with no waiter accumulation.
-- [ ] **Implement bounded acquisition.** Capture service/borrow/slot before awaits,
+- [x] **Implement bounded acquisition.** Capture service/borrow/slot before awaits,
   use `AsyncConnection.run_sync` and exact connection-bound Core queries, apply
   remaining-budget pool/statement/lock timeouts, and sample expiry after waits.
   Authority mutations never acquire the Agent Run store while holding row locks.
-- [ ] **Write/run settlement RED.** Deliberately abort a real transaction, then
+- [x] **Write/run settlement RED.** Deliberately abort a real transaction, then
   allow COMMIT to return normally: `pg_xact_status(original_xid)` must be aborted
   and the request denied. Check committed/in-progress/NULL/unsupported outcomes,
   changed driver/backend, implicit reconnect, and a failure followed by a known
   commit. A failed request stays failed in every case.
-- [ ] **Implement settlement and retirement.** Pin top-level xid8 and original
+- [x] **Implement settlement and retirement.** Pin top-level xid8 and original
   driver/backend; verify the original live transaction before COMMIT, then require
   committed status on that same connection. Capture and retire the evidence-only
   transaction. PostgreSQL COMMIT is the authorization point; status is later proof.
-- [ ] **Run death/cancel RED/GREEN.** Kill only owned disposable PostgreSQL at
-  controlled validation/local-COMMIT/PG-COMMIT boundaries. Preserve same-key local
-  outcomes, no action retry, no model permit and no falsely fresh success.
+- [x] **Run death/cancel RED/GREEN.** Terminate the original owned disposable
+  PostgreSQL backend/session after local COMMIT, before and after PG COMMIT.
+  Separately cancel at validation, local-COMMIT and PG-COMMIT boundaries. This is
+  original-session loss evidence, not whole-server crash/restart qualification.
+  Preserve same-key local outcomes, no action retry, no model permit and no
+  falsely fresh success.
   Cancellation/control-flow interruption and close faults retain ownership and
   denial before escaping; restored explicit cleanup never remints work.
-- [ ] **Qualify and commit.** `pytest -c pyproject.toml -q
+- [x] **Qualify and commit.** `pytest -c pyproject.toml -q
   tests/control_plane/persistence/test_provider_links.py
   tests/control_plane/persistence/test_agent_run_authority.py
   tests/control_plane/persistence/test_agent_run_authority_faults.py
   tests/services/agent_runs/test_authorized_transaction.py
   tests/services/agent_runs/test_coordinator_borrow.py`.
   Freeze for independent real-PostgreSQL/cleanup review before worker wiring.
+
+**Author qualification:** `authenticated-task3-combined-author` passed 1,397
+cases, with two existing disclosed skips and 31 warnings, in 76.291 seconds at
+634.383 MiB sampled peak. Source hashes were unchanged; no limit, forced cleanup,
+signal attempt or survivor occurred. The aggregate covers all control-plane and
+Agent Run tests plus the affected source-store/migration/fence suites. The two
+skips are the existing separately configured migration test and the production-only
+stateless assertion; disposable PostgreSQL authority/migration tests did execute.
+Independent acceptance is still pending. All earlier expected and unexpected RED
+receipts remain preserved, including clock privacy, original rollback identity,
+shutdown ordering, and the copied-service and foreign-thread permit findings.
 
 ## Task 4: Strict service and one-shot worker dispatch
 
@@ -326,6 +367,8 @@ bound. Release between checkpoints and honor already-queued Bulldog work.
   preserves identity; interrupted running work never replays. Ordinary authority
   denial records safe interruption only, while storage/settlement uncertainty
   fences the service and keeps commit evidence.
+  A legacy/default service reopening V3 must never claim or dispatch a persisted
+  strict row through its legacy worker when the authority configuration is lost.
 - [ ] **Run cancellation/close RED/GREEN.** HTTP caller cancellation after commit,
   service close during acquisition/settlement, hostile provider cleanup and late
   completion retain the original coordinator until actual retirement. A model
