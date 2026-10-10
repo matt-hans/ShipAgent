@@ -72,8 +72,14 @@ class AgentRunService:
             self.store.upgrade(lease=self._lease)
             self._generation = self.store.begin_coordinator(lease=self._lease)
         except BaseException:
-            self._lease.close()
-            self._lease = None
+            # A retained migration borrow must outlive failed SQL cleanup.
+            # Preserve the original interruption even if lease close also denies.
+            try:
+                self._lease.close()
+            except BaseException:
+                self._unhealthy = True
+            else:
+                self._lease = None
             raise
         self._unhealthy = False
         self._closing = False
@@ -108,6 +114,7 @@ class AgentRunService:
         self._active_task = None
         self._worker = None
         if self._lease is not None:
+            self.store.retire_upgrade()
             self._lease.close()
             self._lease = None
 

@@ -82,7 +82,7 @@ async def test_open_and_read_do_not_upgrade_but_owned_start_preserves_legacy_rec
             == original
         )
         with sqlite3.connect(path) as db:
-            assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+            assert db.execute("PRAGMA user_version").fetchone()[0] == 3
             assert (
                 db.execute(
                     "SELECT " + ",".join(columns) + " FROM agent_runs"

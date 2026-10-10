@@ -20,7 +20,10 @@ SHA256 `2a5f55340b90c1b5b90827bb08345d4fece47a80d257bd0af543aeb0aef0b343`.
 **Execution:** Serial implementation by the current integrator and independent
 review after each checkpoint. Task 1 begins only after this plan is reviewed.
 Do not create additional worker lanes or implement later tasks before their gate.
-Current status: Task 1 author qualification is in progress; Tasks 2–5 remain unstarted.
+Current status: Task 1 independently approved at `b6cf12e` (158 passed,
+2 disclosed existing skips). Task 2 author qualification passed 448 cases with clean retirement; its
+independent checkpoint review is pending. Tasks 3–5 remain unstarted. The two GitHub recovery refs are frozen preservation checkpoints,
+not feature-ready production branches.
 
 ## Global Constraints
 
@@ -106,29 +109,29 @@ bound. Release between checkpoints and honor already-queued Bulldog work.
   `reduce_link_scopes(account_id, connection_id, allowed_scopes)` methods using
   account→link row locks. Reduction cannot expand scope or reactivate a row.
 
-- [ ] **Establish baseline.** Run existing auth/app/OAuth wire/model/migration
+- [x] **Establish baseline.** Run existing auth/app/OAuth wire/model/migration
   selection on the unchanged executable tree; retain exact receipt.
-- [ ] **Write RED tests.** Signed tokens reject bool, NaN/infinity, out-of-range,
+- [x] **Write RED tests.** Signed tokens reject bool, NaN/infinity, out-of-range,
   inverted, future-issued and expired timestamps; fractional expiry is exact.
   Assert two issuer link IDs under the same subject/client produce different
   connection IDs/epochs, while refreshed tokens preserve one link.
-- [ ] **Run the focused RED selection.** Expected failures are missing strict
+- [x] **Run the focused RED selection.** Expected failures are missing strict
   fields/independent resolution, not fixture/network errors.
-- [ ] **Implement the exact fields and migration.** Claim IDs use
+- [x] **Implement the exact fields and migration.** Claim IDs use
   `[A-Za-z0-9_-]{1,128}`; configured claim names are bounded HTTPS namespace URIs
   without userinfo/query/fragment. New strict accounts bind verified issuer;
   legacy rows remain unbound. Do not copy token scopes into strict allowed policy.
-- [ ] **Add persistence RED/GREEN cases.** Concurrent first use converges; legacy
+- [x] **Add persistence RED/GREEN cases.** Concurrent first use converges; legacy
   NULL bindings cannot authorize strict runs; old revoked tuples remain denied;
   a new grant gets a new identity; older broad/narrow tokens in both orders cannot
   change a reduced ceiling. Wrong issuer and expired post-lock resolution deny.
   Run real PostgreSQL migration upgrade/rollback-failure checks preserving rows.
-- [ ] **Preserve failed identity cleanup.** Keep the exact session and original
+- [x] **Preserve failed identity cleanup.** Keep the exact session and original
   failure when rollback fails, deny further use, and test cancellation/timeout
   plus rollback faults. This checkpoint does not qualify bounded HTTP cleanup;
   the Task 3 owner must capture the same service/session before effects and own
   bounded retirement before any opt-in profile is enabled.
-- [ ] **Run GREEN and commit.** `pytest -c pyproject.toml -q tests/control_plane/auth
+- [x] **Run GREEN and commit.** `pytest -c pyproject.toml -q tests/control_plane/auth
   tests/control_plane/test_app_auth.py tests/control_plane/test_models.py
   tests/control_plane/test_migrations_postgres.py
   tests/control_plane/persistence/test_provider_links.py`.
@@ -143,7 +146,11 @@ bound. Release between checkpoints and honor already-queued Bulldog work.
   Agent Run schema-version compatibility; preserve its source ownership rules.
 - Create `tests/services/agent_runs/test_authorized_transaction.py` and
   `test_authority_migration.py`.
-- Extend `tests/services/agent_runs/test_store.py` for original turn deadlines.
+- Cover original turn deadlines in the new owned-action test module, alongside
+  unchanged `test_store.py` regression. Update the existing V1 migration test's
+  terminal version expectation to V3 only.
+- Narrowly adapt `service.py` startup/close to preserve the original exception
+  and exact lease above a failed migration retirement.
 
 **Interfaces:**
 - `AgentRun` gains private optional `turn_authority_expires_at: float | None`.
@@ -154,28 +161,39 @@ bound. Release between checkpoints and honor already-queued Bulldog work.
 - The transaction exposes fixed accept/continue/read/cancel/claim/history/finish
   actions, `commit()` and `retire()`, plus read-only attempted/known-commit facts.
   It never exposes its raw connection/cursor or a reusable commit closure.
+- Explicit migration reuses a private maintenance mode of that same owner;
+  AgentRunStore captures the transaction and ordinary borrow before acquisition.
+  Failed cleanup keeps them and marks shared lease admission closing;
+  `retire_upgrade()` is the explicit retry, also used by service shutdown. Copied
+  stores cannot release this original owner. No automatic migration on reads.
 - Existing store entrypoints and owned actions share private connection-scoped
   SQL helpers; do not duplicate acceptance/idempotency/revision logic.
+- Strict metadata/retry/claim projections omit history entirely. The strict
+  claim sweep uses one expiry cutoff for run/conversation projections. Successful
+  or clarifying finish requires live original turn authority; the same owned
+  executor can record a fixed interrupted failure after expiry.
 - Owned history reads inspect stored byte length before fetching/parsing JSON;
   the strict ceiling is 1 MiB. This does not relabel the provider replay limit
   as a durable-storage cap or change legacy private reads.
 - Owned scope uses `timeout=0`/`busy_timeout=0`, current coordinator/path identity,
   strict deadline checks and retained cursors/connection before every effect.
+  SQLite progress interruption retains and rethrows the original control-flow
+  exception after SQLite returns, with its cursor still owned.
 
-- [ ] **Write and run RED.** Hold an external SQLite writer; owned acquire must
+- [x] **Write and run RED.** Hold an external SQLite writer; owned acquire must
   return busy promptly without the existing three-second wait. Verify copied/
   fork-inherited owners cannot use or retire original handles.
-- [ ] **Implement captured ownership.** Record local COMMIT attempted immediately
+- [x] **Implement captured ownership.** Record local COMMIT attempted immediately
   before SQL and known only after success; capture every cursor before post-SQL
   deadline checks. Explicit retirement closes cursors before physical connection
   proof. Before/after-effect failures retain retryable stages and original borrow.
-- [ ] **Write migration/expiry RED.** Preserve legacy rows unbound across normal
+- [x] **Write migration/expiry RED.** Preserve legacy rows unbound across normal
   upgrade, SQL failure and process death. A new strict run stores exactly the
   minimum accepting-token/120-second deadline; duplicate/reopen does not renew
   it; continuation keeps the original conversation expiry. Stored history above
   1 MiB is denied before materialization; the bounded private result still passes
   through the existing provider privacy/replay limits.
-- [ ] **Implement V3 compatibility and run GREEN.** New strict operations reject
+- [x] **Implement V3 compatibility and run GREEN.** New strict operations reject
   legacy NULL authority; old explicitly synthetic callers retain their historical
   behavior. Source ownership only recognizes compatible version3 layout; no source
   feature is enabled or changed.

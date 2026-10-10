@@ -107,7 +107,7 @@ class ConversationFence:
     def _require_generation(self) -> None:
         if type(self._generation) is not int or self._generation <= 0:
             raise RuntimeError(_UNAVAILABLE)
-        if self._execute("PRAGMA user_version").fetchone()[0] != 2:
+        if self._execute("PRAGMA user_version").fetchone()[0] not in {2, 3}:
             raise RuntimeError(_UNAVAILABLE)
         row = self._execute(
             "SELECT coordinator_generation FROM target_owner WHERE singleton = 1"
