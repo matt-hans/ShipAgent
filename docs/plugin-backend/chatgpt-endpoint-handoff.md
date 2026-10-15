@@ -58,6 +58,9 @@ mapping/preview, approvals and labels remain outside this slice.
    path; reconcile canonical tool descriptors, scopes and availability before
    explicitly admitting only the source-free lifecycle tier. Do not flip the
    catalog export flags or inject a constant epoch to skip these prerequisites.
+   ADR 0006 additionally requires canonical `ToolContract.minimum_capabilities`
+   compatibility and the public `target_update_required` response; this dormant
+   exact-version admission profile does not qualify that public error contract.
 
 These are implementation dependencies within the already approved architecture,
 not a request to choose a different hosting architecture. A status-only endpoint
@@ -66,9 +69,10 @@ full-agent lifecycle.
 
 ## Local verification without external setup
 
-Run from this isolated checkout with its prepared project interpreter (or set
-`SHIPAGENT_TEST_PYTHON` to the prepared project virtualenv). No public listener is
-needed:
+Run from the selected checkout with its prepared project interpreter. In an
+isolated worktree without its own `.venv`, replace `.venv/bin/python` below with
+the absolute path to the already prepared project interpreter. No public
+listener is needed:
 
 ```sh
 .venv/bin/python -m pytest tests/control_plane/test_agent_run_authority.py -q
