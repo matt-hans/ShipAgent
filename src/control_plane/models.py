@@ -3,6 +3,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -49,7 +50,16 @@ class ProviderConnection(ControlPlaneBase):
     surface: Mapped[str] = mapped_column(String(64))
     scopes_text: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(32), default="active")
-    __table_args__ = (UniqueConstraint("account_id", "client_id", "surface"),)
+    link_generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text("1")
+    )
+    __table_args__ = (
+        UniqueConstraint("account_id", "client_id", "surface"),
+        CheckConstraint(
+            "link_generation >= 1 AND link_generation <= 2147483647",
+            name="ck_provider_connection_link_generation",
+        ),
+    )
 
 
 class RelayDevice(ControlPlaneBase):

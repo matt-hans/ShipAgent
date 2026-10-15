@@ -199,3 +199,6 @@ AGENT_RUN_TOOLS = [
         notes="Synthetic source-free cancellation only. Production export remains disabled; no approval or shipment mutation is authorized.",
     ).model_copy(update={"rate_limit_class": "write", "call_repetition": "idempotent"}),
 ]
+
+# Internal admission uses the same lifecycle inventory as the canonical catalog.
+AGENT_RUN_TOOL_NAMES = frozenset(tool.name for tool in AGENT_RUN_TOOLS)

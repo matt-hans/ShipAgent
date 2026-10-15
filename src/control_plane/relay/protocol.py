@@ -109,6 +109,23 @@ class RelayHeartbeat(RelayProtocolModel):
     active_source_fingerprint: str | None = None
 
 
+class AgentRunAuthorityBinding(RelayProtocolModel):
+    """Control-plane-owned binding, separate from model-controlled tool input.
+
+    This dispatch snapshot is not a lease for target-side model work. Receiving
+    targets still need current-authority fencing at each safe worker boundary.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+    account_id: str = Field(min_length=1, max_length=36, repr=False)
+    provider_connection_id: str = Field(min_length=1, max_length=36, repr=False)
+    provider_surface: str = Field(min_length=1, max_length=64, repr=False)
+    link_generation: int = Field(ge=1, le=2_147_483_647, strict=True, repr=False)
+    execution_target_id: str = Field(min_length=1, max_length=128, repr=False)
+    device_id: str = Field(min_length=1, max_length=64, repr=False)
+    relay_session_id: str = Field(min_length=1, max_length=128, repr=False)
+
+
 class RelayInvocationEnvelope(RelayProtocolModel):
     type: Literal["relay.invoke"] = "relay.invoke"
     relay_session_id: str
@@ -121,6 +138,9 @@ class RelayInvocationEnvelope(RelayProtocolModel):
     idempotency_key: str
     audit_correlation_id: str
     attempt_generation: int = Field(default=0, ge=0, le=2_147_483_647, strict=True)
+    agent_run_authority: AgentRunAuthorityBinding | None = Field(
+        default=None, repr=False
+    )
 
 
 class RelayInvocationResult(RelayProtocolModel):
@@ -151,8 +171,12 @@ def relay_public_key_fingerprint(public_key_pem: str) -> str:
 def relay_invocation_input_hash(
     tool_name: str,
     arguments: dict[str, object],
+    *,
+    agent_run_authority: AgentRunAuthorityBinding | None = None,
 ) -> str:
     payload = {"arguments": arguments, "tool_name": tool_name}
+    if agent_run_authority is not None:
+        payload["agent_run_authority"] = agent_run_authority.model_dump(mode="json")
     digest = hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
@@ -346,6 +370,9 @@ class InvocationIdentity(RelayProtocolModel):
         default=None, pattern=r"^sha256:[0-9a-f]{64}$", strict=True
     )
     attempt_generation: int = Field(default=0, ge=0, le=2_147_483_647, strict=True)
+    agent_run_authority: AgentRunAuthorityBinding | None = Field(
+        default=None, repr=False
+    )
 
     @model_validator(mode="after")
     def validate_identity(self):
