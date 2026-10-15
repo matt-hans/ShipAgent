@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, TypedDict
 
 from src.control_plane.relay.invocations import (
     NoLiveRelaySession,
@@ -11,6 +12,7 @@ from src.control_plane.relay.invocations import (
     RelayInvocationTimeout,
 )
 from src.control_plane.relay.protocol import (
+    AgentRunAuthorityBinding,
     ExecutionTargetStatus,
     InvocationIdentity,
     RelayTargetState,
@@ -18,7 +20,16 @@ from src.control_plane.relay.protocol import (
     TargetAcceptanceEvidence,
 )
 from src.control_plane.relay.registry import RelayDeviceRegistry
+from src.registry.tools.agent_runs import AGENT_RUN_TOOL_NAMES
 from src.registry.vocabulary import PUBLIC_STATUS_CAPABILITIES
+
+if TYPE_CHECKING:
+    from src.control_plane.agent_run_authority import AgentRunAuthorityResolver
+
+
+class _AgentRunAdmission(TypedDict, total=False):
+    agent_run_authority: AgentRunAuthorityBinding
+    admit: Callable[[], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -68,17 +79,38 @@ class RelayExecutionTarget:
         self,
         registry: RelayDeviceRegistry,
         invocation_broker: RelayInvocationBroker | None = None,
+        *,
+        agent_run_authority: AgentRunAuthorityResolver | None = None,
     ) -> None:
+        self._agent_run_authority = agent_run_authority
         self._registry = registry
         self._invocation_broker = invocation_broker or RelayInvocationBroker()
 
     async def invoke(self, request: TargetToolRequest) -> dict[str, Any]:
+        authority = None
+        if request.tool_name in AGENT_RUN_TOOL_NAMES:
+            if self._agent_run_authority is None:
+                raise PermissionError("Agent Run authority is unavailable.")
+            authority = await self._agent_run_authority.resolve(request)
         heartbeat = await self._registry.get_active_heartbeat(request.account_id)
         if heartbeat is None:
             if request.tool_name == "get_shipagent_status":
                 return _offline_status().model_dump(mode="json", by_alias=True)
             raise NoLiveRelaySession("no active execution target connected")
 
+        admission: _AgentRunAdmission = {}
+        if authority is not None:
+            if heartbeat.relay_session_id != authority.relay_session_id:
+                raise PermissionError("Agent Run authority is unavailable.")
+
+            resolver = self._agent_run_authority
+            if resolver is None:
+                raise PermissionError("Agent Run authority is unavailable.")
+
+            async def revalidate() -> None:
+                await resolver.resolve(request, expected=authority)
+
+            admission = {"agent_run_authority": authority, "admit": revalidate}
         try:
             result = await self._invocation_broker.invoke(
                 relay_session_id=heartbeat.relay_session_id,
@@ -86,6 +118,7 @@ class RelayExecutionTarget:
                 arguments=request.arguments,
                 audit_correlation_id=request.correlation_id,
                 timeout_seconds=2,
+                **admission,
             )
         except (NoLiveRelaySession, RelayInvocationTimeout, RelayInvocationBusy):
             if request.tool_name == "get_shipagent_status":

@@ -2,17 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 from src.control_plane.relay.protocol import (
+    AgentRunAuthorityBinding,
     RelayInvocationEnvelope,
     RelayInvocationResultFrame,
     relay_invocation_input_hash,
 )
+from src.registry.tools.agent_runs import AGENT_RUN_TOOL_NAMES
 
 
 class RelayInvocationConnection(Protocol):
@@ -259,7 +261,11 @@ class RelayInvocationBroker:
         arguments: dict[str, object],
         audit_correlation_id: str,
         timeout_seconds: float,
+        agent_run_authority: AgentRunAuthorityBinding | None = None,
+        admit: Callable[[], Awaitable[None]] | None = None,
     ) -> RelayInvocationResultFrame:
+        if (tool_name in AGENT_RUN_TOOL_NAMES) != (agent_run_authority is not None):
+            raise PermissionError("Agent Run authority is unavailable.")
         relay_invocation_id = f"relay_invocation_{uuid.uuid4().hex}"
         idempotency_key = f"relay_idempotency_{uuid.uuid4().hex}"
         loop = asyncio.get_running_loop()
@@ -276,6 +282,8 @@ class RelayInvocationBroker:
                     relay_invocation_id=relay_invocation_id,
                     idempotency_key=idempotency_key,
                     future=future,
+                    agent_run_authority=agent_run_authority,
+                    admit=admit,
                 )
             else:
                 async with self._session_operation_guard.hold(*session_device):
@@ -288,6 +296,8 @@ class RelayInvocationBroker:
                         relay_invocation_id=relay_invocation_id,
                         idempotency_key=idempotency_key,
                         future=future,
+                        agent_run_authority=agent_run_authority,
+                        admit=admit,
                     )
             return await asyncio.wait_for(future, timeout=timeout_seconds)
         except TimeoutError as exc:
@@ -308,7 +318,18 @@ class RelayInvocationBroker:
         relay_invocation_id: str,
         idempotency_key: str,
         future: asyncio.Future[RelayInvocationResultFrame],
+        agent_run_authority: AgentRunAuthorityBinding | None = None,
+        admit: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
+        if agent_run_authority is not None:
+            if (
+                admit is None
+                or self._session_devices.get(relay_session_id)
+                != (agent_run_authority.account_id, agent_run_authority.device_id)
+                or agent_run_authority.relay_session_id != relay_session_id
+            ):
+                raise PermissionError("Agent Run authority is unavailable.")
+            await admit()
         async with self._lock:
             connection = self._connections.get(relay_session_id)
             if connection is None:
@@ -328,17 +349,28 @@ class RelayInvocationBroker:
             relay_invocation_id=relay_invocation_id,
             tool_name=tool_name,
             arguments=arguments,
-            input_hash=relay_invocation_input_hash(tool_name, arguments),
+            input_hash=relay_invocation_input_hash(
+                tool_name, arguments, agent_run_authority=agent_run_authority
+            ),
             deadline_at=datetime.now(UTC) + timedelta(seconds=timeout_seconds),
             idempotency_key=idempotency_key,
             audit_correlation_id=audit_correlation_id,
+            agent_run_authority=agent_run_authority,
         )
         try:
             # This legacy broker does not implement durable attempt dispatch.
             # Older desktops reject unknown fields; keep their status wire exact.
             # Explicit durable adapters serialize the generation separately.
             await connection.send_json(
-                frame.model_dump(mode="json", exclude={"attempt_generation"})
+                frame.model_dump(
+                    mode="json",
+                    exclude={"attempt_generation"}
+                    | (
+                        {"agent_run_authority"}
+                        if agent_run_authority is None
+                        else set()
+                    ),
+                )
             )
         except Exception as exc:
             await self.unregister(relay_session_id, connection=connection)

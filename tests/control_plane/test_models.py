@@ -264,3 +264,32 @@ def test_alembic_upgrades_existing_relay_device_schema_forward(tmp_path):
     engine.dispose()
 
     assert {"key_version", "revoked_at"} <= upgraded_columns
+
+
+def test_link_generation_migration_preserves_existing_connections(tmp_path):
+    from sqlalchemy import text
+
+    path = tmp_path / "existing-connections.db"
+    config = Config(str(Path(__file__).resolve().parents[2] / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", f"sqlite:///{path}")
+    command.upgrade(config, "20261007_0004")
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO cloud_accounts (id, auth0_subject, suspended, created_at) VALUES ('owner', 'synthetic', 0, CURRENT_TIMESTAMP)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO provider_connections (id, account_id, client_id, surface, scopes_text, status) VALUES ('existing', 'owner', 'chatgpt-client', 'chatgpt', '', 'active')"
+            )
+        )
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT id, status, link_generation FROM provider_connections")
+        ).one() == ("existing", "active", 1)
+    with pytest.raises(IntegrityError), engine.begin() as connection:
+        connection.execute(text("UPDATE provider_connections SET link_generation = 0"))
+    engine.dispose()

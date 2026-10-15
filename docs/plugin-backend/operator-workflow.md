@@ -256,3 +256,11 @@ outcome and every skip when qualification is performed.
 Public-directory eligibility, submission and acceptance remain separate policy
 and owner decisions. Fake models, synthetic carriers and generic MCP clients
 cannot qualify real client behavior, paid shipping or public distribution.
+
+## Bounded admission integration follow-up (2026-10-15)
+
+The [private connector endpoint handoff](chatgpt-endpoint-handoff.md) records the
+new durable link-generation/current exact-target relay admission checks, local
+synthetic evidence, and exact remaining software and operator inputs. This does
+not enable production lifecycle exports or supply a production worker authority
+channel, enrollment ceremony, headless secret store, or a working endpoint.

@@ -35,7 +35,13 @@ OWNER = AuthorizationContext(
 
 @asynccontextmanager
 async def synthetic_mcp(
-    store, provider_factory, *, context=OWNER, controls_now=None, connection_epoch=None
+    store,
+    provider_factory,
+    *,
+    context=OWNER,
+    controls_now=None,
+    connection_epoch=None,
+    execution_target_factory=None,
 ):
     from src.registry.tools.agent_runs import AGENT_RUN_TOOLS
     from src.services.agent_runs.execution_target import AgentRunExecutionTarget
@@ -46,7 +52,11 @@ async def synthetic_mcp(
         provider_factory=provider_factory,
         connection_epoch=connection_epoch,
     )
-    target = AgentRunExecutionTarget(service)
+    target = (
+        execution_target_factory(service)
+        if execution_target_factory
+        else AgentRunExecutionTarget(service)
+    )
     mcp = build_server(
         tool_handlers=build_execution_target_tool_handlers(
             target, include_agent_runs=True
